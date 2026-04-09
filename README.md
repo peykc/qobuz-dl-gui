@@ -11,16 +11,18 @@ Search, explore and download Lossless and Hi-Res music from [Qobuz](https://www.
 The easiest way to use **qobuz-dl** is now through the modern Web GUI! This is the main frontier of the project, providing a sleek and user-friendly experience.
 
 ### Key GUI Features:
-*   **Modern Interface**: A beautiful, dark-themed, and responsive web UI.
+*   **Modern Interface**: A dark-themed, and responsive web UI.
 *   **Easy Authentication**: Supports both Email/Password and **native OAuth login** (login directly via Qobuz website).
-*   **Advanced Search**: Search for albums, tracks, and artists with instant result previews.
+*   **Advanced Search**: Search for albums, tracks, and artists with instant result previews. (IN PROGRESS)
 *   **Live Progress**: Real-time download logs and status tracking for every item in your queue.
-*   **Configuration Manager**: Adjust download quality, folder formats, and more directly from the interface.
+*   **Configuration Manager**: Adjust download quality, folder formats, and more directly from the interface. (IN PROGRESS)
 
 ### How to Launch the GUI
-1.  **Windows**: Simply double-click `launch_gui.bat` in the root folder (this will also automatically open your browser).
-2.  **Manual**: Run `python gui_app.py` in your terminal.
-3.  Open `http://127.0.0.1:5000` in your web browser (if it didn't open automatically).
+**Windows**: 
+1.  Simply double-click `launch_gui.bat` in the root folder (this will also automatically open your browser).
+**Manual**: 
+1.  Run `python gui_app.py` in your terminal.
+2.  Open `http://127.0.0.1:5000` in your web browser (if it didn't open automatically).
 
 ---
 
