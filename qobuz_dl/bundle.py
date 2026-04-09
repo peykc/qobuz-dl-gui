@@ -16,6 +16,9 @@ _INFO_EXTRAS_REGEX = r'name:"\w+/(?P<timezone>{timezones})",info:"(?P<info>[\w=]
 _APP_ID_REGEX = re.compile(
     r'production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"'
 )
+_PRIVATE_KEY_REGEX = re.compile(
+    r'privateKey:\s*"(?P<key>[A-Za-z0-9]{6,30})"'
+)
 
 _BUNDLE_URL_REGEX = re.compile(
     r'<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>'
@@ -77,3 +80,10 @@ class Bundle:
                 "".join(secrets[secret_pair])[:-44]
             ).decode("utf-8")
         return secrets
+
+    def get_private_key(self):
+        match = _PRIVATE_KEY_REGEX.search(self._bundle)
+        if not match:
+            logger.debug("OAuth private_key not found in bundle (older bundle version)")
+            return None
+        return match.group("key")

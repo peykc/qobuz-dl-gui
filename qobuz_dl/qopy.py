@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class Client:
-    def __init__(self, email, pwd, app_id, secrets):
+    def __init__(self, email, pwd, app_id, secrets, skip_auth=False):
         logger.info(f"{YELLOW}Logging...")
         self.secrets = secrets
         self.id = str(app_id)
@@ -38,8 +38,9 @@ class Client:
         )
         self.base = "https://www.qobuz.com/api.json/0.2/"
         self.sec = None
-        self.auth(email, pwd)
-        self.cfg_setup()
+        if not skip_auth:
+            self.auth(email, pwd)
+            self.cfg_setup()
 
     def api_call(self, epoint, **kwargs):
         if epoint == "user/login":
@@ -130,6 +131,59 @@ class Client:
         self.session.headers.update({"X-User-Auth-Token": self.uat})
         self.label = usr_info["user"]["credential"]["parameters"]["short_label"]
         logger.info(f"{GREEN}Membership: {self.label}")
+
+    def auth_with_token(self, user_id, user_auth_token):
+        params = {
+            "user_id": str(user_id),
+            "user_auth_token": user_auth_token,
+            "app_id": self.id,
+        }
+        r = self.session.get(self.base + "user/login", params=params)
+        if r.status_code == 401:
+            raise AuthenticationError("Invalid credentials.\n" + RESET)
+        elif r.status_code == 400:
+            raise InvalidAppIdError("Invalid app id.\n" + RESET)
+        r.raise_for_status()
+        usr_info = r.json()
+        if not usr_info["user"]["credential"]["parameters"]:
+            raise IneligibleError("Free accounts are not eligible to download tracks.")
+        self.uat = user_auth_token
+        self.session.headers.update({"X-User-Auth-Token": self.uat})
+        self.label = usr_info["user"]["credential"]["parameters"]["short_label"]
+        logger.info(f"{GREEN}Membership: {self.label}")
+        self.cfg_setup()
+
+    def login_with_oauth_code(self, code, private_key):
+        callback_url = self.base + "oauth/callback"
+        params = {
+            "code": code,
+            "private_key": private_key,
+            "app_id": self.id,
+        }
+        r = self.session.get(callback_url, params=params)
+        r.raise_for_status()
+        json_resp = r.json()
+        token = json_resp.get("token")
+        if not token:
+            raise AuthenticationError("No token in OAuth callback response")
+        self.uat = token
+        self.session.headers.update({"X-User-Auth-Token": self.uat})
+        login_url = self.base + "user/login"
+        r = self.session.post(
+            login_url,
+            headers={"Content-Type": "text/plain;charset=UTF-8"},
+            data="extra=partner"
+        )
+        if r.status_code == 401:
+            raise AuthenticationError("OAuth token rejected")
+        r.raise_for_status()
+        usr_info = r.json()
+        if not usr_info["user"]["credential"]["parameters"]:
+            raise IneligibleError("Free accounts are not eligible to download tracks.")
+        self.label = usr_info["user"]["credential"]["parameters"]["short_label"]
+        logger.info(f"{GREEN}Membership: {self.label}")
+        self.cfg_setup()
+        return usr_info
 
     def multi_meta(self, epoint, key, id, type):
         total = 1

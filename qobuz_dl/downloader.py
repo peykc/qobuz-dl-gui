@@ -1,30 +1,32 @@
 import logging
 import os
+import time
 from typing import Tuple
 
 import requests
+import urllib3
 from pathvalidate import sanitize_filename, sanitize_filepath
 from tqdm import tqdm
 
 import qobuz_dl.metadata as metadata
-from qobuz_dl.color import OFF, GREEN, RED, YELLOW, CYAN
+from qobuz_dl.color import CYAN, GREEN, OFF, RED, YELLOW
 from qobuz_dl.exceptions import NonStreamable
 
 QL_DOWNGRADE = "FormatRestrictedByFormatAvailability"
 # used in case of error
 DEFAULT_FORMATS = {
     "MP3": [
-        "{artist} - {album} ({year}) [MP3]",
-        "{tracknumber}. {tracktitle}",
+        "{artist}/{album} ({year})",
+        "{tracknumber} - {tracktitle}",
     ],
     "Unknown": [
-        "{artist} - {album}",
-        "{tracknumber}. {tracktitle}",
+        "{artist}/{album}",
+        "{tracknumber} - {tracktitle}",
     ],
 }
 
-DEFAULT_FOLDER = "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
-DEFAULT_TRACK = "{tracknumber}. {tracktitle}"
+DEFAULT_FOLDER = "{artist}/{album} ({year})"
+DEFAULT_TRACK = "{tracknumber} - {tracktitle}"
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class Download:
         no_cover: bool = False,
         folder_format=None,
         track_format=None,
+        cancel_event=None,
     ):
         self.client = client
         self.item_id = item_id
@@ -55,6 +58,7 @@ class Download:
         self.no_cover = no_cover
         self.folder_format = folder_format or DEFAULT_FOLDER
         self.track_format = track_format or DEFAULT_TRACK
+        self.cancel_event = cancel_event
 
     def download_id_by_type(self, track=True):
         if not track:
@@ -73,7 +77,7 @@ class Download:
             meta.get("release_type") != "album"
             or meta.get("artist").get("name") == "Various Artists"
         ):
-            logger.info(f'{OFF}Ignoring Single/EP/VA: {meta.get("title", "n/a")}')
+            logger.info(f"{OFF}Ignoring Single/EP/VA: {meta.get('title', 'n/a')}")
             return
 
         album_title = _get_title(meta)
@@ -113,23 +117,41 @@ class Download:
                 pass
         media_numbers = [track["media_number"] for track in meta["tracks"]["items"]]
         is_multiple = True if len([*{*media_numbers}]) > 1 else False
+        failed_tracks = []
         for i in meta["tracks"]["items"]:
+            if self.cancel_event and self.cancel_event.is_set():
+                logger.info("Download cancelled.")
+                break
             parse = self.client.get_track_url(i["id"], fmt_id=self.quality)
             if "sample" not in parse and parse["sampling_rate"]:
+                _track_name = _get_title(i)
+                _track_num = i.get("track_number", count)
+                logger.info(f"[TRACK_START] {int(_track_num):02d}. {_track_name}")
                 is_mp3 = True if int(self.quality) == 5 else False
-                self._download_and_tag(
-                    dirn,
-                    count,
-                    parse,
-                    i,
-                    meta,
-                    False,
-                    is_mp3,
-                    i["media_number"] if is_multiple else None,
-                )
+                try:
+                    self._download_and_tag(
+                        dirn,
+                        count,
+                        parse,
+                        i,
+                        meta,
+                        False,
+                        is_mp3,
+                        i["media_number"] if is_multiple else None,
+                    )
+                except Exception as e:
+                    track_title = i.get("title", f"track {count}")
+                    logger.error(f"{RED}Failed to download {track_title}: {e}")
+                    failed_tracks.append(track_title)
+                time.sleep(1)  # brief pause between tracks
             else:
                 logger.info(f"{OFF}Demo. Skipping")
             count = count + 1
+        if failed_tracks:
+            logger.warning(
+                f"{YELLOW}{len(failed_tracks)} track(s) failed: "
+                + ", ".join(failed_tracks)
+            )
         logger.info(f"{GREEN}Completed")
 
     def download_track(self):
@@ -140,6 +162,7 @@ class Download:
             track_title = _get_title(meta)
             artist = _safe_get(meta, "performer", "name")
             logger.info(f"\n{YELLOW}Downloading: {artist} - {track_title}")
+            logger.info(f"[TRACK_START] 01. {track_title}")
             format_info = self._get_format(meta, is_track_id=True, track_url_dict=parse)
             file_format, quality_met, bit_depth, sampling_rate = format_info
 
@@ -197,7 +220,7 @@ class Download:
         extension = ".mp3" if is_mp3 else ".flac"
 
         try:
-            url = track_url_dict["url"]
+            initial_url = track_url_dict["url"]
         except KeyError:
             logger.info(f"{OFF}Track not available for download")
             return
@@ -222,7 +245,39 @@ class Download:
             logger.info(f"{OFF}{track_title} was already downloaded")
             return
 
-        tqdm_download(url, filename, filename)
+        def get_fresh_url(quality_override=None):
+            fmt = quality_override or self.quality
+            try:
+                res = self.client.get_track_url(track_metadata["id"], fmt_id=fmt)
+                new_url = res.get("url")
+                if new_url:
+                    return new_url
+                logger.warning("get_track_url returned no URL, using initial")
+                return initial_url
+            except Exception as exc:
+                logger.warning(f"get_track_url failed ({exc}), using initial URL")
+                return initial_url
+
+        # Try at requested quality first; on failure, try lower qualities
+        qualities_to_try = _quality_fallback_chain(int(self.quality))
+        download_ok = False
+        for q in qualities_to_try:
+            url_fn = (lambda qual: lambda: get_fresh_url(qual))(q)
+            try:
+                if q != int(self.quality):
+                    logger.info(
+                        f"{YELLOW}Retrying {track_title} at quality {q} "
+                        f"(original: {self.quality})..."
+                    )
+                tqdm_download(url_fn, filename, filename)
+                download_ok = True
+                break
+            except ConnectionError as e:
+                logger.warning(f"{YELLOW}Quality {q} failed for {track_title}: {e}")
+                continue
+
+        if not download_ok:
+            raise ConnectionError(f"All quality levels failed for {track_title}")
         tag_function = metadata.tag_mp3 if is_mp3 else metadata.tag_flac
         try:
             tag_function(
@@ -305,31 +360,155 @@ class Download:
             return ("Unknown", quality_met, None, None)
 
 
-def tqdm_download(url, fname, desc):
-    r = requests.get(url, allow_redirects=True, stream=True)
-    total = int(r.headers.get("content-length", 0))
-    download_size = 0
-    with open(fname, "wb") as file, tqdm(
-        total=total,
-        unit="iB",
-        unit_scale=True,
-        unit_divisor=1024,
-        desc=desc,
-        bar_format=CYAN + "{n_fmt}/{total_fmt} /// {desc}",
-    ) as bar:
-        for data in r.iter_content(chunk_size=1024):
-            size = file.write(data)
-            bar.update(size)
-            download_size += size
+def _quality_fallback_chain(quality):
+    """Return a list of quality IDs to try, starting from the requested one."""
+    all_qualities = [27, 7, 6, 5]
+    try:
+        idx = all_qualities.index(quality)
+    except ValueError:
+        idx = 0
+    return all_qualities[idx:]
 
-    if total != download_size:
-        # https://stackoverflow.com/questions/69919912/requests-iter-content-thinks-file-is-complete-but-its-not
-        raise ConnectionError("File download was interrupted for " + fname)
+
+def _dl_streaming(url, fname, desc, headers):
+    """Strategy 1: streaming download with iter_content."""
+    r = requests.get(
+        url,
+        allow_redirects=True,
+        stream=True,
+        headers=headers,
+        timeout=(15, 180),
+    )
+    logger.debug(
+        f"[dl-stream] status={r.status_code} len={r.headers.get('content-length')}"
+    )
+    r.raise_for_status()
+    total = int(r.headers.get("content-length", 0))
+
+    with (
+        open(fname, "wb") as f,
+        tqdm(
+            total=total,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=desc,
+            bar_format=CYAN + "{n_fmt}/{total_fmt} /// {desc}",
+        ) as bar,
+    ):
+        written = 0
+        for chunk in r.iter_content(chunk_size=1024 * 32):
+            if not chunk:
+                break
+            size = f.write(chunk)
+            bar.update(size)
+            written += size
+    r.close()
+
+    if total > 0 and written < total:
+        raise IOError(f"Streaming incomplete: {written}/{total}")
+    if written == 0:
+        raise IOError("Streaming got 0 bytes")
+    return written
+
+
+def _dl_non_streaming(url, fname, desc, headers):
+    """Strategy 2: non-streaming (entire body at once, no iter_content)."""
+    r = requests.get(
+        url,
+        allow_redirects=True,
+        stream=False,
+        headers=headers,
+        timeout=(15, 300),
+    )
+    logger.debug(f"[dl-full] status={r.status_code} len={len(r.content)}")
+    r.raise_for_status()
+
+    data = r.content
+    if not data:
+        raise IOError("Non-streaming got 0 bytes")
+
+    with open(fname, "wb") as f:
+        f.write(data)
+    logger.debug(f"[dl-full] wrote {len(data)} bytes")
+    return len(data)
+
+
+def _dl_urllib(url, fname, desc, headers):
+    """Strategy 3: stdlib urllib (completely different HTTP stack)."""
+    import urllib.request
+
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        logger.debug(f"[dl-urllib] status={resp.status} len={total}")
+        with (
+            open(fname, "wb") as f,
+            tqdm(
+                total=total,
+                unit="iB",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=desc,
+                bar_format=CYAN + "{n_fmt}/{total_fmt} /// {desc}",
+            ) as bar,
+        ):
+            written = 0
+            while True:
+                chunk = resp.read(1024 * 32)
+                if not chunk:
+                    break
+                size = f.write(chunk)
+                bar.update(size)
+                written += size
+
+    if total > 0 and written < total:
+        raise IOError(f"urllib incomplete: {written}/{total}")
+    if written == 0:
+        raise IOError("urllib got 0 bytes")
+    return written
+
+
+def tqdm_download(url_getter, fname, desc, max_retries=2):
+    _UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+    headers = {"User-Agent": _UA, "Connection": "close"}
+
+    strategies = [
+        ("streaming", _dl_streaming),
+        ("non-streaming", _dl_non_streaming),
+        ("urllib", _dl_urllib),
+    ]
+
+    for attempt in range(max_retries):
+        url = url_getter() if callable(url_getter) else url_getter
+        strat_name, strat_fn = strategies[min(attempt, len(strategies) - 1)]
+
+        try:
+            logger.debug(f"[dl] attempt {attempt} strategy={strat_name}")
+            strat_fn(url, fname, desc, headers)
+            return  # Success
+        except Exception as e:
+            logger.debug(f"[dl] {strat_name} failed: {type(e).__name__}: {e}")
+            if attempt < max_retries - 1:
+                wait = 1
+                logger.debug(
+                    f"[dl] waiting {wait}s before retry {attempt + 1}/{max_retries}..."
+                )
+                time.sleep(wait)
+            else:
+                raise ConnectionError(
+                    f"File download failed after {max_retries} attempts "
+                    f"for {fname}: {e}"
+                )
 
 
 def _get_description(item: dict, track_title, multiple=None):
     downloading_title = f"{track_title} "
-    f'[{item["bit_depth"]}/{item["sampling_rate"]}]'
+    f"[{item['bit_depth']}/{item['sampling_rate']}]"
     if multiple:
         downloading_title = f"[Disc {multiple}] {downloading_title}"
     return downloading_title

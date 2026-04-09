@@ -1,3 +1,4 @@
+import configparser
 import logging
 import os
 import sys
@@ -6,19 +7,25 @@ import requests
 from bs4 import BeautifulSoup as bso
 from pathvalidate import sanitize_filename
 
-from qobuz_dl.bundle import Bundle
 from qobuz_dl import downloader, qopy
-from qobuz_dl.color import CYAN, OFF, RED, YELLOW, DF, RESET
-from qobuz_dl.exceptions import NonStreamable
+from qobuz_dl.bundle import Bundle
+from qobuz_dl.color import CYAN, DF, OFF, RED, RESET, YELLOW
 from qobuz_dl.db import create_db, handle_download_id
+from qobuz_dl.exceptions import NonStreamable
 from qobuz_dl.utils import (
+    PartialFormatter,
+    create_and_return_dir,
+    format_duration,
     get_url_info,
     make_m3u,
     smart_discography_filter,
-    format_duration,
-    create_and_return_dir,
-    PartialFormatter,
 )
+
+if os.name == "nt":
+    _OS_CONFIG = os.environ.get("APPDATA", "")
+else:
+    _OS_CONFIG = os.path.join(os.environ.get("HOME", ""), ".config")
+CONFIG_FILE = os.path.join(_OS_CONFIG, "qobuz-dl", "config.ini")
 
 WEB_URL = "https://play.qobuz.com/"
 ARTISTS_SELECTOR = "td.chartlist-artist > a"
@@ -48,8 +55,7 @@ class QobuzDL:
         cover_og_quality=False,
         no_cover=False,
         downloads_db=None,
-        folder_format="{artist} - {album} ({year}) [{bit_depth}B-"
-        "{sampling_rate}kHz]",
+        folder_format="{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
         track_format="{tracknumber}. {tracktitle}",
         smart_discography=False,
     ):
@@ -68,10 +74,37 @@ class QobuzDL:
         self.folder_format = folder_format
         self.track_format = track_format
         self.smart_discography = smart_discography
+        self.cancel_event = None  # set by gui_app to allow inter-track cancellation
 
     def initialize_client(self, email, pwd, app_id, secrets):
         self.client = qopy.Client(email, pwd, app_id, secrets)
         logger.info(f"{YELLOW}Set max quality: {QUALITIES[int(self.quality)]}\n")
+
+    def initialize_client_with_token(self, user_id, user_auth_token, app_id, secrets):
+        self.client = qopy.Client(None, None, app_id, secrets, skip_auth=True)
+        self.client.auth_with_token(user_id, user_auth_token)
+        logger.info(f"{YELLOW}Set max quality: {QUALITIES[int(self.quality)]}\n")
+
+    def initialize_client_with_oauth(self, code, app_id, secrets, private_key):
+        self.client = qopy.Client(None, None, app_id, secrets, skip_auth=True)
+        usr_info = self.client.login_with_oauth_code(code, private_key)
+        self.oauth_user_id = usr_info.get("user", {}).get("id")
+        self.oauth_user_auth_token = usr_info.get("user_auth_token")
+        logger.info(f"{YELLOW}Set max quality: {QUALITIES[int(self.quality)]}\n")
+
+    def save_oauth_token_to_config(self, config_file):
+        if not hasattr(self, "oauth_user_auth_token") or not self.oauth_user_auth_token:
+            return
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        config["DEFAULT"]["user_auth_token"] = self.oauth_user_auth_token
+        if hasattr(self, "oauth_user_id") and self.oauth_user_id:
+            config["DEFAULT"]["user_id"] = str(self.oauth_user_id)
+        config["DEFAULT"]["email"] = ""
+        config["DEFAULT"]["password"] = ""
+        with open(config_file, "w") as f:
+            config.write(f)
+        logger.info(f"{GREEN}OAuth token saved to config.")
 
     def get_tokens(self):
         bundle = Bundle()
@@ -79,6 +112,7 @@ class QobuzDL:
         self.secrets = [
             secret for secret in bundle.get_secrets().values() if secret
         ]  # avoid empty fields
+        self.private_key = bundle.get_private_key() or ""
 
     def download_from_id(self, item_id, album=True, alt_path=None):
         if handle_download_id(self.downloads_db, item_id, add_id=False):
@@ -101,6 +135,7 @@ class QobuzDL:
                 self.no_cover,
                 self.folder_format,
                 self.track_format,
+                cancel_event=self.cancel_event,
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)
@@ -129,15 +164,14 @@ class QobuzDL:
             type_dict = possibles[url_type]
         except (KeyError, IndexError):
             logger.info(
-                f'{RED}Invalid url: "{url}". Use urls from ' "https://play.qobuz.com!"
+                f'{RED}Invalid url: "{url}". Use urls from https://play.qobuz.com!'
             )
             return
         if type_dict["func"]:
             content = [item for item in type_dict["func"](item_id)]
             content_name = content[0]["name"]
             logger.info(
-                f"{YELLOW}Downloading all the music from {content_name} "
-                f"({url_type})!"
+                f"{YELLOW}Downloading all the music from {content_name} ({url_type})!"
             )
             new_path = create_and_return_dir(
                 os.path.join(self.directory, sanitize_filename(content_name))
@@ -191,10 +225,93 @@ class QobuzDL:
                 logger.error(f"{RED}Invalid text file: {e}")
                 return
             logger.info(
-                f"{YELLOW}qobuz-dl will download {len(urls)}"
-                f" urls from file: {txt_file}"
+                f"{YELLOW}qobuz-dl will download {len(urls)} urls from file: {txt_file}"
             )
             self.download_list_of_urls(urls)
+
+    def handle_oauth_login(self, code=None):
+        import socket
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from urllib.parse import parse_qs, urlparse
+
+        if not code:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", 0))
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                port = s.getsockname()[1]
+
+            oauth_url = (
+                f"https://www.qobuz.com/signin/oauth"
+                f"?ext_app_id={self.app_id}"
+                f"&redirect_url=http://localhost:{port}"
+            )
+
+            class OAuthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    parsed = urlparse(self.path)
+                    params = parse_qs(parsed.query)
+                    auth_code = params.get(
+                        "code", [params.get("code_autorisation", [""])[0]]
+                    )[0]
+                    if auth_code:
+                        OAuthHandler.auth_code = auth_code
+                        self.send_response(200)
+                        self.send_header("Content-type", "text/html")
+                        self.end_headers()
+                        self.wfile.write(
+                            b"<html><body style='font-family:system-ui;text-align:center;padding:60px'><h2>Login successful</h2><p>You can close this tab and return to qobuz-dl.</p></body></html>"
+                        )
+                    else:
+                        self.send_response(400)
+                        self.end_headers()
+                        self.wfile.write(
+                            b"<html><body><h2>Login failed</h2></body></html>"
+                        )
+
+                def log_message(self, format, *args):
+                    pass
+
+            OAuthHandler.auth_code = None
+
+            logger.info(f"{YELLOW}Opening browser for Qobuz OAuth login…")
+            logger.info(f"{CYAN}OAuth URL: {oauth_url}{RESET}")
+
+            server = HTTPServer(("127.0.0.1", port), OAuthHandler)
+            thread = threading.Thread(target=server.handle_request)
+            thread.start()
+
+            import webbrowser
+
+            webbrowser.open(oauth_url)
+
+            thread.join(timeout=120)
+            server.server_close()
+
+            if OAuthHandler.auth_code:
+                code = OAuthHandler.auth_code
+            else:
+                logger.error(f"{RED}No OAuth code received. Please try again.")
+                return
+        else:
+            if "code" in code or "code_autorisation" in code:
+                parsed = urlparse(code)
+                params = parse_qs(parsed.query)
+                code = params.get("code", [params.get("code_autorisation", [""])[0]])[0]
+
+        if not code:
+            logger.error(f"{RED}No OAuth code found.")
+            return
+
+        if not hasattr(self, "client") or self.client is None:
+            logger.info(f"{YELLOW}Refreshing app_id and secrets…")
+            self.get_tokens()
+
+        self.initialize_client_with_oauth(
+            code, self.app_id, self.secrets, self.private_key
+        )
+        logger.info(f"{GREEN}OAuth login successful!")
+        self.save_oauth_token_to_config(CONFIG_FILE)
 
     def lucky_mode(self, query, download=True):
         if len(query) < 3:
@@ -258,7 +375,6 @@ class QobuzDL:
                 fmt = PartialFormatter()
                 text = fmt.format(mode_dict["format"], **i)
                 if mode_dict["requires_extra"]:
-
                     text = "{} - {} [{}]".format(
                         text,
                         format_duration(i["duration"]),
@@ -301,12 +417,10 @@ class QobuzDL:
             selected_type = pick(item_types, "I'll search for:\n[press Intro]")[0][
                 :-1
             ].lower()
-            logger.info(f"{YELLOW}Ok, we'll search for " f"{selected_type}s{RESET}")
+            logger.info(f"{YELLOW}Ok, we'll search for {selected_type}s{RESET}")
             final_url_list = []
             while True:
-                query = input(
-                    f"{CYAN}Enter your search: [Ctrl + c to quit]\n" f"-{DF} "
-                )
+                query = input(f"{CYAN}Enter your search: [Ctrl + c to quit]\n-{DF} ")
                 logger.info(f"{YELLOW}Searching...{RESET}")
                 options = self.search_by_type(
                     query, selected_type, self.interactive_limit
@@ -331,8 +445,7 @@ class QobuzDL:
                     [final_url_list.append(i[0]["url"]) for i in selected_items]
                     y_n = pick(
                         ["Yes", "No"],
-                        "Items were added to queue to be downloaded. "
-                        "Keep searching?",
+                        "Items were added to queue to be downloaded. Keep searching?",
                     )
                     if y_n[0][0] == "N":
                         break
@@ -385,7 +498,7 @@ class QobuzDL:
         pl_title = sanitize_filename(soup.select_one("h1").text)
         pl_directory = os.path.join(self.directory, pl_title)
         logger.info(
-            f"{YELLOW}Downloading playlist: {pl_title} " f"({len(track_list)} tracks)"
+            f"{YELLOW}Downloading playlist: {pl_title} ({len(track_list)} tracks)"
         )
 
         for i in track_list:
