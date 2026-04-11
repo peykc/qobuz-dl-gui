@@ -303,10 +303,131 @@ body {
 .sidebar-status {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 4px;
-    font-size: 12px;
+    justify-content: space-between;
+    padding: 12px 6px 0;
+    border-top: 1px solid var(--border-light);
+    font-size: 11px;
     color: var(--text-muted);
+    margin-top: auto;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.monero-btn {
+    background: none;
+    border: none;
+    padding: 6px;
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s ease, transform 0.2s ease;
+    opacity: 0.8;
+}
+
+.monero-btn .xmr-bg-top,
+.monero-btn .xmr-bg-circle {
+    transition: fill 0.2s ease;
+}
+
+.monero-btn .xmr-bg-top {
+    fill: #4D4D4D;
+}
+
+.monero-btn .xmr-bg-circle {
+    fill: transparent;
+}
+
+.monero-btn:hover {
+    background: rgba(255, 102, 0, 0.08);
+    opacity: 1;
+}
+
+.monero-btn:hover .xmr-bg-top {
+    fill: #f26822; /* Matches user provided orange path style */
+}
+
+.monero-btn:hover .xmr-bg-circle {
+    fill: white;
+}
+
+/* ============================================================
+   DONATION POPOVER (Tooltip style)
+   ============================================================ */
+.donation-popover {
+    position: fixed;
+    width: 200px;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    animation: popoverFadeIn 0.15s ease-out;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+@keyframes popoverFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.donation-popover.hidden {
+    display: none;
+}
+
+.donation-popover-header {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    text-align: center;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.qr-container-mini {
+    background: white;
+    padding: 8px;
+    border-radius: 8px;
+    width: 140px;
+    height: 140px;
+    margin: 4px auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.qr-container-mini .qr-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.address-box-mini {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.address-text-mini {
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    font-size: 9px;
+    word-break: break-all;
+    color: var(--text-muted);
+    line-height: 1.3;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 8px;
+    border-radius: 6px;
+    text-align: center;
 }
 
 .status-dot {
