@@ -70,7 +70,7 @@ For power users who prefer the terminal or want to automate downloads via script
 
 **Donate to GUI dev (Monero)**
 [![Donate Monero](https://img.shields.io/badge/Donate-Monero-orange.svg)](monero:8BuFrF3pnaFDXZLkzNX3NKG7hdMr1YqZaAvasSyfSbJnLadCUgXuJQQVigeBBAZdL5NTRiUcPYNVTV2gUWa7zuhuMRVNwt9)
-[![QR Code](https://img.shields.io/badge/QR_Code-orange.svg)](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/blob/master/qobuz_dl/gui/monero_qr.png)
+[![QR](https://img.shields.io/badge/QR_Code-orange.svg)](https://github.com/peykc/qobuz-dl-gui/blob/master/qobuz_dl/gui/monero_qr.png)
 
 **Donate to CLI dev (PayPal)**
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VZWSWVGZGJRMU&source=url)
