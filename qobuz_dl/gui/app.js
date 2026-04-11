@@ -16,7 +16,6 @@
     _sse.onmessage = (e) => {
       if (!e.data || e.data.trim() === "") return;
       appendLog("log-output", e.data);
-      appendLog("log-output-search", e.data);
     };
 
     // Structured per-URL status events
@@ -63,22 +62,7 @@
     return "log-line";
   }
 
-  // ── Tab routing ───────────────────────────────────────────
-  function initTabs() {
-    document.querySelectorAll(".nav-item").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const tab = btn.dataset.tab;
-        document
-          .querySelectorAll(".nav-item")
-          .forEach((b) => b.classList.remove("active"));
-        document
-          .querySelectorAll(".tab-panel")
-          .forEach((p) => p.classList.remove("active"));
-        btn.classList.add("active");
-        document.getElementById("tab-" + tab).classList.add("active");
-      });
-    });
-  }
+
 
   // ── Status polling ────────────────────────────────────────
   function updateStatus(ready) {
@@ -347,7 +331,37 @@
         if (data.ok && data.result) {
           const qi = _urlQueue.find((q) => q.url === url);
           if (qi) qi.resolved = data.result;
+          data.result.resolving_discography = (data.result.type === "artist");
           _updateQueueCard(card, data.result);
+          
+          if (data.result.type === "artist") {
+             fetch("/api/check_discography", {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ url })
+             })
+             .then(r => r.json())
+             .then(cd => {
+                if (cd.ok && cd.result) {
+                  const res = cd.result;
+                  data.result.resolving_discography = false;
+                  
+                  data.result.diff_sd = res.diff_sd;
+                  data.result.diff_ao = res.diff_ao;
+                  data.result.diff_both = res.diff_both;
+                  
+                  data.result.raw_tracks = res.raw_tracks;
+                  data.result.sd_filtered_tracks = res.sd_filtered_tracks;
+                  data.result.ao_filtered_tracks = res.ao_filtered_tracks;
+                  data.result.both_filtered_tracks = res.both_filtered_tracks;
+                  _updateQueueCard(card, data.result);
+                }
+             })
+             .catch(() => {
+                data.result.resolving_discography = false;
+                _updateQueueCard(card, data.result);
+             });
+          }
         } else {
           _updateQueueCard(card, {
             type: "link",
@@ -425,19 +439,58 @@
     }
     // Info
     const info = card.querySelector(".queue-card-info");
-    const badge = r.type
+
+    // === Type badge ===
+    const typeBadge = r.type
       ? `<span class="queue-card-badge badge-${r.type}">${r.type}</span>`
       : "";
+
+    // === Explicit icon ===
+    const explicitIcon = r.explicit
+      ? `<span class="queue-card-explicit" title="Explicit"><svg viewBox="0 0 24 24" class="queue-explicit-icon"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg></span>`
+      : "";
+
+    // === Meta parts ===
     const metaParts = [];
-    if (r.year) metaParts.push(r.year);
-    if (r.quality) metaParts.push(r.quality);
-    if (r.tracks) metaParts.push(r.tracks + " tracks");
-    if (r.albums) metaParts.push(r.albums + " albums");
+
+    if (r.bit_depth && r.sample_rate) {
+      metaParts.push(`${r.bit_depth}bit / ${r.sample_rate}kHz`);
+    } else if (r.quality) {
+      metaParts.push(r.quality);
+    }
+
+    if (r.tracks && r.type !== "artist") {
+      metaParts.push(`${r.tracks} track${r.tracks !== 1 ? "s" : ""}`);
+    }
+
+    if (r.albums) {
+      if (r.type === "artist") {
+        let albumHtml = `Albums: <span class="artist-albums-count">${r.albums}</span>`;
+        if (r.resolving_discography) {
+          albumHtml += ` <span class="artist-albums-filter scrambling"></span>`;
+        } else if (r.diff_sd !== undefined && r.diff_sd > 0) {
+          albumHtml += ` <span class="artist-albums-filter dynamic-filter" data-sd="${r.diff_sd}" data-tip="Estimates active duplicate and edition filters skipping releases based on Discography toggles."></span>`;
+        }
+        metaParts.push(albumHtml);
+      } else {
+        metaParts.push(r.albums + " albums");
+      }
+    }
+
+    if (r.release_date) {
+      metaParts.push(r.release_date.slice(0, 4));
+    } else if (r.year) {
+      metaParts.push(r.year);
+    }
+
+    const metaRow = metaParts.length
+      ? `<span class="queue-card-meta">${metaParts.join(" · ")}</span>`
+      : "";
 
     info.innerHTML = `
       <span class="queue-card-title">${_esc(r.title || card.dataset.url)}</span>
       <span class="queue-card-artist">${_esc(r.artist || "")}</span>
-      <span class="queue-card-meta">${badge} ${metaParts.join(" · ")}</span>
+      <span class="queue-card-bottom-row">${typeBadge}${explicitIcon}${metaRow}</span>
     `;
     if (window._updateQueueBadge) window._updateQueueBadge();
   }
@@ -729,6 +782,13 @@
       if (el) el.addEventListener("change", _autosave);
     });
 
+    const sdCheck = document.getElementById("dl-smart-discography");
+    if (sdCheck) {
+      sdCheck.addEventListener("change", () => {
+        if (window._updateQueueBadge) window._updateQueueBadge();
+      });
+    }
+
     // Debounced save for text inputs
     ["dl-directory", "dl-folder-format", "dl-track-format"].forEach((id) => {
       const el = document.getElementById(id);
@@ -740,12 +800,17 @@
       if (!badge) return;
       let total = 0;
       let hasUnknown = false;
+      let hasArtist = false;
+      
       if (_textMode) {
         const val = document.getElementById("dl-urls").value || "";
-        total = val.split(/[\n\r]+/).filter((l) => l.trim()).length;
+        const lines = val.split(/[\n\r]+/).filter((l) => l.trim());
+        total = lines.length;
+        hasArtist = lines.some(l => l.includes("artist"));
       } else {
         _urlQueue.forEach((qi) => {
           if (!qi.resolved) {
+            if (qi.url && qi.url.includes("artist")) hasArtist = true;
             total += 1;
             return;
           }
@@ -755,7 +820,20 @@
             return;
           }
           if (r.type === "artist") {
-            hasUnknown = true;
+            const sdCheck = document.getElementById("dl-smart-discography");
+            const aoCheck = document.getElementById("dl-albums-only");
+            
+            if (r.raw_tracks !== undefined) {
+                if (sdCheck?.checked) {
+                    total += r.sd_filtered_tracks;
+                } else {
+                    total += r.raw_tracks;
+                }
+            } else {
+                if (r.albums) total += (r.albums * 10); // temporary rough estimate until check async resolves
+                hasUnknown = true;
+            }
+            hasArtist = true;
             return;
           }
           if (r.tracks) {
@@ -765,12 +843,22 @@
           total += 1;
         });
       }
+      
       if (total === 0 && !hasUnknown) {
         badge.classList.add("hidden");
         badge.textContent = "";
       } else {
         badge.classList.remove("hidden");
         badge.textContent = hasUnknown ? `${total}+` : String(total);
+      }
+      
+      const artistGroup = document.getElementById("dl-artist-section");
+      if (artistGroup) {
+        if (!hasArtist) {
+          artistGroup.classList.add("hidden");
+        } else {
+          artistGroup.classList.remove("hidden");
+        }
       }
     };
 
@@ -781,6 +869,7 @@
     // Track-level counters (drive the progress bar)
     let _dlTrackTotal = 0;
     let _dlTrackDone = 0;
+    let _dlTotalLocked = false;
 
     function _findCardByUrl(url) {
       const cards = document.querySelectorAll("#dl-queue .queue-card");
@@ -872,7 +961,11 @@
 
     // Called by SSE 'status' events
     window._handleDlStatus = function (ev) {
-      if (ev.type === "url_start") {
+      if (ev.type === "total_tracks") {
+        _dlTrackTotal = ev.count;
+        _dlTotalLocked = true;
+        _updateProgress();
+      } else if (ev.type === "url_start") {
         const card = _findCardByUrl(ev.url);
         if (card) {
           card.classList.remove("dl-pending");
@@ -883,7 +976,9 @@
         _dlTrackDone++;
         // If we somehow exceed the estimated total (e.g. artist URL with many
         // albums), grow the total so the bar never stalls at 100% prematurely.
-        if (_dlTrackDone > _dlTrackTotal) _dlTrackTotal = _dlTrackDone + 1;
+        if (!_dlTotalLocked && _dlTrackDone > _dlTrackTotal) {
+           _dlTrackTotal = _dlTrackDone + 1;
+        }
         _updateProgress();
       } else if (ev.type === "url_done") {
         _dlDone++;
@@ -1009,6 +1104,7 @@
           _dlDone = 0;
           _dlTrackTotal = _textMode ? data.queued : _calcTrackTotal();
           _dlTrackDone = 0;
+          _dlTotalLocked = false;
           document.querySelectorAll("#dl-queue .queue-card").forEach((c) => {
             c.classList.add("dl-pending");
           });
@@ -1028,33 +1124,35 @@
   let _searchResults = [];
 
   function initSearch() {
-    const limitSlider = document.getElementById("search-limit");
-    const limitVal = document.getElementById("search-limit-val");
-    limitSlider.addEventListener("input", () => {
-      limitVal.textContent = limitSlider.value;
-    });
+    const luckySlider = document.getElementById("lucky-number");
+    const luckyVal = document.getElementById("lucky-number-val");
+    if (luckySlider && luckyVal) {
+      luckySlider.addEventListener("input", () => {
+        luckyVal.textContent = luckySlider.value;
+      });
+    }
 
     document.getElementById("search-btn").addEventListener("click", doSearch);
-    document.getElementById("search-query").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") doSearch();
+    const searchQuery = document.getElementById("search-query");
+    const searchBtn = document.getElementById("search-btn");
+    
+    searchQuery.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !searchBtn.disabled) doSearch();
+    });
+    
+    searchQuery.addEventListener("input", () => {
+      const query = searchQuery.value.trim();
+      searchBtn.disabled = query.length < 3;
     });
 
     document.getElementById("lucky-btn").addEventListener("click", doLucky);
-    document
-      .getElementById("download-selected-btn")
-      .addEventListener("click", downloadSelected);
-    document
-      .getElementById("search-clear-log")
-      .addEventListener("click", () => {
-        document.getElementById("log-output-search").innerHTML = "";
-      });
   }
 
   async function doSearch() {
     const query = document.getElementById("search-query").value.trim();
     if (query.length < 3) {
       appendLog(
-        "log-output-search",
+        "log-output",
         "[error] Query must be at least 3 characters.",
       );
       return;
@@ -1064,7 +1162,7 @@
 
     const btn = document.getElementById("search-btn");
     btn.disabled = true;
-    btn.textContent = "Searching…";
+    btn.classList.add("searching");
 
     document.getElementById("search-results-container").classList.add("hidden");
     document.getElementById("search-empty").classList.add("hidden");
@@ -1076,17 +1174,17 @@
       const data = await res.json();
 
       if (!data.ok) {
-        appendLog("log-output-search", "[error] " + data.error);
+        appendLog("log-output", "[error] " + data.error);
         return;
       }
 
       _searchResults = data.results || [];
       renderResults(_searchResults, query);
     } catch (e) {
-      appendLog("log-output-search", "[error] " + e.message);
+      appendLog("log-output", "[error] " + e.message);
     } finally {
       btn.disabled = false;
-      btn.textContent = "Search";
+      btn.classList.remove("searching");
     }
   }
 
@@ -1095,8 +1193,8 @@
     const empty = document.getElementById("search-empty");
     const list = document.getElementById("search-results");
     const countEl = document.getElementById("results-count");
-
     list.innerHTML = "";
+
     if (!results.length) {
       container.classList.add("hidden");
       empty.classList.remove("hidden");
@@ -1109,91 +1207,166 @@
 
     results.forEach((r, i) => {
       const item = document.createElement("div");
-      item.className = "result-item";
+      item.className = "result-item result-card";
       item.dataset.index = i;
 
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.id = `result-cb-${i}`;
+      // Image - use type-specific placeholders
+      const img = document.createElement("img");
+      img.className = "result-card-art";
+      const fallback = r.type === "artist" 
+        ? "/gui/artist-placeholder.png" 
+        : "/gui/placeholder.png";
+      
+      img.src = r.cover || fallback;
+      img.onerror = () => {
+        // Prevent infinite loop if fallback also fails
+        if (!img.src.endsWith(fallback)) {
+          img.src = fallback;
+        }
+      };
 
-      const text = document.createElement("label");
-      text.className = "result-text";
-      text.htmlFor = `result-cb-${i}`;
+      const info = document.createElement("div");
+      info.className = "result-card-info";
+
+      const text = document.createElement("div");
+      text.className = "result-card-text";
       text.textContent = r.text;
 
-      item.appendChild(cb);
-      item.appendChild(text);
+      info.appendChild(text);
 
-      // Quality badge from text
-      if (r.text) {
-        const badge = document.createElement("span");
-        badge.className = "result-badge";
-        if (r.text.includes("HI-RES")) {
-          badge.className += " badge-hires";
-          badge.textContent = "HI-RES";
-        } else if (r.text.includes("LOSSLESS")) {
-          badge.className += " badge-lossless";
-          badge.textContent = "LOSSLESS";
-        } else {
-          badge.className += " badge-mp3";
-          badge.textContent = "MP3";
+      // Quality / Stat badge
+      let badgeContent = r.badge;
+      let badgeClass = "result-badge";
+
+      // The backend text may still have [HI-RES] if it's an old cache, but core.py is now cleaning it.
+      // We clean it here too just in case. Duration can be MM:SS or HH:MM:SS.
+      let cleanText = (r.text || "")
+        .replace(/ \[\w+\]$/, "")              // Remove trailing [QUALITY]
+        .replace(/ - (\d+:)?\d+:\d+$/, "");    // Remove trailing - duration (MM:SS or HH:MM:SS)
+
+      if (!badgeContent) {
+        if (r.quality === "HI-RES") {
+          badgeClass += " badge-hires";
+          badgeContent = "HI-RES";
+        } else if (r.quality === "LOSSLESS") {
+          badgeClass += " badge-lossless";
+          badgeContent = "LOSSLESS";
+        } else if (r.type !== "artist" && r.type !== "playlist") {
+          badgeClass += " badge-mp3";
+          badgeContent = "MP3";
         }
-        item.appendChild(badge);
       }
 
-      item.addEventListener("click", (e) => {
-        if (e.target === cb) return; // handled by checkbox itself
-        cb.checked = !cb.checked;
-        item.classList.toggle("selected", cb.checked);
+      // Metadata line (second line)
+      const metaRow = document.createElement("div");
+      metaRow.className = "result-card-meta-row";
+
+      if (r.explicit) {
+        const explicitBadge = document.createElement("span");
+        explicitBadge.className = "result-badge badge-explicit";
+        const explicitSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        explicitSvg.setAttribute("viewBox", "0 0 24 24");
+        explicitSvg.setAttribute("class", "quality-icon");
+        explicitSvg.innerHTML = `<path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path>`;
+        explicitBadge.appendChild(explicitSvg);
+        metaRow.appendChild(explicitBadge);
+      }
+
+      if (badgeContent) {
+        const badge = document.createElement("span");
+        badge.className = badgeClass;
+        if (r.badge) {
+          badge.className += " badge-neutral";
+          badge.textContent = badgeContent;
+        } else if (r.quality === "HI-RES") {
+          const icon = document.createElement("img");
+          icon.src = "/gui/hi-res.jpg";
+          icon.className = "quality-icon";
+          badge.appendChild(icon);
+        } else if (r.quality === "LOSSLESS") {
+          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          svg.setAttribute("viewBox", "0 0 32 32");
+          svg.setAttribute("class", "quality-icon");
+          svg.innerHTML = `<path d="M16 22.7368C17.8785 22.7368 19.471 22.0837 20.7773 20.7773C22.0837 19.471 22.7368 17.8785 22.7368 16C22.7368 14.1215 22.0837 12.529 20.7773 11.2227C19.471 9.91635 17.8785 9.26318 16 9.26318C14.1215 9.26318 12.529 9.91635 11.2227 11.2227C9.91635 12.529 9.26318 14.1215 9.26318 16C9.26318 17.8785 9.91635 19.471 11.2227 20.7773C12.529 22.0837 14.1215 22.7368 16 22.7368ZM16 17.6842C15.5228 17.6842 15.1228 17.5228 14.8 17.2C14.4772 16.8772 14.3158 16.4772 14.3158 16C14.3158 15.5228 14.4772 15.1228 14.8 14.8C15.1228 14.4772 15.5228 14.3158 16 14.3158C16.4772 14.3158 16.8772 14.4772 17.2 14.8C17.5228 15.1228 17.6842 15.5228 17.6842 16C17.6842 16.4772 17.5228 16.8772 17.2 17.2C16.8772 17.5228 16.4772 17.6842 16 17.6842ZM16.0028 32C13.7899 32 11.7098 31.5801 9.76264 30.7402C7.81543 29.9003 6.12164 28.7606 4.68128 27.3208C3.24088 25.8811 2.10057 24.188 1.26034 22.2417C0.420114 20.2954 0 18.2158 0 16.0028C0 13.7899 0.419931 11.7098 1.25979 9.76264C2.09965 7.81543 3.23945 6.12165 4.67917 4.68128C6.11892 3.24088 7.81196 2.10057 9.7583 1.26034C11.7046 0.420115 13.7842 0 15.9972 0C18.2101 0 20.2902 0.419933 22.2374 1.25979C24.1846 2.09966 25.8784 3.23945 27.3187 4.67917C28.7591 6.11892 29.8994 7.81197 30.7397 9.7583C31.5799 11.7046 32 13.7842 32 15.9972C32 18.2101 31.5801 20.2902 30.7402 22.2374C29.9003 24.1846 28.7606 25.8784 27.3208 27.3187C25.8811 28.7591 24.188 29.8994 22.2417 30.7397C20.2954 31.5799 18.2158 32 16.0028 32ZM16 29.4737C19.7614 29.4737 22.9474 28.1685 25.5579 25.5579C28.1685 22.9474 29.4737 19.7614 29.4737 16C29.4737 12.2386 28.1685 9.05261 25.5579 6.44208C22.9474 3.83155 19.7614 2.52628 16 2.52628C12.2386 2.52628 9.05261 3.83155 6.44208 6.44208C3.83155 9.05261 2.52628 12.2386 2.52628 16C2.52628 19.7614 3.83155 22.9474 6.44208 25.5579C9.05261 28.1685 12.2386 29.4737 16 29.4737Z" fill="white"></path>`;
+          badge.appendChild(svg);
+        } else {
+          badge.textContent = badgeContent;
+        }
+        metaRow.appendChild(badge);
+      }
+
+      // Tracks + Release Date metadata
+      let metaLine = [];
+      if (r.tracks) {
+        metaLine.push(`${r.tracks} track${r.tracks !== 1 ? 's' : ''}`);
+      }
+      if (r.release_date) {
+        const d = new Date(r.release_date + "T00:00:00");
+        const formatted = d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+        metaLine.push(formatted);
+      }
+
+      if (metaLine.length > 0) {
+        const metaText = document.createElement("span");
+        metaText.className = "result-meta-text";
+        metaText.textContent = metaLine.join(" • ");
+        metaRow.appendChild(metaText);
+      }
+
+      // Update text with clean version
+      text.textContent = cleanText;
+
+      info.appendChild(metaRow);
+
+      item.appendChild(img);
+      item.appendChild(info);
+
+      // Add "Add to Queue" button (Hover icon)
+      const addBtn = document.createElement("button");
+      addBtn.className = "result-add-btn";
+      addBtn.title = "Add to Queue";
+      addBtn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      `;
+
+      addBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (r.url) {
+          _addUrlToQueue(r.url);
+          // Visual feedback
+          addBtn.classList.add("added");
+          addBtn.innerHTML = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          `;
+          setTimeout(() => {
+            addBtn.classList.remove("added");
+            addBtn.innerHTML = `
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                    <polyline points="12 5 19 12 12 19"></polyline>
+                </svg>
+            `;
+          }, 1500);
+        }
       });
-      cb.addEventListener("change", () => {
-        item.classList.toggle("selected", cb.checked);
-      });
+
+      item.appendChild(addBtn);
 
       list.appendChild(item);
     });
   }
 
-  function downloadSelected() {
-    const urls = [];
-    document
-      .querySelectorAll(
-        "#search-results .result-item input[type='checkbox']:checked",
-      )
-      .forEach((cb) => {
-        const idx = parseInt(cb.closest(".result-item").dataset.index, 10);
-        if (_searchResults[idx]?.url) urls.push(_searchResults[idx].url);
-      });
-
-    if (!urls.length) {
-      appendLog("log-output-search", "[warn] No items selected.");
-      return;
-    }
-
-    fetch("/api/download", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ urls: urls.join("\n") }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.ok) {
-          appendLog(
-            "log-output-search",
-            `[info] Queued ${data.queued} item(s) for download…`,
-          );
-        } else {
-          appendLog("log-output-search", "[error] " + data.error);
-        }
-      })
-      .catch((e) => appendLog("log-output-search", "[error] " + e.message));
-  }
 
   async function doLucky() {
     const query = document.getElementById("search-query").value.trim();
     if (query.length < 3) {
       appendLog(
-        "log-output-search",
+        "log-output",
         "[error] Query must be at least 3 characters.",
       );
       return;
@@ -1204,26 +1377,36 @@
 
     const btn = document.getElementById("lucky-btn");
     btn.disabled = true;
+    btn.textContent = "Processing…";
 
     try {
-      const res = await fetch("/api/lucky", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, type, number }),
-      });
+      // For lucky mode, we fetch results and queue the top N
+      const res = await fetch(
+        `/api/search?q=${encodeURIComponent(query)}&type=${type}&limit=${number}`,
+      );
       const data = await res.json();
       if (!data.ok) {
-        appendLog("log-output-search", "[error] " + data.error);
+        appendLog("log-output", "[error] " + data.error);
       } else {
-        appendLog(
-          "log-output-search",
-          `[info] Lucky download started for "${query}" (${type}, top ${number})…`,
-        );
+        const results = data.results || [];
+        const toAdd = results.slice(0, number);
+        if (toAdd.length === 0) {
+          appendLog("log-output", "[warn] No lucky results found.");
+        } else {
+          toAdd.forEach((r) => {
+            if (r.url) _addUrlToQueue(r.url);
+          });
+          appendLog(
+            "log-output",
+            `[info] Queued top ${toAdd.length} result(s) for "${query}".`,
+          );
+        }
       }
     } catch (e) {
-      appendLog("log-output-search", "[error] " + e.message);
+      appendLog("log-output", "[error] " + e.message);
     } finally {
       btn.disabled = false;
+      btn.textContent = "Lucky to Queue";
     }
   }
 
@@ -1382,7 +1565,6 @@
 
   // ── Init ─────────────────────────────────────────────────
   async function init() {
-    initTabs();
     initCollapses();
     initResetButtons();
     initAuthTabs();
@@ -1415,5 +1597,47 @@
     }
   }
 
+  // ── Format field rich tooltips ─────────────────────────────
+  function initFormatTooltips() {
+    const pairs = [
+      ["folder-format-help", "folder-format-tooltip"],
+      ["track-format-help",  "track-format-tooltip"],
+    ];
+    pairs.forEach(([triggerId, tooltipId]) => {
+      const trigger = document.getElementById(triggerId);
+      const tip     = document.getElementById(tooltipId);
+      if (!trigger || !tip) return;
+
+      // Use the closest .form-group as the hover zone — it wraps both
+      // the label AND the tooltip div, so no flicker when moving between them
+      const zone = trigger.closest(".form-group");
+      if (!zone) return;
+
+      zone.addEventListener("mouseenter", () => {
+        const zoneRect = zone.getBoundingClientRect();
+        tip.style.position = "fixed";
+        tip.style.display  = "block";
+        tip.style.top      = "auto";
+
+        // Place above the form-group
+        tip.style.bottom = (window.innerHeight - zoneRect.top + 8) + "px";
+
+        // Default: right-align with the form-group's right edge
+        const rightFromEdge = window.innerWidth - zoneRect.right;
+        tip.style.right = Math.max(8, rightFromEdge) + "px";
+        tip.style.left  = "auto";
+
+        // If it would clip the left edge, pin to left instead
+        const rect = tip.getBoundingClientRect();
+        if (rect.left < 8) {
+          tip.style.right = "auto";
+          tip.style.left  = "8px";
+        }
+      });
+      zone.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", init);
+  document.addEventListener("DOMContentLoaded", initFormatTooltips);
 })();

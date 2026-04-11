@@ -19,7 +19,7 @@ class PartialFormatter(string.Formatter):
     def get_field(self, field_name, args, kwargs):
         try:
             val = super(PartialFormatter, self).get_field(field_name, args, kwargs)
-        except (KeyError, AttributeError):
+        except (KeyError, AttributeError, TypeError):
             val = None, field_name
         return val
 
@@ -119,7 +119,9 @@ def smart_discography_filter(
         return r.group(1).strip().lower()
 
     requested_artist = contents[0]["name"]
-    items = [item["albums"]["items"] for item in contents][0]
+    items = []
+    for item in contents:
+        items.extend(item["albums"]["items"])
 
     # use dicts to group duplicate albums together by title
     title_grouped = dict()

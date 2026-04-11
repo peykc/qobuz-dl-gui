@@ -70,6 +70,9 @@ class Download:
         count = 0
         meta = self.client.get_album_meta(self.item_id)
 
+        if self.cancel_event and self.cancel_event.is_set():
+            return
+
         if not meta.get("streamable"):
             raise NonStreamable("This release is not streamable")
 
@@ -103,16 +106,30 @@ class Download:
         )
         sanitized_title = sanitize_filepath(folder_format.format(**album_attr))
         dirn = os.path.join(self.path, sanitized_title)
+        
+        if self.cancel_event and self.cancel_event.is_set():
+            return
+
         os.makedirs(dirn, exist_ok=True)
 
         if self.no_cover:
             logger.info(f"{OFF}Skipping cover")
         else:
-            _get_extra(meta["image"]["large"], dirn, og_quality=self.cover_og_quality)
+            _get_extra(
+                meta["image"]["large"],
+                dirn,
+                og_quality=self.cover_og_quality,
+                cancel_event=self.cancel_event,
+            )
 
         if "goodies" in meta:
             try:
-                _get_extra(meta["goodies"][0]["url"], dirn, "booklet.pdf")
+                _get_extra(
+                    meta["goodies"][0]["url"],
+                    dirn,
+                    "booklet.pdf",
+                    cancel_event=self.cancel_event,
+                )
             except:  # noqa
                 pass
         media_numbers = [track["media_number"] for track in meta["tracks"]["items"]]
@@ -120,8 +137,8 @@ class Download:
         failed_tracks = []
         for i in meta["tracks"]["items"]:
             if self.cancel_event and self.cancel_event.is_set():
-                logger.info("Download cancelled.")
-                break
+                logger.info(f"Download cancelled. id={id(self.cancel_event)}")
+                return
             parse = self.client.get_track_url(i["id"], fmt_id=self.quality)
             if "sample" not in parse and parse["sampling_rate"]:
                 _track_name = _get_title(i)
@@ -157,6 +174,9 @@ class Download:
     def download_track(self):
         parse = self.client.get_track_url(self.item_id, self.quality)
 
+        if self.cancel_event and self.cancel_event.is_set():
+            return
+
         if "sample" not in parse and parse["sampling_rate"]:
             meta = self.client.get_track_meta(self.item_id)
             track_title = _get_title(meta)
@@ -182,6 +202,10 @@ class Download:
             sanitized_title = sanitize_filepath(folder_format.format(**track_attr))
 
             dirn = os.path.join(self.path, sanitized_title)
+
+            if self.cancel_event and self.cancel_event.is_set():
+                return
+
             os.makedirs(dirn, exist_ok=True)
             if self.no_cover:
                 logger.info(f"{OFF}Skipping cover")
@@ -217,6 +241,9 @@ class Download:
         is_mp3,
         multiple=None,
     ):
+        if self.cancel_event and self.cancel_event.is_set():
+            return
+        
         extension = ".mp3" if is_mp3 else ".flac"
 
         try:
@@ -269,7 +296,7 @@ class Download:
                         f"{YELLOW}Retrying {track_title} at quality {q} "
                         f"(original: {self.quality})..."
                     )
-                tqdm_download(url_fn, filename, filename)
+                tqdm_download(url_fn, filename, filename, cancel_event=self.cancel_event)
                 download_ok = True
                 break
             except ConnectionError as e:
@@ -337,6 +364,9 @@ class Download:
             track_dict = item_dict["tracks"]["items"][0]
 
         try:
+            if self.cancel_event and self.cancel_event.is_set():
+                return ("Unknown", True, None, None)
+                
             new_track_dict = (
                 self.client.get_track_url(track_dict["id"], fmt_id=self.quality)
                 if not track_url_dict
@@ -370,7 +400,7 @@ def _quality_fallback_chain(quality):
     return all_qualities[idx:]
 
 
-def _dl_streaming(url, fname, desc, headers):
+def _dl_streaming(url, fname, desc, headers, cancel_event=None):
     """Strategy 1: streaming download with iter_content."""
     r = requests.get(
         url,
@@ -398,6 +428,9 @@ def _dl_streaming(url, fname, desc, headers):
     ):
         written = 0
         for chunk in r.iter_content(chunk_size=1024 * 32):
+            if cancel_event and cancel_event.is_set():
+                r.close()
+                raise ConnectionAbortedError("Streaming cancelled by user.")
             if not chunk:
                 break
             size = f.write(chunk)
@@ -412,8 +445,10 @@ def _dl_streaming(url, fname, desc, headers):
     return written
 
 
-def _dl_non_streaming(url, fname, desc, headers):
+def _dl_non_streaming(url, fname, desc, headers, cancel_event=None):
     """Strategy 2: non-streaming (entire body at once, no iter_content)."""
+    if cancel_event and cancel_event.is_set():
+        return 0
     r = requests.get(
         url,
         allow_redirects=True,
@@ -434,8 +469,10 @@ def _dl_non_streaming(url, fname, desc, headers):
     return len(data)
 
 
-def _dl_urllib(url, fname, desc, headers):
+def _dl_urllib(url, fname, desc, headers, cancel_event=None):
     """Strategy 3: stdlib urllib (completely different HTTP stack)."""
+    if cancel_event and cancel_event.is_set():
+        return 0
     import urllib.request
 
     req = urllib.request.Request(url, headers=headers)
@@ -455,6 +492,8 @@ def _dl_urllib(url, fname, desc, headers):
         ):
             written = 0
             while True:
+                if cancel_event and cancel_event.is_set():
+                    raise ConnectionAbortedError("urllib cancelled by user.")
                 chunk = resp.read(1024 * 32)
                 if not chunk:
                     break
@@ -469,7 +508,7 @@ def _dl_urllib(url, fname, desc, headers):
     return written
 
 
-def tqdm_download(url_getter, fname, desc, max_retries=2):
+def tqdm_download(url_getter, fname, desc, max_retries=2, cancel_event=None):
     _UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -484,12 +523,14 @@ def tqdm_download(url_getter, fname, desc, max_retries=2):
     ]
 
     for attempt in range(max_retries):
+        if cancel_event and cancel_event.is_set():
+            return
         url = url_getter() if callable(url_getter) else url_getter
         strat_name, strat_fn = strategies[min(attempt, len(strategies) - 1)]
 
         try:
             logger.debug(f"[dl] attempt {attempt} strategy={strat_name}")
-            strat_fn(url, fname, desc, headers)
+            strat_fn(url, fname, desc, headers, cancel_event=cancel_event)
             return  # Success
         except Exception as e:
             logger.debug(f"[dl] {strat_name} failed: {type(e).__name__}: {e}")
@@ -526,7 +567,9 @@ def _get_title(item_dict):
     return album_title
 
 
-def _get_extra(item, dirn, extra="cover.jpg", og_quality=False):
+def _get_extra(item, dirn, extra="cover.jpg", og_quality=False, cancel_event=None):
+    if cancel_event and cancel_event.is_set():
+        return
     extra_file = os.path.join(dirn, extra)
     if os.path.isfile(extra_file):
         logger.info(f"{OFF}{extra} was already downloaded")
@@ -535,6 +578,7 @@ def _get_extra(item, dirn, extra="cover.jpg", og_quality=False):
         item.replace("_600.", "_org.") if og_quality else item,
         extra_file,
         extra,
+        cancel_event=cancel_event,
     )
 
 

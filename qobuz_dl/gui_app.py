@@ -1,10 +1,11 @@
+import sys
+import os
+
 import configparser
 import hashlib
 import logging
-import os
 import queue
 import re
-import sys
 import threading
 import time
 import webbrowser
@@ -89,6 +90,11 @@ def _emit_event(event_data: dict):
                 pass
 
 
+# Inject into core to allow it to update the UI
+import qobuz_dl.core
+qobuz_dl.core.ui_emitter = _emit_event
+
+
 # ---------------------------------------------------------------------------
 # QobuzDL client singleton
 # ---------------------------------------------------------------------------
@@ -139,7 +145,7 @@ def _build_qobuz_from_config(cfg, overrides=None):
         fallback="{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
     )
     track_format = o.get("track_format") or cfg.get(
-        "DEFAULT", "track_format", fallback="{tracknumber}. {tracktitle}"
+        "DEFAULT", "track_format", fallback="{tracknumber} - {tracktitle}"
     )
 
     qobuz = QobuzDL(
@@ -631,7 +637,11 @@ def api_resolve():
                 "cover": meta.get("image", {}).get("large", ""),
                 "tracks": meta.get("tracks_count", 0),
                 "year": (meta.get("release_date_original") or "")[:4],
+                "release_date": meta.get("release_date_original", ""),
+                "bit_depth": meta.get("maximum_bit_depth"),
+                "sample_rate": meta.get("maximum_sampling_rate"),
                 "quality": f"{meta.get('maximum_bit_depth', '?')}bit / {meta.get('maximum_sampling_rate', '?')}kHz",
+                "explicit": bool(meta.get("parental_warning") or meta.get("explicit")),
                 "url": url,
             }
         elif url_type == "track":
@@ -648,12 +658,19 @@ def api_resolve():
                 "url": url,
             }
         elif url_type == "artist":
-            meta = qobuz.client.api_call("artist/get", id=item_id)
+            meta = qobuz.client.api_call("artist/get", id=item_id, offset=0)
+            if not meta:
+                return jsonify({"ok": False, "error": "Artist metadata not found"}), 404
+            
+            # Safely resolve image
+            image = meta.get("image") or {}
+            cover = image.get("large") or meta.get("picture_large") or meta.get("picture") or image.get("medium") or ""
+            
             result = {
                 "type": "artist",
                 "title": meta.get("name", ""),
                 "artist": meta.get("name", ""),
-                "cover": meta.get("image", {}).get("large", meta.get("picture", "")),
+                "cover": cover,
                 "albums": meta.get("albums_count", 0),
                 "url": url,
             }
@@ -681,6 +698,87 @@ def api_resolve():
         return jsonify({"ok": True, "result": result})
     except Exception as e:
         logging.error(f"Resolve failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+
+# ---------------------------------------------------------------------------
+# API: check_discography (async deep resolution for artists)
+# ---------------------------------------------------------------------------
+@app.route("/api/check_discography", methods=["POST"])
+def api_check_discography():
+    qobuz = _get_qobuz()
+    if not qobuz or not qobuz.client:
+        return jsonify({"ok": False, "error": "Not connected."}), 400
+
+    data = request.json or {}
+    url = data.get("url", "")
+    try:
+        from qobuz_dl.core import get_url_info
+        from qobuz_dl.utils import smart_discography_filter
+        
+        url_type, item_id = get_url_info(url)
+        if url_type != "artist":
+            return jsonify({"ok": False, "error": "URL is not an artist"}), 400
+
+        content = list(qobuz.client.get_artist_meta(item_id))
+        
+        # Calculate raw counts
+        all_albums_raw = []
+        raw_albums = 0
+        raw_tracks = 0
+        for item in content:
+            albums_chunk = item.get("albums", {}).get("items", [])
+            all_albums_raw.extend(albums_chunk)
+            raw_albums += len(albums_chunk)
+            for album in albums_chunk:
+                raw_tracks += album.get("tracks_count", 0)
+
+        if all_albums_raw:
+            print(f"ALBUM DUMP [{all_albums_raw[0].get('title')}]: {all_albums_raw[0]}", flush=True)
+                
+        def calc_stats(album_list):
+            return len(album_list), sum(a.get("tracks_count", 0) for a in album_list)
+
+        # 1. Smart Discography (SD) items
+        sd_items = smart_discography_filter(content, save_space=True, skip_extras=True)
+        sd_albums, sd_tracks = calc_stats(sd_items)
+
+        # 2. Albums Only (AO) items
+        ao_items = [
+            a for a in all_albums_raw 
+            if a.get("release_type") == "album" and a.get("artist", {}).get("name") != "Various Artists"
+        ]
+        ao_albums, ao_tracks = calc_stats(ao_items)
+
+        # 3. Both (SD + AO) items
+        # Just run the AO filter on the sd_items since they compound cleanly
+        both_items = [
+            a for a in sd_items 
+            if a.get("release_type") == "album" and a.get("artist", {}).get("name") != "Various Artists"
+        ]
+        both_albums, both_tracks = calc_stats(both_items)
+
+        return jsonify({
+            "ok": True, 
+            "result": {
+                "raw_albums": raw_albums,
+                "raw_tracks": raw_tracks,
+                "sd_filtered_albums": sd_albums,
+                "sd_filtered_tracks": sd_tracks,
+                "ao_filtered_albums": ao_albums,
+                "ao_filtered_tracks": ao_tracks,
+                "both_filtered_albums": both_albums,
+                "both_filtered_tracks": both_tracks,
+                "diff_sd": raw_albums - sd_albums,
+                "diff_ao": raw_albums - ao_albums,
+                "diff_both": raw_albums - both_albums
+            }
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        logging.error(f"check_discography failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
@@ -729,6 +827,7 @@ def api_download():
             tmp = _build_qobuz_from_config(cfg, overrides)
             with _client_lock:
                 tmp.client = qobuz.client
+            print(f"DEBUG: Worker thread starting. cancel_event id={id(_cancel_download)}")
             tmp.cancel_event = _cancel_download
             logging.info(f"Starting download of {len(urls)} URL(s)…")
             for url in urls:
@@ -772,8 +871,32 @@ def api_download():
 @app.route("/api/cancel", methods=["POST"])
 def api_cancel():
     if _download_active:
+        print(f"DEBUG: api_cancel hit. setting id={id(_cancel_download)}")
+        sys.stdout.flush()
         _cancel_download.set()
         logging.info("Cancelling — current item will finish then stop…")
+        
+        def purge():
+            with _log_lock:
+                for q in _log_queues:
+                    while not q.empty():
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            break
+        
+        # Immediate purge
+        purge()
+        
+        # Second purge after a small delay to catch any lingering logs from the worker thread
+        def delayed_purge():
+            time.sleep(0.5)
+            purge()
+            # Emit final status
+            _emit_event({"type": "dl_complete", "cancelled": True})
+            
+        threading.Thread(target=delayed_purge, daemon=True).start()
+        
     return jsonify({"ok": True})
 
 
@@ -797,7 +920,10 @@ def api_search():
         results = qobuz.search_by_type(query, item_type, limit)
         return jsonify({"ok": True, "results": results or []})
     except Exception as e:
+        logging.error(f"Search error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +950,7 @@ def api_lucky():
             tmp = _build_qobuz_from_config(cfg)
             with _client_lock:
                 tmp.client = qobuz.client
+            tmp.cancel_event = _cancel_download
             tmp.lucky_type = lucky_type
             tmp.lucky_limit = number
             logging.info(f'Lucky download: "{query}" ({lucky_type}, top {number})')
@@ -892,10 +1019,10 @@ def api_stream():
     )
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
+def main():
+    """Entry point for the console script."""
+    global _qobuz_client
+    
     os.makedirs(CONFIG_PATH, exist_ok=True)
     print("=" * 60)
     print("  Qobuz-DL GUI  —  http://127.0.0.1:5000")
@@ -936,4 +1063,13 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  Could not auto-connect: {e}")
     print("=" * 60)
+
+    def open_browser():
+        time.sleep(5)
+        webbrowser.open("http://127.0.0.1:5000")
+
+    threading.Thread(target=open_browser, daemon=True).start()
     app.run(debug=False, threaded=True, port=5000)
+
+if __name__ == "__main__":
+    main()

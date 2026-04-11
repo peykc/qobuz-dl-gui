@@ -40,6 +40,10 @@ QUALITIES = {
 logger = logging.getLogger(__name__)
 
 
+import sys
+# Placeholder for the UI emitter, injected by gui_app.py
+ui_emitter = None
+
 class QobuzDL:
     def __init__(
         self,
@@ -74,6 +78,9 @@ class QobuzDL:
         self.folder_format = folder_format
         self.track_format = track_format
         self.smart_discography = smart_discography
+        logger.info("[debug] Using local core.py with cancellation fixes.")
+        print(f"DEBUG: QobuzDL init. self.cancel_event id={id(self.cancel_event) if hasattr(self, 'cancel_event') else 'N/A'}")
+        sys.stdout.flush()
         self.cancel_event = None  # set by gui_app to allow inter-track cancellation
 
     def initialize_client(self, email, pwd, app_id, secrets):
@@ -115,6 +122,10 @@ class QobuzDL:
         self.private_key = bundle.get_private_key() or ""
 
     def download_from_id(self, item_id, album=True, alt_path=None):
+        if self.cancel_event and self.cancel_event.is_set():
+            return
+        print(f"DEBUG: download_from_id checking id={id(self.cancel_event)} set={self.cancel_event.is_set()}")
+        sys.stdout.flush()
         if handle_download_id(self.downloads_db, item_id, add_id=False):
             logger.info(
                 f"{OFF}This release ID ({item_id}) was already downloaded "
@@ -168,6 +179,8 @@ class QobuzDL:
             )
             return
         if type_dict["func"]:
+            if self.cancel_event and self.cancel_event.is_set():
+                return
             content = [item for item in type_dict["func"](item_id)]
             content_name = content[0]["name"]
             logger.info(
@@ -185,17 +198,25 @@ class QobuzDL:
                     skip_extras=True,
                 )
             else:
-                items = [item[type_dict["iterable_key"]]["items"] for item in content][
-                    0
-                ]
+                items = []
+                for item in content:
+                    items.extend(item[type_dict["iterable_key"]]["items"])
 
             logger.info(f"{YELLOW}{len(items)} downloads in queue")
+            if ui_emitter:
+                ui_emitter({"type": "total_tracks", "count": len(items)})
+
             for item in items:
+                if self.cancel_event and self.cancel_event.is_set():
+                    logger.info(f"{OFF}Artist/Playlist download stopped. id={id(self.cancel_event)}")
+                    break
                 self.download_from_id(
                     item["id"],
                     True if type_dict["iterable_key"] == "albums" else False,
                     new_path,
                 )
+                if self.cancel_event and self.cancel_event.is_set():
+                    break
             if url_type == "playlist" and not self.no_m3u_for_playlists:
                 make_m3u(new_path)
         else:
@@ -369,20 +390,58 @@ class QobuzDL:
         try:
             mode_dict = possibles[item_type]
             results = mode_dict["func"](query, limit)
-            iterable = results[mode_dict["key"]]["items"]
+            iterable = (results.get(mode_dict["key"]) or {}).get("items") or []
             item_list = []
             for i in iterable:
+                if not i or not isinstance(i, dict):
+                    continue
                 fmt = PartialFormatter()
                 text = fmt.format(mode_dict["format"], **i)
-                if mode_dict["requires_extra"]:
-                    text = "{} - {} [{}]".format(
-                        text,
-                        format_duration(i["duration"]),
-                        "HI-RES" if i["hires_streamable"] else "LOSSLESS",
-                    )
+                badge_text = None
 
+                if item_type == "artist":
+                    text = i.get("name", "Unknown Artist")
+                    badge_text = "RELEASES: {}".format(i.get("albums_count", 0))
+                elif item_type == "playlist":
+                    text = i.get("name", "Unknown Playlist")
+                    badge_text = "TRACKS: {}".format(i.get("tracks_count", 0))
+
+                quality = None
+                if mode_dict["requires_extra"]:
+                    duration = i.get("duration", 0) or 0
+                    quality = "HI-RES" if i.get("hires_streamable") else "LOSSLESS"
+                    # Duration and tracks will be handled separately in the GUI
+                
                 url = "{}{}/{}".format(WEB_URL, item_type, i.get("id", ""))
-                item_list.append({"text": text, "url": url} if not lucky else url)
+                
+                # Extract cover image with absolute safety
+                cover = ""
+                if item_type == "playlist":
+                    covers = i.get("images300") or []
+                    if covers and isinstance(covers, list) and len(covers) > 0:
+                        cover = covers[0]
+                elif item_type == "artist":
+                    picture = i.get("picture")
+                    image_large = (i.get("image") or {}).get("large")
+                    cover = picture or image_large or ""
+                elif item_type == "track":
+                    album = i.get("album") or {}
+                    image = album.get("image") or {}
+                    cover = image.get("large") or image.get("medium") or ""
+                else: # album
+                    cover = (i.get("image") or {}).get("large") or ""
+
+                item_list.append({
+                    "text": text,
+                    "url": url,
+                    "cover": cover,
+                    "type": item_type,
+                    "badge": badge_text,
+                    "quality": quality,
+                    "explicit": bool(i.get("parental_warning") or i.get("parental_advisory") or i.get("explicit")),
+                    "release_date": i.get("release_date_original") or i.get("release_date_stream"),
+                    "tracks": i.get("tracks_count")
+                } if not lucky else url)
             return item_list
         except (KeyError, IndexError):
             logger.info(f"{RED}Invalid type: {item_type}")
