@@ -69,7 +69,7 @@ For power users who prefer the terminal or want to automate downloads via script
 ### Support the Project
 
 **Donate to GUI dev (Monero)**
-[![Donate Monero](https://img.shields.io/badge/Donate-Monero-orange.svg)](https://peykc.github.io/pktree)
+[![Donate Monero](https://img.shields.io/badge/Donate-Monero-orange.svg)](https://peykc.github.io/pktree/?pay=monero)
 
 
 **Donate to CLI dev (PayPal)**
