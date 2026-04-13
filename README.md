@@ -1,6 +1,6 @@
 # Qobuz-DL: The Modern Music Experience
 
-![Qobuz-DL GUI Hero](C:/Users/peyto/.gemini/antigravity/brain/7a7177d4-39b8-43fb-b2d3-8f9934e90ba7/qobuz_dl_gui_hero_1775882161603.png)
+![Qobuz-DL GUI — search, queue, and download](assets/main.gif)
 
 ### Search, explore, and download Lossless and Hi-Res music from Qobuz with a beautiful, high-density interface.
 
@@ -17,31 +17,54 @@ This fork of **qobuz-dl** transforms the reliable downloader into a premium desk
 *   **Native OAuth Support**: Seamlessly login using the official Qobuz website—no more manual token digging.
 *   **Pro Configuration**: Manage your naming templates (Folder/Track) with interactive tooltips and instant examples.
 
+### Lucky queue
+
+Pick how many releases you want and add a random selection straight to the download queue—then start the download when you’re ready.
+
+![Lucky to queue and download](assets/lucky.gif)
+
+### Drag URLs from Qobuz
+
+Drag album or track links from the Qobuz web player into the app to paste them into the URL list—no copy-paste needed.
+
+![Drag URLs from Qobuz into the app](assets/drag.gif)
+
 ---
 
 ## Getting Started
 
 ### 1. Installation
-Install the package and its requirements via pip:
+Install the package and its requirements via pip (from PyPI or your fork):
 
 ```bash
 pip install --upgrade qobuz-dl
 ```
 
+Or install from this repository:
+
+```bash
+pip install git+https://github.com/peykc/qobuz-dl-gui.git
+```
+
 ### 2. Launch the Interface
 **Windows:**
-Simply run the included `launch_gui.bat` or type:
+Run the included `launch_gui.bat` or:
+
 ```bash
 qobuz-dl-gui
 ```
 
 **Linux / macOS:**
-Run the included `launch_gui.sh` or type:
+
 ```bash
+./launch_gui.sh
+# or
 qobuz-dl-gui
 ```
 
-The app will automatically open your browser to `http://127.0.0.1:5000`.
+The GUI runs as a **desktop window** (via [pywebview](https://github.com/r0x0r/pywebview); on Windows this uses **Edge WebView2**). If you set the environment variable `QOBUZ_DL_GUI_BROWSER=1`, the app opens in your **system browser** at `http://127.0.0.1` on a local port instead.
+
+**Windows portable build:** Download `Qobuz-DL-GUI.exe` from [Releases](https://github.com/peykc/qobuz-dl-gui/releases) (no Python required). You need the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if it is not already installed.
 
 ---
 
