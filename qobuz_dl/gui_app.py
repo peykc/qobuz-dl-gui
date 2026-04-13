@@ -8,6 +8,7 @@ import queue
 import re
 import threading
 import time
+import socket
 import webbrowser
 
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -24,7 +25,21 @@ CONFIG_PATH = os.path.join(OS_CONFIG, "qobuz-dl")
 CONFIG_FILE = os.path.join(CONFIG_PATH, "config.ini")
 QOBUZ_DB = os.path.join(CONFIG_PATH, "qobuz_dl.db")
 
-GUI_DIR = os.path.join(os.path.dirname(__file__), "gui")
+
+def _gui_static_dir():
+    """Resolve bundled `gui/` for PyInstaller onefile/onedir and normal installs."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    gui = os.path.join(base, "gui")
+    if os.path.isdir(gui):
+        return gui
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        alt = os.path.join(sys._MEIPASS, "qobuz_dl", "gui")
+        if os.path.isdir(alt):
+            return alt
+    return gui
+
+
+GUI_DIR = _gui_static_dir()
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -142,7 +157,7 @@ def _build_qobuz_from_config(cfg, overrides=None):
     folder_format = o.get("folder_format") or cfg.get(
         "DEFAULT",
         "folder_format",
-        fallback="{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
+        fallback="{artist}/{album}",
     )
     track_format = o.get("track_format") or cfg.get(
         "DEFAULT", "track_format", fallback="{tracknumber} - {tracktitle}"
@@ -206,15 +221,62 @@ def api_status():
                 "smart_discography": cfg["DEFAULT"].get("smart_discography", "false"),
                 "folder_format": cfg["DEFAULT"].get(
                     "folder_format",
-                    "{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
+                    "{artist}/{album}",
                 ),
                 "track_format": cfg["DEFAULT"].get(
-                    "track_format", "{tracknumber}. {tracktitle}"
+                    "track_format", "{tracknumber} - {tracktitle}"
                 ),
             }
         except Exception:
             pass
-    return jsonify({"has_config": has_config, "ready": ready, "config": config_data})
+    from qobuz_dl.version import __version__ as app_ver
+
+    return jsonify(
+        {
+            "has_config": has_config,
+            "ready": ready,
+            "config": config_data,
+            "app_version": app_ver,
+            "frozen": getattr(sys, "frozen", False),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# API: updates (GitHub Releases)
+# ---------------------------------------------------------------------------
+@app.route("/api/update/check")
+def api_update_check():
+    from qobuz_dl import updater
+
+    force = request.args.get("force") == "1"
+    return jsonify(updater.check_for_update(CONFIG_PATH, force=force))
+
+
+@app.route("/api/update/install", methods=["POST"])
+def api_update_install():
+    from qobuz_dl import updater
+    from qobuz_dl.version import GITHUB_RELEASE_REPO
+
+    data = request.json or {}
+    url = (data.get("download_url") or "").strip()
+    if not updater.is_safe_release_asset_url(url, GITHUB_RELEASE_REPO.strip()):
+        return jsonify({"ok": False, "error": "Invalid or untrusted download URL"}), 400
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Automatic install is only available for the Windows portable EXE.",
+            }
+        ), 400
+    try:
+        path = updater.download_update_to_temp(url)
+    except Exception as e:
+        logging.error("Update download failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    updater.schedule_apply_update(path)
+    return jsonify({"ok": True, "restarting": True})
 
 
 # ---------------------------------------------------------------------------
@@ -259,10 +321,8 @@ def api_setup():
         cfg["DEFAULT"]["private_key"] = bundle.get_private_key() or ""
         cfg["DEFAULT"]["user_id"] = ""
         cfg["DEFAULT"]["user_auth_token"] = ""
-        cfg["DEFAULT"]["folder_format"] = (
-            "{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
-        )
-        cfg["DEFAULT"]["track_format"] = "{tracknumber}. {tracktitle}"
+        cfg["DEFAULT"]["folder_format"] = "{artist}/{album}"
+        cfg["DEFAULT"]["track_format"] = "{tracknumber} - {tracktitle}"
         cfg["DEFAULT"]["smart_discography"] = "false"
 
         with open(CONFIG_FILE, "w") as f:
@@ -459,8 +519,8 @@ def api_oauth_start():
                             "embed_art": "false",
                             "no_cover": "false",
                             "no_database": "true",
-                            "folder_format": "{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
-                            "track_format": "{tracknumber}. {tracktitle}",
+                            "folder_format": "{artist}/{album}",
+                            "track_format": "{tracknumber} - {tracktitle}",
                             "smart_discography": "false",
                         }
                         cfg_write["DEFAULT"][key] = defaults.get(key, "")
@@ -529,10 +589,8 @@ def api_token_login():
         cfg["DEFAULT"]["app_id"] = app_id
         cfg["DEFAULT"]["secrets"] = ",".join(secrets_list)
         cfg["DEFAULT"]["private_key"] = private_key
-        cfg["DEFAULT"]["folder_format"] = (
-            "{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
-        )
-        cfg["DEFAULT"]["track_format"] = "{tracknumber}. {tracktitle}"
+        cfg["DEFAULT"]["folder_format"] = "{artist}/{album}"
+        cfg["DEFAULT"]["track_format"] = "{tracknumber} - {tracktitle}"
         cfg["DEFAULT"]["smart_discography"] = "false"
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)
@@ -1019,14 +1077,35 @@ def api_stream():
     )
 
 
+def _pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 20.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.4):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise RuntimeError(f"Server did not accept connections on {host}:{port}")
+
+
 def main():
     """Entry point for the console script."""
     global _qobuz_client
-    
+
     os.makedirs(CONFIG_PATH, exist_ok=True)
-    print("=" * 60)
-    print("  Qobuz-DL GUI  —  http://127.0.0.1:5000")
-    print("=" * 60)
+    try:
+        from qobuz_dl import updater
+
+        updater.cleanup_stale_exe_backup()
+    except Exception:
+        pass
+    logging.info("Qobuz-DL GUI starting…")
 
     # Auto-connect if config already exists
     if os.path.isfile(CONFIG_FILE):
@@ -1050,26 +1129,73 @@ def main():
                 qobuz.initialize_client_with_token(
                     user_id, user_auth_token, app_id, secrets_list
                 )
-                print("  Auto-connected via saved OAuth token.")
+                logging.info("Auto-connected via saved OAuth token.")
             elif email and password:
                 qobuz.initialize_client(email, password, app_id, secrets_list)
-                print("  Auto-connected from saved email/password config.")
+                logging.info("Auto-connected from saved email/password config.")
             else:
-                print("  Config found but no credentials — please connect via the GUI.")
+                logging.info(
+                    "Config found but no credentials — connect via the GUI."
+                )
                 qobuz = None
 
             if qobuz:
                 _qobuz_client = qobuz
         except Exception as e:
-            print(f"  Could not auto-connect: {e}")
-    print("=" * 60)
+            logging.info("Could not auto-connect: %s", e)
 
-    def open_browser():
-        time.sleep(5)
-        webbrowser.open("http://127.0.0.1:5000")
+    port = _pick_free_port()
+    url = f"http://127.0.0.1:{port}/"
 
-    threading.Thread(target=open_browser, daemon=True).start()
-    app.run(debug=False, threaded=True, port=5000)
+    def run_flask():
+        app.run(
+            host="127.0.0.1",
+            port=port,
+            debug=False,
+            threaded=True,
+            use_reloader=False,
+        )
+
+    def open_browser_soon():
+        time.sleep(0.4)
+        webbrowser.open(url)
+
+    use_browser = os.environ.get("QOBUZ_DL_GUI_BROWSER", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    if use_browser:
+        logging.info("Using system browser (QOBUZ_DL_GUI_BROWSER is set).")
+        threading.Thread(target=open_browser_soon, daemon=True).start()
+        run_flask()
+        return
+
+    try:
+        import webview
+    except ImportError:
+        logging.error(
+            "pywebview is not installed; open %s in a browser or: pip install pywebview",
+            url,
+        )
+        threading.Thread(target=open_browser_soon, daemon=True).start()
+        run_flask()
+        return
+
+    threading.Thread(target=run_flask, daemon=True).start()
+    _wait_for_port("127.0.0.1", port)
+
+    webview.create_window(
+        "Qobuz-DL",
+        url,
+        width=1280,
+        height=800,
+        min_size=(880, 600),
+        text_select=True,
+    )
+    webview.start(debug=False)
+    os._exit(0)
 
 if __name__ == "__main__":
     main()

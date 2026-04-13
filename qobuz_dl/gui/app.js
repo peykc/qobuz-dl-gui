@@ -1422,12 +1422,11 @@
       setValue("cfg-quality", cfg.default_quality || "6");
       setValue(
         "cfg-folder-format",
-        cfg.folder_format ||
-          "{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
+        cfg.folder_format || "{artist}/{album}",
       );
       setValue(
         "cfg-track-format",
-        cfg.track_format || "{tracknumber}. {tracktitle}",
+        cfg.track_format || "{tracknumber} - {tracktitle}",
       );
       setCheck("cfg-embed-art", cfg.embed_art === "true");
       setCheck("cfg-og-cover", cfg.og_cover === "true");
@@ -1463,6 +1462,110 @@
   function setCheck(id, val) {
     const el = document.getElementById(id);
     if (el) el.checked = val;
+  }
+
+  let _updateInfo = null;
+
+  function initUpdateBanner() {
+    const banner = document.getElementById("update-banner");
+    const installBtn = document.getElementById("update-banner-install");
+    const dismissBtn = document.getElementById("update-banner-dismiss");
+    if (!banner || !installBtn || !dismissBtn) return;
+
+    dismissBtn.addEventListener("click", () => {
+      if (_updateInfo && _updateInfo.latest_version) {
+        try {
+          sessionStorage.setItem(
+            "qobuz-dl-update-dismiss",
+            String(_updateInfo.latest_version),
+          );
+        } catch (e) {
+          /* ignore */
+        }
+      }
+      banner.classList.add("hidden");
+    });
+
+    installBtn.addEventListener("click", async () => {
+      if (!_updateInfo || !_updateInfo.download_url) return;
+      installBtn.disabled = true;
+      const prev = installBtn.textContent;
+      installBtn.textContent = "Downloading…";
+      try {
+        const res = await fetch("/api/update/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ download_url: _updateInfo.download_url }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Install failed");
+        installBtn.textContent = "Restarting…";
+      } catch (e) {
+        alert(e.message);
+        installBtn.disabled = false;
+        installBtn.textContent = prev;
+      }
+    });
+  }
+
+  async function fetchUpdateCheck(force) {
+    const q = force ? "?force=1" : "";
+    const res = await fetch("/api/update/check" + q);
+    return await res.json();
+  }
+
+  function showUpdateBannerIfNeeded(data) {
+    const banner = document.getElementById("update-banner");
+    const textEl = document.getElementById("update-banner-text");
+    const installBtn = document.getElementById("update-banner-install");
+    const linkEl = document.getElementById("update-banner-link");
+    if (!banner || !textEl || !installBtn || !linkEl) return;
+    _updateInfo = data;
+    if (!data || !data.update_available) {
+      banner.classList.add("hidden");
+      return;
+    }
+    try {
+      const dismissed = sessionStorage.getItem("qobuz-dl-update-dismiss");
+      if (dismissed && dismissed === String(data.latest_version)) {
+        banner.classList.add("hidden");
+        return;
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    let msg =
+      "Version " +
+      data.latest_version +
+      " is available (you have " +
+      data.current_version +
+      ").";
+    if (!data.download_url) {
+      msg += " Download the new build from the release page.";
+    }
+    textEl.textContent = msg;
+    if (data.release_page) {
+      linkEl.href = data.release_page;
+      linkEl.classList.remove("hidden");
+    } else {
+      linkEl.classList.add("hidden");
+    }
+    if (data.can_auto_install && data.download_url) {
+      installBtn.classList.remove("hidden");
+    } else {
+      installBtn.classList.add("hidden");
+    }
+    banner.classList.remove("hidden");
+  }
+
+  async function refreshUpdateCheck(force) {
+    try {
+      const data = await fetchUpdateCheck(force);
+      showUpdateBannerIfNeeded(data);
+      return data;
+    } catch (e) {
+      return null;
+    }
   }
 
   function initSettings() {
@@ -1534,6 +1637,40 @@
       }
     });
 
+    const checkUpdBtn = document.getElementById("settings-check-updates-btn");
+    const updFeedback = document.getElementById("settings-update-feedback");
+    if (checkUpdBtn && updFeedback) {
+      checkUpdBtn.addEventListener("click", async () => {
+        checkUpdBtn.disabled = true;
+        updFeedback.className = "feedback-msg hidden";
+        try {
+          const data = await refreshUpdateCheck(true);
+          if (!data) throw new Error("Network error");
+          if (data.skipped && data.reason === "repo_not_configured") {
+            showFeedback(
+              updFeedback,
+              "Update source not configured (see qobuz_dl/version.py).",
+              false,
+            );
+          } else if (!data.ok) {
+            showFeedback(updFeedback, data.error || "Check failed", false);
+          } else if (data.update_available) {
+            showFeedback(
+              updFeedback,
+              "Update available: v" + data.latest_version,
+              true,
+            );
+          } else {
+            showFeedback(updFeedback, "You're on the latest version.", true);
+          }
+        } catch (e) {
+          showFeedback(updFeedback, e.message || "Check failed", false);
+        } finally {
+          checkUpdBtn.disabled = false;
+        }
+      });
+    }
+
     // ── Purge database ────────────────────────────────────────
     document
       .getElementById("settings-purge-btn")
@@ -1573,6 +1710,7 @@
     initDownload();
     initSearch();
     initSettings();
+    initUpdateBanner();
 
     const status = await checkStatus();
     if (status && (status.ready || status.has_config)) {
@@ -1592,49 +1730,133 @@
         }
       }
       await loadSettingsIntoForm();
+      refreshUpdateCheck(false);
     } else {
       showSetup();
     }
   }
 
-  // ── Format field rich tooltips ─────────────────────────────
+  // ── Format field help panels (click ⓘ to open; click out to close) ──
   function initFormatTooltips() {
+    let openTip = null;
+
+    function positionFormatTooltip(tip, anchorEl) {
+      const zone = anchorEl.closest(".form-group");
+      if (!zone) return;
+      const zoneRect = zone.getBoundingClientRect();
+      tip.style.position = "fixed";
+      tip.style.display = "block";
+      tip.style.top = "auto";
+      tip.style.bottom = window.innerHeight - zoneRect.top + 8 + "px";
+      const rightFromEdge = window.innerWidth - zoneRect.right;
+      tip.style.right = Math.max(8, rightFromEdge) + "px";
+      tip.style.left = "auto";
+      const rect = tip.getBoundingClientRect();
+      if (rect.left < 8) {
+        tip.style.right = "auto";
+        tip.style.left = "8px";
+      }
+    }
+
+    function resetFormatPreview(tip) {
+      const preview = tip.querySelector(".fmt-preview-output");
+      if (!preview) return;
+      const ph = preview.dataset.placeholder || "Hover a template below";
+      preview.textContent = ph;
+      preview.classList.add("fmt-preview-placeholder");
+    }
+
+    function closeAllFormatTips() {
+      if (!openTip) return;
+      openTip.style.display = "none";
+      resetFormatPreview(openTip);
+      const prevId =
+        openTip.id === "folder-format-tooltip"
+          ? "folder-format-help"
+          : "track-format-help";
+      const prevTrigger = document.getElementById(prevId);
+      if (prevTrigger) {
+        prevTrigger.classList.remove("active");
+        prevTrigger.setAttribute("aria-expanded", "false");
+      }
+      openTip = null;
+    }
+
+    function bindTemplatePreviews(tip) {
+      const preview = tip.querySelector(".fmt-preview-output");
+      const container = tip.querySelector(".fmt-templates");
+      if (!preview || !container) return;
+      const placeholder =
+        preview.dataset.placeholder || "Hover a template below";
+
+      container.querySelectorAll(".fmt-template-chip").forEach((chip) => {
+        chip.addEventListener("mouseenter", () => {
+          const text = chip.getAttribute("data-preview");
+          if (!text) return;
+          preview.textContent = text;
+          preview.classList.remove("fmt-preview-placeholder");
+        });
+      });
+      container.addEventListener("mouseleave", () => {
+        preview.textContent = placeholder;
+        preview.classList.add("fmt-preview-placeholder");
+      });
+    }
+
     const pairs = [
       ["folder-format-help", "folder-format-tooltip"],
-      ["track-format-help",  "track-format-tooltip"],
+      ["track-format-help", "track-format-tooltip"],
     ];
+
     pairs.forEach(([triggerId, tooltipId]) => {
       const trigger = document.getElementById(triggerId);
-      const tip     = document.getElementById(tooltipId);
+      const tip = document.getElementById(tooltipId);
       if (!trigger || !tip) return;
 
-      // Use the closest .form-group as the hover zone — it wraps both
-      // the label AND the tooltip div, so no flicker when moving between them
-      const zone = trigger.closest(".form-group");
-      if (!zone) return;
+      bindTemplatePreviews(tip);
 
-      zone.addEventListener("mouseenter", () => {
-        const zoneRect = zone.getBoundingClientRect();
-        tip.style.position = "fixed";
-        tip.style.display  = "block";
-        tip.style.top      = "auto";
+      function toggleFromTrigger(e) {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const wasOpen = openTip === tip && tip.style.display === "block";
+        closeAllFormatTips();
+        if (!wasOpen) {
+          positionFormatTooltip(tip, trigger);
+          openTip = tip;
+          trigger.classList.add("active");
+          trigger.setAttribute("aria-expanded", "true");
+        }
+      }
 
-        // Place above the form-group
-        tip.style.bottom = (window.innerHeight - zoneRect.top + 8) + "px";
-
-        // Default: right-align with the form-group's right edge
-        const rightFromEdge = window.innerWidth - zoneRect.right;
-        tip.style.right = Math.max(8, rightFromEdge) + "px";
-        tip.style.left  = "auto";
-
-        // If it would clip the left edge, pin to left instead
-        const rect = tip.getBoundingClientRect();
-        if (rect.left < 8) {
-          tip.style.right = "auto";
-          tip.style.left  = "8px";
+      trigger.addEventListener("click", toggleFromTrigger);
+      trigger.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleFromTrigger(e);
         }
       });
-      zone.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!openTip) return;
+      if (openTip.contains(e.target)) return;
+      const triggers = pairs
+        .map(([id]) => document.getElementById(id))
+        .filter(Boolean);
+      if (triggers.some((t) => t.contains(e.target))) return;
+      closeAllFormatTips();
+    });
+
+    window.addEventListener("resize", () => {
+      if (!openTip) return;
+      const tid =
+        openTip.id === "folder-format-tooltip"
+          ? "folder-format-help"
+          : "track-format-help";
+      const tr = document.getElementById(tid);
+      if (tr) positionFormatTooltip(openTip, tr);
     });
   }
 

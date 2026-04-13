@@ -25,7 +25,7 @@ DEFAULT_FORMATS = {
     ],
 }
 
-DEFAULT_FOLDER = "{artist}/{album} ({year})"
+DEFAULT_FOLDER = "{artist}/{album}"
 DEFAULT_TRACK = "{tracknumber} - {tracktitle}"
 
 logger = logging.getLogger(__name__)

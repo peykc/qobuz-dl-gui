@@ -71,6 +71,73 @@ body {
 }
 
 /* ============================================================
+   UPDATE BANNER (GitHub releases)
+   ============================================================ */
+.update-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 998;
+    background: linear-gradient(90deg, rgba(45, 120, 90, 0.95), rgba(30, 85, 65, 0.98));
+    border-bottom: 1px solid rgba(77, 255, 145, 0.25);
+    padding: 10px 16px;
+    font-size: 12px;
+    color: #e8fff0;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.update-banner-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px 16px;
+}
+
+.update-banner-text {
+    flex: 1 1 200px;
+    line-height: 1.45;
+}
+
+.update-banner-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.update-banner .btn-sm {
+    font-size: 11px;
+    padding: 5px 12px;
+}
+
+.update-banner .btn-primary.btn-sm {
+    background: #e8fff0;
+    color: #0d3d28;
+    border: none;
+}
+
+.update-banner .btn-primary.btn-sm:hover {
+    filter: brightness(0.95);
+}
+
+.update-banner .btn-secondary.btn-sm {
+    background: rgba(255, 255, 255, 0.12);
+    color: #e8fff0;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+}
+
+.update-banner .btn-ghost.btn-sm {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+/* ============================================================
    OVERLAY (setup / login)
    ============================================================ */
 .overlay {
@@ -713,14 +780,23 @@ select {
 .format-help-icon {
     font-size: 12px;
     color: var(--text-muted);
-    cursor: help;
+    cursor: pointer;
     transition: color var(--transition);
     user-select: none;
     line-height: 1;
 }
 
-.format-label:hover .format-help-icon {
+.format-label:hover .format-help-icon,
+.format-help-icon:hover,
+.format-help-icon:focus-visible,
+.format-help-icon.active {
     color: var(--accent);
+}
+
+.format-help-icon:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
 }
 
 .format-tooltip {
@@ -744,7 +820,7 @@ select {
     to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Controlled by JS — initFormatTooltips() in app.js */
+/* Controlled by JS — click ⓘ to open; initFormatTooltips() in app.js */
 
 .fmt-tooltip-title {
     font-size: 12px;
@@ -815,17 +891,38 @@ td.fmt-example {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    cursor: default;
+    transition: border-color var(--transition), background var(--transition);
 }
 
-.fmt-example-output {
+.fmt-template-chip:hover {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+}
+
+.fmt-preview-output {
     font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
     font-size: 10.5px;
+    border-radius: 4px;
+    padding: 6px 10px;
+    margin-top: 2px;
+    min-height: 2.2em;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.fmt-preview-output.fmt-preview-placeholder {
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.02);
+    border: 1px dashed var(--border);
+    font-style: italic;
+}
+
+.fmt-preview-output:not(.fmt-preview-placeholder) {
     color: var(--success);
     background: var(--success-dim);
     border: 1px solid rgba(77, 255, 145, 0.15);
-    border-radius: 4px;
-    padding: 4px 10px;
-    margin-top: 4px;
+    font-style: normal;
 }
 
 /* ── Toggle label + tooltip ──────────────────────────────── */

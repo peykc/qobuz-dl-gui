@@ -59,8 +59,8 @@ class QobuzDL:
         cover_og_quality=False,
         no_cover=False,
         downloads_db=None,
-        folder_format="{artist} - {album} ({year}) [{bit_depth}B-{sampling_rate}kHz]",
-        track_format="{tracknumber}. {tracktitle}",
+        folder_format="{artist}/{album}",
+        track_format="{tracknumber} - {tracktitle}",
         smart_discography=False,
     ):
         self.directory = create_and_return_dir(directory)

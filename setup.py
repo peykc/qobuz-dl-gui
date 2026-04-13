@@ -1,4 +1,13 @@
-from setuptools import setup, find_packages
+import os
+import sys
+
+from setuptools import find_packages, setup
+
+# Single source of truth for version (also used by in-app updater)
+_root = os.path.dirname(os.path.abspath(__file__))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from qobuz_dl.version import __version__ as pkg_version
 
 pkg_name = "qobuz-dl"
 
@@ -17,17 +26,19 @@ requirements = [
     "beautifulsoup4",
     "colorama",
     "flask",
+    "pywebview>=5.0",
+    "packaging>=21.0",
 ]
 
 setup(
     name=pkg_name,
-    version="0.9.9.11",
+    version=pkg_version,
     author="Vitiko",
     author_email="vhnz98@gmail.com",
     description="The modern Lossless and Hi-Res music downloader for Qobuz with a beautiful Web UI",
     long_description=read_file("README.md"),
     long_description_content_type="text/markdown",
-    url="https://github.com/vitiko98/Qobuz-DL",
+    url="https://github.com/peykc/qobuz-dl-gui",
     install_requires=requirements,
     entry_points={
         "console_scripts": [

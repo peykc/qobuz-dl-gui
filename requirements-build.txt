@@ -1,0 +1,3 @@
+# Windows frozen build (PyInstaller). Install on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-build.txt
+pyinstaller>=6.0

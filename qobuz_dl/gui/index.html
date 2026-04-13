@@ -13,6 +13,21 @@
 </head>
 
 <body>
+    <div id="update-banner" class="update-banner hidden" role="status" aria-live="polite">
+        <div class="update-banner-inner">
+            <span id="update-banner-text" class="update-banner-text"></span>
+            <div class="update-banner-actions">
+                <button type="button" id="update-banner-install" class="btn-primary btn-sm hidden">
+                    Update &amp; restart
+                </button>
+                <a id="update-banner-link" class="btn-secondary btn-sm hidden" href="#" target="_blank"
+                    rel="noopener noreferrer">Release notes</a>
+                <button type="button" id="update-banner-dismiss" class="btn-ghost btn-sm">
+                    Dismiss
+                </button>
+            </div>
+        </div>
+    </div>
     <!-- ======================== SETUP OVERLAY ======================== -->
     <div id="setup-overlay" class="overlay hidden">
         <div class="overlay-card">
@@ -210,6 +225,17 @@
                                 Opens the Qobuz login page. Use this to fix auth issues
                                 or switch accounts.
                             </p>
+                        </div>
+
+                        <div class="settings-section">
+                            <span class="settings-section-label">Updates</span>
+                            <button id="settings-check-updates-btn" type="button" class="btn-secondary btn-full">
+                                Check for updates
+                            </button>
+                            <p class="settings-hint">
+                                Compares this app to the latest GitHub release. Windows EXE can update in one click.
+                            </p>
+                            <div id="settings-update-feedback" class="feedback-msg hidden"></div>
                         </div>
 
                         <div class="settings-danger">
@@ -423,7 +449,9 @@
                             <div class="form-group">
                                 <label for="dl-folder-format" class="format-label">
                                     Folder Format
-                                    <span class="format-help-icon" id="folder-format-help">ⓘ</span>
+                                    <span class="format-help-icon" id="folder-format-help" role="button"
+                                        tabindex="0" title="Format help" aria-expanded="false"
+                                        aria-controls="folder-format-tooltip">ⓘ</span>
                                 </label>
                                 <div class="format-tooltip" id="folder-format-tooltip">
                                     <div class="fmt-tooltip-title">📁 Folder Format Variables</div>
@@ -461,20 +489,25 @@
                                     </table>
                                     <div class="fmt-tooltip-section">Structure Templates</div>
                                     <div class="fmt-templates">
-                                        <span class="fmt-template-chip">{artist} - {album} ({year})</span>
-                                        <span class="fmt-template-chip">{artist}/{year} - {album}</span>
-                                        <span class="fmt-template-chip">{artist}/{album} ({year})
-                                            [{bit_depth}B-{sampling_rate}kHz]</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="/J. Cole/Born Sinner">{artist}/{album}</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="/J. Cole - Born Sinner (2013)">{artist} - {album} ({year})</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="/J. Cole/2013 - Born Sinner">{artist}/{year} - {album}</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="/J. Cole/Born Sinner (2013) [24B-96.0kHz]">{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]</span>
                                     </div>
-                                    <div class="fmt-tooltip-section">Example Output</div>
-                                    <div class="fmt-example-output">/J. Cole/Born Sinner (2013) [24B-96.0kHz]
-                                    </div>
+                                    <div class="fmt-tooltip-section">Preview</div>
+                                    <div class="fmt-preview-output fmt-preview-placeholder"
+                                        id="folder-format-preview"
+                                        data-placeholder="Hover a template to see the folder path">Hover a template to see the folder path</div>
                                 </div>
                                 <div class="input-reset-wrap">
                                     <input type="text" id="dl-folder-format"
-                                        placeholder="{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]" />
+                                        placeholder="{artist}/{album}" />
                                     <button class="btn-reset" data-reset="dl-folder-format"
-                                        data-default="{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]"
+                                        data-default="{artist}/{album}"
                                         title="Reset to default">
                                         ↺
                                     </button>
@@ -483,14 +516,16 @@
                             <div class="form-group">
                                 <label for="dl-track-format" class="format-label">
                                     Track Format
-                                    <span class="format-help-icon" id="track-format-help">ⓘ</span>
+                                    <span class="format-help-icon" id="track-format-help" role="button" tabindex="0"
+                                        title="Format help" aria-expanded="false"
+                                        aria-controls="track-format-tooltip">ⓘ</span>
                                 </label>
                                 <div class="format-tooltip" id="track-format-tooltip">
                                     <div class="fmt-tooltip-title">🎵 Track Format Variables</div>
                                     <table class="fmt-vars-table">
                                         <tr>
                                             <td><code>{tracknumber}</code></td>
-                                            <td>Zero-padded track number</td>
+                                            <td>Track number</td>
                                             <td class="fmt-example">03</td>
                                         </tr>
                                         <tr>
@@ -536,17 +571,23 @@
                                     </table>
                                     <div class="fmt-tooltip-section">Structure Templates</div>
                                     <div class="fmt-templates">
-                                        <span class="fmt-template-chip">{tracknumber}. {tracktitle}</span>
-                                        <span class="fmt-template-chip">{tracknumber}. {artist} - {tracktitle}</span>
-                                        <span class="fmt-template-chip">{tracknumber} - {tracktitle} ({year})</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="03 - Power Trip.flac">{tracknumber} - {tracktitle}</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="03. Power Trip.flac">{tracknumber}. {tracktitle}</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="03. J. Cole - Power Trip.flac">{tracknumber}. {artist} - {tracktitle}</span>
+                                        <span class="fmt-template-chip"
+                                            data-preview="03 - Power Trip (2013).flac">{tracknumber} - {tracktitle} ({year})</span>
                                     </div>
-                                    <div class="fmt-tooltip-section">Example Output</div>
-                                    <div class="fmt-example-output">03 - Power Trip (2013).flac</div>
+                                    <div class="fmt-tooltip-section">Preview</div>
+                                    <div class="fmt-preview-output fmt-preview-placeholder" id="track-format-preview"
+                                        data-placeholder="Hover a template to see the filename">Hover a template to see the filename</div>
                                 </div>
                                 <div class="input-reset-wrap">
-                                    <input type="text" id="dl-track-format" placeholder="{tracknumber}. {tracktitle}" />
+                                    <input type="text" id="dl-track-format" placeholder="{tracknumber} - {tracktitle}" />
                                     <button class="btn-reset" data-reset="dl-track-format"
-                                        data-default="{tracknumber}. {tracktitle}" title="Reset to default">
+                                        data-default="{tracknumber} - {tracktitle}" title="Reset to default">
                                         ↺
                                     </button>
                                 </div>

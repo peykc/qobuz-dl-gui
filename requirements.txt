@@ -6,3 +6,5 @@ pick==1.6.0
 beautifulsoup4
 colorama
 flask
+pywebview>=5.0
+packaging>=21.0
