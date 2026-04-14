@@ -1,14 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Windows one-file EXE: Flask + embedded Edge WebView2 window (console=False).
-# From repo root:
+# One-file GUI (Flask + pywebview). Build on the target OS only:
 #   pip install -r requirements.txt -r requirements-build.txt
 #   pyinstaller --noconfirm qobuz_dl_gui.spec
-# Close any running Qobuz-DL-GUI.exe before rebuilding (Windows file lock).
+#
+# Outputs:
+#   Windows: dist/Qobuz-DL-GUI.exe   (close running EXE before rebuild)
+#   Linux:   dist/Qobuz-DL-GUI       (chmod +x; needs WebKitGTK at runtime)
+#   macOS:   dist/Qobuz-DL-GUI.app  (bundle; may need Gatekeeper override)
 import os
+import sys
 
 block_cipher = None
 
 spec_root = os.path.dirname(os.path.abspath(SPEC))
+is_darwin = sys.platform == "darwin"
+is_win = sys.platform == "win32"
 
 gui_dir = os.path.join(spec_root, "qobuz_dl", "gui")
 datas = [(gui_dir, "qobuz_dl/gui")]
@@ -69,8 +75,21 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
+    argv_emulation=is_darwin,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
 )
+
+if is_darwin:
+    app = BUNDLE(
+        exe,
+        name="Qobuz-DL-GUI.app",
+        icon=None,
+        bundle_identifier="com.github.peykc.qobuz-dl-gui",
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "CFBundleName": "Qobuz-DL-GUI",
+            "CFBundleDisplayName": "Qobuz-DL",
+        },
+    )

@@ -64,7 +64,15 @@ qobuz-dl-gui
 
 The GUI runs as a **desktop window** (via [pywebview](https://github.com/r0x0r/pywebview); on Windows this uses **Edge WebView2**). If you set the environment variable `QOBUZ_DL_GUI_BROWSER=1`, the app opens in your **system browser** at `http://127.0.0.1` on a local port instead.
 
-**Windows portable build:** Download `Qobuz-DL-GUI.exe` from [Releases](https://github.com/peykc/qobuz-dl-gui/releases) (no Python required). You need the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if it is not already installed.
+### Pre-built binaries ([Releases](https://github.com/peykc/qobuz-dl-gui/releases))
+
+| Platform | File | Notes |
+|----------|------|--------|
+| **Windows** | `Qobuz-DL-GUI-Windows-x64.exe` | No Python. [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if the window does not load. In-app updates use this asset. |
+| **Linux** | `Qobuz-DL-GUI-Linux-x64` | `chmod +x` then run. Needs WebKitGTK/GTK stack for [pywebview](https://pywebview.flowrl.com/guide/installation.html#linux) (e.g. `libwebkit2gtk`, `python3-gi` on Ubuntu). |
+| **macOS** | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip, open `Qobuz-DL-GUI.app`. Unsigned builds: right-click → **Open** the first time if Gatekeeper warns. |
+
+**CI:** Pushing a tag matching `v*` runs [.github/workflows/build-desktop.yml](.github/workflows/build-desktop.yml), builds all three, and attaches them to a GitHub Release for that tag. **Actions → Build desktop → Run workflow** builds the same artifacts without creating a release (for testing).
 
 ---
 

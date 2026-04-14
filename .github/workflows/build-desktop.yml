@@ -1,0 +1,128 @@
+# Build frozen Qobuz-DL-GUI on Windows, Linux, and macOS (PyInstaller; no cross-compile).
+#
+# Artifacts (every run):
+#   - Qobuz-DL-GUI-Windows-x64.exe
+#   - Qobuz-DL-GUI-Linux-x64
+#   - Qobuz-DL-GUI-macOS-x64.zip  (.app inside)
+#
+# Optional: push tag v* → uploads those files to a GitHub Release for the tag.
+name: Build desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: PyInstaller
+        run: python -m PyInstaller --noconfirm qobuz_dl_gui.spec
+
+      - name: Rename artifact
+        run: copy dist\Qobuz-DL-GUI.exe Qobuz-DL-GUI-Windows-x64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: Qobuz-DL-GUI-Windows-x64.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install WebKit/GTK runtime (pywebview on Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-0 python3-gi python3-gi-cairo libnotify4 gir1.2-gtk-3.0
+          sudo apt-get install -y libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 \
+            || sudo apt-get install -y libwebkit2gtk-4.0-37 gir1.2-webkit2-4.0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: PyInstaller
+        run: python -m PyInstaller --noconfirm qobuz_dl_gui.spec
+
+      - name: Rename artifact
+        run: |
+          mv dist/Qobuz-DL-GUI Qobuz-DL-GUI-Linux-x64
+          chmod +x Qobuz-DL-GUI-Linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: Qobuz-DL-GUI-Linux-x64
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: PyInstaller
+        run: python3 -m PyInstaller --noconfirm qobuz_dl_gui.spec
+
+      - name: Zip .app bundle
+        run: cd dist && zip -ry ../Qobuz-DL-GUI-macOS-x64.zip Qobuz-DL-GUI.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: Qobuz-DL-GUI-macOS-x64.zip
+
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: "*-build"
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -la release-assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/Qobuz-DL-GUI-Windows-x64.exe
+            release-assets/Qobuz-DL-GUI-Linux-x64
+            release-assets/Qobuz-DL-GUI-macOS-x64.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
