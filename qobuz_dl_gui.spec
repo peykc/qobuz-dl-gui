@@ -39,6 +39,7 @@ a = Analysis(
         "qobuz_dl.utils",
         "qobuz_dl.version",
         "qobuz_dl.updater",
+        "qobuz_dl.lyrics",
         "packaging",
         "packaging.version",
         "bottle",

@@ -9,7 +9,11 @@ from qobuz_dl.bundle import Bundle
 from qobuz_dl.color import GREEN, RED, YELLOW
 from qobuz_dl.commands import qobuz_dl_args
 from qobuz_dl.core import QobuzDL
-from qobuz_dl.downloader import DEFAULT_FOLDER, DEFAULT_TRACK
+from qobuz_dl.downloader import (
+    DEFAULT_FOLDER,
+    DEFAULT_MULTIPLE_DISC_TRACK,
+    DEFAULT_TRACK,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +54,7 @@ def _reset_config(config_file):
     config["DEFAULT"]["no_fallback"] = "false"
     config["DEFAULT"]["og_cover"] = "false"
     config["DEFAULT"]["embed_art"] = "false"
+    config["DEFAULT"]["lyrics_enabled"] = "false"
     config["DEFAULT"]["no_cover"] = "false"
     config["DEFAULT"]["no_database"] = "false"
     logging.info(f"{YELLOW}Getting tokens. Please wait...")
@@ -59,6 +64,33 @@ def _reset_config(config_file):
     config["DEFAULT"]["folder_format"] = DEFAULT_FOLDER
     config["DEFAULT"]["track_format"] = DEFAULT_TRACK
     config["DEFAULT"]["smart_discography"] = "false"
+    config["DEFAULT"]["fix_md5s"] = "false"
+    config["DEFAULT"]["multiple_disc_prefix"] = "Disc"
+    config["DEFAULT"]["multiple_disc_one_dir"] = "false"
+    config["DEFAULT"]["multiple_disc_track_format"] = DEFAULT_MULTIPLE_DISC_TRACK
+    config["DEFAULT"]["max_workers"] = "1"
+    config["DEFAULT"]["delay_seconds"] = "0"
+    config["DEFAULT"]["segmented_fallback"] = "true"
+    for key in (
+        "no_album_artist_tag",
+        "no_album_title_tag",
+        "no_track_artist_tag",
+        "no_track_title_tag",
+        "no_release_date_tag",
+        "no_media_type_tag",
+        "no_genre_tag",
+        "no_track_number_tag",
+        "no_track_total_tag",
+        "no_disc_number_tag",
+        "no_disc_total_tag",
+        "no_composer_tag",
+        "no_explicit_tag",
+        "no_copyright_tag",
+        "no_label_tag",
+        "no_upc_tag",
+        "no_isrc_tag",
+    ):
+        config["DEFAULT"][key] = "false"
     with open(config_file, "w") as configfile:
         config.write(configfile)
     logging.info(
@@ -127,11 +159,72 @@ def main():
         og_cover = config.getboolean("DEFAULT", "og_cover")
         embed_art = config.getboolean("DEFAULT", "embed_art")
         no_cover = config.getboolean("DEFAULT", "no_cover")
+        lyrics_enabled = config.getboolean("DEFAULT", "lyrics_enabled", fallback=False)
         no_database = config.getboolean("DEFAULT", "no_database")
         app_id = config["DEFAULT"]["app_id"]
         smart_discography = config.getboolean("DEFAULT", "smart_discography")
         folder_format = config["DEFAULT"]["folder_format"]
         track_format = config["DEFAULT"]["track_format"]
+        fix_md5s = config.getboolean("DEFAULT", "fix_md5s", fallback=False)
+        multiple_disc_prefix = config.get(
+            "DEFAULT", "multiple_disc_prefix", fallback="Disc"
+        )
+        multiple_disc_one_dir = config.getboolean(
+            "DEFAULT", "multiple_disc_one_dir", fallback=False
+        )
+        multiple_disc_track_format = config.get(
+            "DEFAULT",
+            "multiple_disc_track_format",
+            fallback=DEFAULT_MULTIPLE_DISC_TRACK,
+        )
+        max_workers = config.getint("DEFAULT", "max_workers", fallback=1)
+        delay_seconds = config.getint("DEFAULT", "delay_seconds", fallback=0)
+        segmented_fallback = config.getboolean(
+            "DEFAULT", "segmented_fallback", fallback=True
+        )
+        no_album_artist_tag = config.getboolean(
+            "DEFAULT", "no_album_artist_tag", fallback=False
+        )
+        no_album_title_tag = config.getboolean(
+            "DEFAULT", "no_album_title_tag", fallback=False
+        )
+        no_track_artist_tag = config.getboolean(
+            "DEFAULT", "no_track_artist_tag", fallback=False
+        )
+        no_track_title_tag = config.getboolean(
+            "DEFAULT", "no_track_title_tag", fallback=False
+        )
+        no_release_date_tag = config.getboolean(
+            "DEFAULT", "no_release_date_tag", fallback=False
+        )
+        no_media_type_tag = config.getboolean(
+            "DEFAULT", "no_media_type_tag", fallback=False
+        )
+        no_genre_tag = config.getboolean("DEFAULT", "no_genre_tag", fallback=False)
+        no_track_number_tag = config.getboolean(
+            "DEFAULT", "no_track_number_tag", fallback=False
+        )
+        no_track_total_tag = config.getboolean(
+            "DEFAULT", "no_track_total_tag", fallback=False
+        )
+        no_disc_number_tag = config.getboolean(
+            "DEFAULT", "no_disc_number_tag", fallback=False
+        )
+        no_disc_total_tag = config.getboolean(
+            "DEFAULT", "no_disc_total_tag", fallback=False
+        )
+        no_composer_tag = config.getboolean(
+            "DEFAULT", "no_composer_tag", fallback=False
+        )
+        no_explicit_tag = config.getboolean(
+            "DEFAULT", "no_explicit_tag", fallback=False
+        )
+        no_copyright_tag = config.getboolean(
+            "DEFAULT", "no_copyright_tag", fallback=False
+        )
+        no_label_tag = config.getboolean("DEFAULT", "no_label_tag", fallback=False)
+        no_upc_tag = config.getboolean("DEFAULT", "no_upc_tag", fallback=False)
+        no_isrc_tag = config.getboolean("DEFAULT", "no_isrc_tag", fallback=False)
 
         secrets = [
             secret for secret in config["DEFAULT"]["secrets"].split(",") if secret
@@ -172,10 +265,36 @@ def main():
         quality_fallback=not arguments.no_fallback or not no_fallback,
         cover_og_quality=arguments.og_cover or og_cover,
         no_cover=arguments.no_cover or no_cover,
+        lyrics_enabled=arguments.lyrics or lyrics_enabled,
         downloads_db=None if no_database or arguments.no_db else QOBUZ_DB,
         folder_format=arguments.folder_format or folder_format,
         track_format=arguments.track_format or track_format,
         smart_discography=arguments.smart_discography or smart_discography,
+        fix_md5s=arguments.fix_md5s or fix_md5s,
+        multiple_disc_prefix=arguments.multiple_disc_prefix or multiple_disc_prefix,
+        multiple_disc_one_dir=arguments.multiple_disc_one_dir or multiple_disc_one_dir,
+        multiple_disc_track_format=arguments.multiple_disc_track_format
+        or multiple_disc_track_format,
+        max_workers=arguments.max_workers or max_workers,
+        delay_seconds=arguments.delay or delay_seconds,
+        segmented_fallback=not arguments.no_segmented_fallback and segmented_fallback,
+        no_album_artist_tag=arguments.no_album_artist_tag or no_album_artist_tag,
+        no_album_title_tag=arguments.no_album_title_tag or no_album_title_tag,
+        no_track_artist_tag=arguments.no_track_artist_tag or no_track_artist_tag,
+        no_track_title_tag=arguments.no_track_title_tag or no_track_title_tag,
+        no_release_date_tag=arguments.no_release_date_tag or no_release_date_tag,
+        no_media_type_tag=arguments.no_media_type_tag or no_media_type_tag,
+        no_genre_tag=arguments.no_genre_tag or no_genre_tag,
+        no_track_number_tag=arguments.no_track_number_tag or no_track_number_tag,
+        no_track_total_tag=arguments.no_track_total_tag or no_track_total_tag,
+        no_disc_number_tag=arguments.no_disc_number_tag or no_disc_number_tag,
+        no_disc_total_tag=arguments.no_disc_total_tag or no_disc_total_tag,
+        no_composer_tag=arguments.no_composer_tag or no_composer_tag,
+        no_explicit_tag=arguments.no_explicit_tag or no_explicit_tag,
+        no_copyright_tag=arguments.no_copyright_tag or no_copyright_tag,
+        no_label_tag=arguments.no_label_tag or no_label_tag,
+        no_upc_tag=arguments.no_upc_tag or no_upc_tag,
+        no_isrc_tag=arguments.no_isrc_tag or no_isrc_tag,
     )
     qobuz.initialize_client(email, password, app_id, secrets)
 

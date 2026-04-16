@@ -58,10 +58,35 @@ class QobuzDL:
         quality_fallback=True,
         cover_og_quality=False,
         no_cover=False,
+        lyrics_enabled=False,
         downloads_db=None,
         folder_format="{artist}/{album}",
         track_format="{tracknumber} - {tracktitle}",
         smart_discography=False,
+        fix_md5s=False,
+        multiple_disc_prefix="Disc",
+        multiple_disc_one_dir=False,
+        multiple_disc_track_format="{disc_number_unpadded}{track_number} - {tracktitle}",
+        max_workers=1,
+        delay_seconds=0,
+        segmented_fallback=True,
+        no_album_artist_tag=False,
+        no_album_title_tag=False,
+        no_track_artist_tag=False,
+        no_track_title_tag=False,
+        no_release_date_tag=False,
+        no_media_type_tag=False,
+        no_genre_tag=False,
+        no_track_number_tag=False,
+        no_track_total_tag=False,
+        no_disc_number_tag=False,
+        no_disc_total_tag=False,
+        no_composer_tag=False,
+        no_explicit_tag=False,
+        no_copyright_tag=False,
+        no_label_tag=False,
+        no_upc_tag=False,
+        no_isrc_tag=False,
     ):
         self.directory = create_and_return_dir(directory)
         self.quality = quality
@@ -74,13 +99,38 @@ class QobuzDL:
         self.quality_fallback = quality_fallback
         self.cover_og_quality = cover_og_quality
         self.no_cover = no_cover
+        self.lyrics_enabled = lyrics_enabled
         self.downloads_db = create_db(downloads_db) if downloads_db else None
         self.folder_format = folder_format
         self.track_format = track_format
         self.smart_discography = smart_discography
-        logger.info("[debug] Using local core.py with cancellation fixes.")
-        print(f"DEBUG: QobuzDL init. self.cancel_event id={id(self.cancel_event) if hasattr(self, 'cancel_event') else 'N/A'}")
-        sys.stdout.flush()
+        self.fix_md5s = bool(fix_md5s)
+        self.multiple_disc_prefix = multiple_disc_prefix
+        self.multiple_disc_one_dir = bool(multiple_disc_one_dir)
+        self.multiple_disc_track_format = multiple_disc_track_format
+        self.max_workers = max(1, int(max_workers or 1))
+        self.delay_seconds = max(0, int(delay_seconds or 0))
+        self.segmented_fallback = bool(segmented_fallback)
+        self.tag_options = {
+            "no_album_artist_tag": bool(no_album_artist_tag),
+            "no_album_title_tag": bool(no_album_title_tag),
+            "no_track_artist_tag": bool(no_track_artist_tag),
+            "no_track_title_tag": bool(no_track_title_tag),
+            "no_release_date_tag": bool(no_release_date_tag),
+            "no_media_type_tag": bool(no_media_type_tag),
+            "no_genre_tag": bool(no_genre_tag),
+            "no_track_number_tag": bool(no_track_number_tag),
+            "no_track_total_tag": bool(no_track_total_tag),
+            "no_disc_number_tag": bool(no_disc_number_tag),
+            "no_disc_total_tag": bool(no_disc_total_tag),
+            "no_composer_tag": bool(no_composer_tag),
+            "no_explicit_tag": bool(no_explicit_tag),
+            "no_copyright_tag": bool(no_copyright_tag),
+            "no_label_tag": bool(no_label_tag),
+            "no_upc_tag": bool(no_upc_tag),
+            "no_isrc_tag": bool(no_isrc_tag),
+            "fix_md5s": self.fix_md5s,
+        }
         self.cancel_event = None  # set by gui_app to allow inter-track cancellation
 
     def initialize_client(self, email, pwd, app_id, secrets):
@@ -124,8 +174,6 @@ class QobuzDL:
     def download_from_id(self, item_id, album=True, alt_path=None):
         if self.cancel_event and self.cancel_event.is_set():
             return
-        print(f"DEBUG: download_from_id checking id={id(self.cancel_event)} set={self.cancel_event.is_set()}")
-        sys.stdout.flush()
         if handle_download_id(self.downloads_db, item_id, add_id=False):
             logger.info(
                 f"{OFF}This release ID ({item_id}) was already downloaded "
@@ -144,9 +192,18 @@ class QobuzDL:
                 self.quality_fallback,
                 self.cover_og_quality,
                 self.no_cover,
+                self.lyrics_enabled,
                 self.folder_format,
                 self.track_format,
                 cancel_event=self.cancel_event,
+                source_queue_url=getattr(self, "source_qobuz_url", "") or "",
+                tag_options=self.tag_options,
+                multiple_disc_prefix=self.multiple_disc_prefix,
+                multiple_disc_one_dir=self.multiple_disc_one_dir,
+                multiple_disc_track_format=self.multiple_disc_track_format,
+                max_workers=self.max_workers,
+                delay_seconds=self.delay_seconds,
+                segmented_fallback=self.segmented_fallback,
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)
@@ -178,6 +235,7 @@ class QobuzDL:
                 f'{RED}Invalid url: "{url}". Use urls from https://play.qobuz.com!'
             )
             return
+        self.source_qobuz_url = url
         if type_dict["func"]:
             if self.cancel_event and self.cancel_event.is_set():
                 return

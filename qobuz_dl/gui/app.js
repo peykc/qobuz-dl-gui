@@ -7,6 +7,7 @@
 
   // ── SSE (shared log stream) ────────────────────────────────
   let _sse = null;
+  let _trackStatusMap = new Map();
 
   function startSSE() {
     if (_sse) return;
@@ -60,6 +61,332 @@
     )
       return "log-line log-info";
     return "log-line";
+  }
+
+  function _normalizeTrackNo(trackNo) {
+    const raw = String(trackNo || "").trim();
+    if (!raw) return "";
+    const m = raw.match(/\d+/);
+    if (!m) return raw;
+    return String(parseInt(m[0], 10));
+  }
+
+  function _normalizeTrackTitle(title) {
+    let t = String(title || "").trim().toLowerCase();
+    if (!t) return "";
+    t = t.replace(/\s+/g, " ");
+    // Collapse variant suffixes so start/result events map to one card.
+    while (/\s*\([^)]*\)\s*$/.test(t)) {
+      t = t.replace(/\s*\([^)]*\)\s*$/, "").trim();
+    }
+    return t;
+  }
+
+  function _parseTrackRef(trackNo, title) {
+    const rawTitle = String(title || "").trim();
+    const rawNo = String(trackNo || "").trim();
+    if (rawNo) {
+      return { trackNo: rawNo, title: rawTitle };
+    }
+    const m = rawTitle.match(/^(\d+)\.\s*(.+)$/);
+    if (m) return { trackNo: m[1], title: m[2] };
+    return { trackNo: "", title: rawTitle };
+  }
+
+  function _trackKey(trackNo, title) {
+    const num = _normalizeTrackNo(trackNo);
+    const t = _normalizeTrackTitle(title);
+    return `${num}::${t}`;
+  }
+
+  function _setTrackCardCover(card, coverUrl) {
+    const url = String(coverUrl || "").trim();
+    if (!url || !card) return;
+    let art = card.querySelector(".track-status-art");
+    if (!art) return;
+    let img = art.querySelector(".track-status-art-img");
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "track-status-art-img";
+      img.alt = "";
+      art.appendChild(img);
+    }
+    art.classList.remove("track-status-art--empty");
+    img.referrerPolicy = "no-referrer";
+    img.decoding = "async";
+    img.loading = "lazy";
+    img.onerror = () => {
+      img.removeAttribute("src");
+      art.classList.add("track-status-art--empty");
+    };
+    img.src = url;
+  }
+
+  function _ensureTrackStatusCard(trackNo, title, createNew = false, coverUrl) {
+    const list = document.getElementById("dl-track-status");
+    if (!list) return null;
+    const parsed = _parseTrackRef(trackNo, title);
+    const key = _trackKey(parsed.trackNo, parsed.title);
+    if (key && _trackStatusMap.has(key)) {
+      const existing = _trackStatusMap.get(key);
+      if (coverUrl) _setTrackCardCover(existing, coverUrl);
+      return existing;
+    }
+    if (!createNew && !key) return null;
+
+    const card = document.createElement("div");
+    card.className = "track-status-card";
+    card.dataset.trackKey = key;
+    card.dataset.trackNo = _normalizeTrackNo(parsed.trackNo);
+    card.dataset.trackTitle = _normalizeTrackTitle(parsed.title);
+    card.innerHTML = `
+      <div class="track-status-art track-status-art--empty"></div>
+      <div class="track-status-main">
+        <span class="track-status-title"></span>
+        <span class="track-status-sub"></span>
+      </div>
+      <div class="track-status-tags"></div>
+    `;
+    card.querySelector(".track-status-title").textContent =
+      parsed.title || "Track";
+    card.querySelector(".track-status-sub").textContent = `#${parsed.trackNo || "?"}`;
+    list.appendChild(card);
+    if (key) _trackStatusMap.set(key, card);
+    if (coverUrl) _setTrackCardCover(card, coverUrl);
+    list.scrollTop = list.scrollHeight;
+    return card;
+  }
+
+  function _setTrackDownloadChip(trackNo, title, statusText, cls, linkOpts) {
+    const card = _ensureTrackStatusCard(trackNo, title, false);
+    if (!card) return;
+    const tags = card.querySelector(".track-status-tags");
+    const old = card.querySelector(".track-status-chip.download-chip");
+    if (old) old.remove();
+
+    const href = linkOpts && String(linkOpts.href || "").trim();
+    const el = href ? document.createElement("a") : document.createElement("span");
+    el.className = "track-status-chip download-chip";
+    if (href) {
+      el.classList.add("purchase-only");
+      el.href = href;
+      el.target = "_blank";
+      el.rel = "noopener noreferrer";
+      if (linkOpts.titleAttr) {
+        const tip = String(linkOpts.titleAttr).trim();
+        el.setAttribute("data-tip", tip);
+        el.setAttribute("aria-label", tip);
+        el.removeAttribute("title");
+      }
+    }
+    if (cls) el.classList.add(cls);
+    el.textContent = statusText;
+    tags.appendChild(el);
+  }
+
+  /** Interpolate chip colors from red (0%) to app success green (100%). */
+  function _confidenceChipStyles(pct) {
+    const p = Math.max(0, Math.min(100, pct)) / 100;
+    const r0 = 255;
+    const g0 = 77;
+    const b0 = 77;
+    const r1 = 77;
+    const g1 = 255;
+    const b1 = 145;
+    const r = Math.round(r0 + (r1 - r0) * p);
+    const g = Math.round(g0 + (g1 - g0) * p);
+    const b = Math.round(b0 + (b1 - b0) * p);
+    return {
+      color: `rgb(${r},${g},${b})`,
+      borderColor: `rgba(${r},${g},${b},0.45)`,
+      background: `rgba(${r},${g},${b},0.12)`,
+    };
+  }
+
+  function _positionConfidenceTooltip(wrap, tip) {
+    if (!wrap || !tip || !tip.classList.contains("confidence-chip-tooltip--open")) return;
+    if (tip.parentNode !== document.body) document.body.appendChild(tip);
+    tip.classList.add("confidence-chip-tooltip--fixed");
+    requestAnimationFrame(() => {
+      const r = wrap.getBoundingClientRect();
+      const tw = tip.offsetWidth;
+      const th = tip.offsetHeight;
+      const pad = 8;
+      let left = r.right - tw;
+      left = Math.max(pad, Math.min(left, window.innerWidth - tw - pad));
+      let top = r.top - th - pad;
+      if (top < pad) top = Math.min(r.bottom + pad, window.innerHeight - th - pad);
+      tip.style.left = `${Math.round(left)}px`;
+      tip.style.top = `${Math.round(Math.max(pad, top))}px`;
+    });
+  }
+
+  function _hideConfidenceTooltip(wrap, tip) {
+    if (!tip) return;
+    tip.classList.remove("confidence-chip-tooltip--open");
+    tip.classList.remove("confidence-chip-tooltip--fixed");
+    tip.style.left = "";
+    tip.style.top = "";
+    if (tip.parentNode === document.body && wrap) wrap.appendChild(tip);
+  }
+
+  function _bindConfidenceTooltipUi(wrap, tip) {
+    const listEl = document.getElementById("dl-track-status");
+
+    function targetInside(container, target) {
+      if (!container || !target || !(target instanceof Node)) return false;
+      return container === target || container.contains(target);
+    }
+
+    function hideUnlessMovingToTip(e) {
+      const next = e.relatedTarget;
+      if (targetInside(tip, next) || targetInside(wrap, next)) return;
+      _hideConfidenceTooltip(wrap, tip);
+    }
+
+    function showTip() {
+      tip.classList.add("confidence-chip-tooltip--open");
+      _positionConfidenceTooltip(wrap, tip);
+    }
+
+    function onScrollOrResize() {
+      if (tip.classList.contains("confidence-chip-tooltip--open")) {
+        _positionConfidenceTooltip(wrap, tip);
+      }
+    }
+
+    const onMouseEnterWrap = () => showTip();
+    const onMouseEnterTip = () => showTip();
+    const onMouseLeaveWrap = (e) => hideUnlessMovingToTip(e);
+    const onMouseLeaveTip = (e) => hideUnlessMovingToTip(e);
+    const onFocusInWrap = () => showTip();
+    const onFocusOutWrap = (e) => hideUnlessMovingToTip(e);
+
+    wrap.addEventListener("mouseenter", onMouseEnterWrap);
+    wrap.addEventListener("mouseleave", onMouseLeaveWrap);
+    tip.addEventListener("mouseenter", onMouseEnterTip);
+    tip.addEventListener("mouseleave", onMouseLeaveTip);
+    wrap.addEventListener("focusin", onFocusInWrap);
+    wrap.addEventListener("focusout", onFocusOutWrap);
+    window.addEventListener("resize", onScrollOrResize);
+    if (listEl) listEl.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("scroll", onScrollOrResize, true);
+
+    wrap._confidenceTooltipTeardown = () => {
+      _hideConfidenceTooltip(wrap, tip);
+      wrap.removeEventListener("mouseenter", onMouseEnterWrap);
+      wrap.removeEventListener("mouseleave", onMouseLeaveWrap);
+      tip.removeEventListener("mouseenter", onMouseEnterTip);
+      tip.removeEventListener("mouseleave", onMouseLeaveTip);
+      wrap.removeEventListener("focusin", onFocusInWrap);
+      wrap.removeEventListener("focusout", onFocusOutWrap);
+      window.removeEventListener("resize", onScrollOrResize);
+      if (listEl) listEl.removeEventListener("scroll", onScrollOrResize);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      delete wrap._confidenceTooltipTeardown;
+    };
+  }
+
+  function _setLyricConfidenceChip(tags, pct) {
+    let wrap = tags.querySelector(".confidence-chip-wrap");
+    const chipHtml = `
+      <span class="track-status-chip confidence-chip"></span>
+      <div class="confidence-chip-tooltip" role="tooltip">
+        <div class="confidence-chip-tooltip-title">Lyric match confidence</div>
+        <div class="confidence-chip-tooltip-desc">How well the LRCLIB result matches this track’s artist, title, length, and album. Higher means we’re more sure it’s the right song.</div>
+      </div>
+    `;
+    if (wrap) {
+      if (typeof wrap._confidenceTooltipTeardown === "function") {
+        wrap._confidenceTooltipTeardown();
+      }
+      wrap.remove();
+    }
+    wrap = document.createElement("span");
+    wrap.className = "confidence-chip-wrap";
+    wrap.setAttribute("tabindex", "0");
+    wrap.innerHTML = chipHtml;
+    const chip = wrap.querySelector(".confidence-chip");
+    const tip = wrap.querySelector(".confidence-chip-tooltip");
+    const styles = _confidenceChipStyles(pct);
+    chip.textContent = `${pct}%`;
+    chip.style.color = styles.color;
+    chip.style.borderColor = styles.borderColor;
+    chip.style.background = styles.background;
+    wrap.setAttribute(
+      "aria-label",
+      `Lyric match confidence ${pct} percent. Hover for details.`,
+    );
+    const lyricsChip = tags.querySelector(".track-status-chip.lyrics-chip");
+    const download = tags.querySelector(".track-status-chip.download-chip");
+    if (lyricsChip) tags.insertBefore(wrap, lyricsChip);
+    else if (download) tags.insertBefore(wrap, download);
+    else tags.appendChild(wrap);
+
+    _bindConfidenceTooltipUi(wrap, tip);
+  }
+
+  function _removeLyricConfidenceChip(tags) {
+    const wrap = tags.querySelector(".confidence-chip-wrap");
+    if (!wrap) return;
+    if (typeof wrap._confidenceTooltipTeardown === "function") {
+      wrap._confidenceTooltipTeardown();
+    }
+    wrap.remove();
+  }
+
+  function _setTrackLyricsChip(trackNo, title, lyricType, confidence) {
+    const card = _ensureTrackStatusCard(trackNo, title, false);
+    if (!card) return;
+    const tags = card.querySelector(".track-status-tags");
+    let chip = card.querySelector(".track-status-chip.lyrics-chip");
+    if (!chip) {
+      chip = document.createElement("span");
+      chip.className = "track-status-chip lyrics-chip";
+      tags.appendChild(chip);
+    }
+    const lt = String(lyricType || "none").toLowerCase();
+    chip.className = `track-status-chip lyrics-chip ${lt}`;
+    const confRaw =
+      confidence != null && String(confidence).trim() !== ""
+        ? String(confidence).trim()
+        : "";
+    const confNum = confRaw !== "" ? parseInt(confRaw, 10) : NaN;
+    const hasConf =
+      !Number.isNaN(confNum) && confRaw !== "" && lt !== "loading";
+
+    chip.textContent =
+      lt === "none"
+        ? "lyrics: none"
+        : lt === "error"
+          ? "lyrics: error"
+          : lt === "loading"
+            ? "lyrics: loading"
+            : `lyrics: ${lt}`;
+    chip.removeAttribute("title");
+
+    if (lt === "loading" || !hasConf) {
+      _removeLyricConfidenceChip(tags);
+    } else {
+      _setLyricConfidenceChip(tags, confNum);
+    }
+  }
+
+  function _resetTrackStatusCards() {
+    const list = document.getElementById("dl-track-status");
+    if (!list) return;
+    list.innerHTML = "";
+    _trackStatusMap = new Map();
+  }
+
+  function _initCollapsibleContainer(containerId, toggleId) {
+    const container = document.getElementById(containerId);
+    const toggle = document.getElementById(toggleId);
+    if (!container || !toggle) return;
+    toggle.addEventListener("click", () => {
+      const collapsed = container.classList.toggle("collapsed");
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
   }
 
 
@@ -447,7 +774,7 @@
 
     // === Explicit icon ===
     const explicitIcon = r.explicit
-      ? `<span class="queue-card-explicit" title="Explicit"><svg viewBox="0 0 24 24" class="queue-explicit-icon"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg></span>`
+      ? `<span class="queue-card-explicit" data-tip="Explicit"><svg viewBox="0 0 24 24" class="queue-explicit-icon"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg></span>`
       : "";
 
     // === Meta parts ===
@@ -489,8 +816,10 @@
 
     info.innerHTML = `
       <span class="queue-card-title">${_esc(r.title || card.dataset.url)}</span>
-      <span class="queue-card-artist">${_esc(r.artist || "")}</span>
-      <span class="queue-card-bottom-row">${typeBadge}${explicitIcon}${metaRow}</span>
+      <span class="queue-card-artist-row">
+        ${typeBadge}<span class="queue-card-artist">${_esc(r.artist || "")}</span>
+      </span>
+      <span class="queue-card-bottom-row">${explicitIcon}${metaRow}</span>
     `;
     if (window._updateQueueBadge) window._updateQueueBadge();
   }
@@ -741,16 +1070,77 @@
         default_quality: document.getElementById("dl-quality").value || "27",
         folder_format: document.getElementById("dl-folder-format").value.trim(),
         track_format: document.getElementById("dl-track-format").value.trim(),
+        multiple_disc_track_format: document
+          .getElementById("dl-multiple-disc-track-format")
+          .value.trim(),
+        multiple_disc_prefix: document
+          .getElementById("dl-multiple-disc-prefix")
+          .value.trim(),
+        max_workers: document.getElementById("dl-max-workers").value || "1",
+        delay_seconds: document.getElementById("dl-delay-seconds").value || "0",
         embed_art: String(document.getElementById("dl-embed-art").checked),
+        lyrics_enabled: String(
+          document.getElementById("dl-lyrics-enabled").checked,
+        ),
         og_cover: String(document.getElementById("dl-og-cover").checked),
         no_cover: String(document.getElementById("dl-no-cover").checked),
         albums_only: String(document.getElementById("dl-albums-only").checked),
         no_m3u: String(document.getElementById("dl-no-m3u").checked),
         no_fallback: String(document.getElementById("dl-no-fallback").checked),
         no_database: String(document.getElementById("dl-no-db").checked),
+        fix_md5s: String(document.getElementById("dl-fix-md5s").checked),
+        segmented_fallback: String(
+          document.getElementById("dl-segmented-fallback").checked,
+        ),
+        multiple_disc_one_dir: String(
+          !document.getElementById("dl-multiple-disc-one-dir").checked,
+        ),
         smart_discography: String(
           document.getElementById("dl-smart-discography").checked,
         ),
+        no_album_artist_tag: String(
+          !document.getElementById("dl-tag-album-artist").checked,
+        ),
+        no_album_title_tag: String(
+          !document.getElementById("dl-tag-album-title").checked,
+        ),
+        no_track_artist_tag: String(
+          !document.getElementById("dl-tag-track-artist").checked,
+        ),
+        no_track_title_tag: String(
+          !document.getElementById("dl-tag-track-title").checked,
+        ),
+        no_release_date_tag: String(
+          !document.getElementById("dl-tag-release-date").checked,
+        ),
+        no_media_type_tag: String(
+          !document.getElementById("dl-tag-media-type").checked,
+        ),
+        no_genre_tag: String(!document.getElementById("dl-tag-genre").checked),
+        no_track_number_tag: String(
+          !document.getElementById("dl-tag-track-number").checked,
+        ),
+        no_track_total_tag: String(
+          !document.getElementById("dl-tag-track-total").checked,
+        ),
+        no_disc_number_tag: String(
+          !document.getElementById("dl-tag-disc-number").checked,
+        ),
+        no_disc_total_tag: String(
+          !document.getElementById("dl-tag-disc-total").checked,
+        ),
+        no_composer_tag: String(
+          !document.getElementById("dl-tag-composer").checked,
+        ),
+        no_explicit_tag: String(
+          !document.getElementById("dl-tag-explicit").checked,
+        ),
+        no_copyright_tag: String(
+          !document.getElementById("dl-tag-copyright").checked,
+        ),
+        no_label_tag: String(!document.getElementById("dl-tag-label").checked),
+        no_upc_tag: String(!document.getElementById("dl-tag-upc").checked),
+        no_isrc_tag: String(!document.getElementById("dl-tag-isrc").checked),
       };
       const dir = document.getElementById("dl-directory").value.trim();
       if (dir) payload.default_folder = dir;
@@ -776,7 +1166,28 @@
       "dl-no-m3u",
       "dl-no-fallback",
       "dl-no-db",
+      "dl-lyrics-enabled",
       "dl-smart-discography",
+      "dl-fix-md5s",
+      "dl-segmented-fallback",
+      "dl-multiple-disc-one-dir",
+      "dl-tag-album-artist",
+      "dl-tag-album-title",
+      "dl-tag-track-artist",
+      "dl-tag-track-title",
+      "dl-tag-release-date",
+      "dl-tag-media-type",
+      "dl-tag-genre",
+      "dl-tag-track-number",
+      "dl-tag-track-total",
+      "dl-tag-disc-number",
+      "dl-tag-disc-total",
+      "dl-tag-composer",
+      "dl-tag-explicit",
+      "dl-tag-copyright",
+      "dl-tag-label",
+      "dl-tag-upc",
+      "dl-tag-isrc",
     ].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.addEventListener("change", _autosave);
@@ -790,7 +1201,15 @@
     }
 
     // Debounced save for text inputs
-    ["dl-directory", "dl-folder-format", "dl-track-format"].forEach((id) => {
+    [
+      "dl-directory",
+      "dl-folder-format",
+      "dl-track-format",
+      "dl-multiple-disc-track-format",
+      "dl-multiple-disc-prefix",
+      "dl-max-workers",
+      "dl-delay-seconds",
+    ].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.addEventListener("input", _scheduleAutosave);
     });
@@ -870,6 +1289,27 @@
     let _dlTrackTotal = 0;
     let _dlTrackDone = 0;
     let _dlTotalLocked = false;
+    let _dlTrackFinished = new Set();
+    /** Queue URL → count of purchase-only tracks (album badge). */
+    let _purchaseOnlyCountByUrl = new Map();
+
+    const DL_TIP_PURCHASE_QUEUE =
+      "Open album on Qobuz to purchase (full album required for these tracks)";
+    const DL_TIP_NOT_STREAMABLE =
+      "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted)—open it on Qobuz to check.";
+
+    function _trackCountForResolvedQueueUrl(url) {
+      const qi = _urlQueue.find((q) => q.url === url);
+      if (!qi || !qi.resolved) return 1;
+      const r = qi.resolved;
+      const n = Number(r.tracks);
+      if (r.type === "artist" && r.raw_tracks != null) {
+        const a = Number(r.raw_tracks);
+        if (a > 0) return a;
+      }
+      if (n > 0) return n;
+      return 1;
+    }
 
     function _findCardByUrl(url) {
       const cards = document.querySelectorAll("#dl-queue .queue-card");
@@ -972,14 +1412,86 @@
           card.classList.add("dl-active");
         }
       } else if (ev.type === "track_start") {
-        // Advance track-level progress bar
-        _dlTrackDone++;
-        // If we somehow exceed the estimated total (e.g. artist URL with many
-        // albums), grow the total so the bar never stalls at 100% prematurely.
-        if (!_dlTotalLocked && _dlTrackDone > _dlTrackTotal) {
-           _dlTrackTotal = _dlTrackDone + 1;
+        let trackNo = "";
+        let title = "";
+        let coverUrl = "";
+        if (ev.track_no != null && String(ev.track_no).trim() !== "") {
+          trackNo = String(ev.track_no).trim();
+          title = String(ev.title || "").trim();
+          coverUrl = String(ev.cover_url || "").trim();
+        } else {
+          const parsed = _parseTrackRef("", ev.title || "");
+          trackNo = parsed.trackNo;
+          title = parsed.title;
+        }
+        _ensureTrackStatusCard(trackNo, title, true, coverUrl);
+        _setTrackDownloadChip(trackNo, title, "downloading", "");
+        _updateProgress();
+      } else if (ev.type === "track_result") {
+        const _trackKey = `${String(ev.track_no || "").trim()}|${String(
+          ev.title || "",
+        ).trim()}|${String(ev.status || "").trim()}|${String(
+          ev.detail || "",
+        ).trim()}`;
+        if (!_dlTrackFinished.has(_trackKey)) {
+          _dlTrackFinished.add(_trackKey);
+          _dlTrackDone++;
+          if (!_dlTotalLocked && _dlTrackDone > _dlTrackTotal) {
+            _dlTrackTotal = _dlTrackDone + 1;
+          }
+        }
+        const st = String(ev.status || "").toLowerCase();
+        const isFailed = st === "failed";
+        const isPurchase = st === "purchase_only";
+        const detail = String(ev.detail || "").trim();
+        if (isPurchase && detail) {
+          _setTrackDownloadChip(ev.track_no, ev.title, "Album Purchase Only", "failed", {
+            href: detail,
+            titleAttr: DL_TIP_PURCHASE_QUEUE,
+          });
+        } else {
+          _setTrackDownloadChip(
+            ev.track_no,
+            ev.title,
+            isFailed ? "failed" : "downloaded",
+            isFailed ? "failed" : "done",
+          );
+        }
+        const qurl = String(ev.source_url || "").trim();
+        if (isPurchase && qurl) {
+          const qcard = _findCardByUrl(qurl);
+          if (qcard) {
+            qcard.classList.remove("dl-active", "dl-pending", "dl-done");
+            qcard.classList.add("dl-error");
+            const info = qcard.querySelector(".queue-card-info");
+            if (info) {
+              const n =
+                (_purchaseOnlyCountByUrl.get(qurl) || 0) + 1;
+              _purchaseOnlyCountByUrl.set(qurl, n);
+              let badge = info.querySelector(".dl-error-badge.dl-purchase-badge");
+              if (!badge) {
+                badge = document.createElement("span");
+                badge.className = "dl-error-badge dl-purchase-badge";
+                badge.setAttribute("data-tip", DL_TIP_PURCHASE_QUEUE);
+                badge.setAttribute("aria-label", DL_TIP_PURCHASE_QUEUE);
+                badge.removeAttribute("title");
+                info.appendChild(badge);
+              }
+              badge.textContent = `${n} ⚠ Purchase only`;
+              badge.setAttribute("data-tip", DL_TIP_PURCHASE_QUEUE);
+              badge.setAttribute("aria-label", DL_TIP_PURCHASE_QUEUE);
+              badge.removeAttribute("title");
+            }
+          }
         }
         _updateProgress();
+      } else if (ev.type === "track_lyrics") {
+        _setTrackLyricsChip(
+          ev.track_no,
+          ev.title,
+          ev.lyric_type || "none",
+          ev.confidence,
+        );
       } else if (ev.type === "url_done") {
         _dlDone++;
         // Sync track total upward if real count exceeded estimate
@@ -988,8 +1500,12 @@
         const card = _findCardByUrl(ev.url);
         if (card) {
           card.classList.remove("dl-active", "dl-pending");
-          card.classList.add("dl-done");
-          setTimeout(() => _removeFromQueue(ev.url, card), 1400);
+          if (card.querySelector(".dl-purchase-badge")) {
+            card.classList.add("dl-error");
+          } else {
+            card.classList.add("dl-done");
+            setTimeout(() => _removeFromQueue(ev.url, card), 1400);
+          }
         }
       } else if (ev.type === "url_error") {
         _dlDone++;
@@ -998,13 +1514,19 @@
         if (card) {
           card.classList.remove("dl-active", "dl-pending");
           card.classList.add("dl-error");
-          // Inject error badge into the card's info block
           const info = card.querySelector(".queue-card-info");
-          if (info && !info.querySelector(".dl-error-badge")) {
-            const badge = document.createElement("span");
-            badge.className = "dl-error-badge";
-            badge.textContent = "⚠ Failed";
-            info.appendChild(badge);
+          if (info) {
+            const n = _trackCountForResolvedQueueUrl(ev.url);
+            let badge = info.querySelector(".dl-error-badge.dl-url-failed-badge");
+            if (!badge) {
+              badge = document.createElement("span");
+              badge.className = "dl-error-badge dl-url-failed-badge";
+              info.appendChild(badge);
+            }
+            badge.textContent = `${n} ⚠ Failed`;
+            badge.setAttribute("data-tip", DL_TIP_NOT_STREAMABLE);
+            badge.setAttribute("aria-label", DL_TIP_NOT_STREAMABLE);
+            badge.removeAttribute("title");
           }
         }
       } else if (ev.type === "dl_complete") {
@@ -1071,6 +1593,7 @@
         quality: document.getElementById("dl-quality").value || null,
         directory: document.getElementById("dl-directory").value.trim() || null,
         embed_art: document.getElementById("dl-embed-art").checked,
+        lyrics_enabled: document.getElementById("dl-lyrics-enabled").checked,
         og_cover: document.getElementById("dl-og-cover").checked,
         no_cover: document.getElementById("dl-no-cover").checked,
         albums_only: document.getElementById("dl-albums-only").checked,
@@ -1079,10 +1602,56 @@
         no_db: document.getElementById("dl-no-db").checked,
         smart_discography: document.getElementById("dl-smart-discography")
           .checked,
+        fix_md5s: document.getElementById("dl-fix-md5s").checked,
+        segmented_fallback: document.getElementById("dl-segmented-fallback")
+          .checked,
+        multiple_disc_prefix:
+          document.getElementById("dl-multiple-disc-prefix").value.trim() ||
+          null,
+        multiple_disc_one_dir: !document.getElementById("dl-multiple-disc-one-dir")
+          .checked,
+        multiple_disc_track_format:
+          document
+            .getElementById("dl-multiple-disc-track-format")
+            .value.trim() || null,
+        max_workers:
+          parseInt(document.getElementById("dl-max-workers").value, 10) || 1,
+        delay_seconds:
+          parseInt(document.getElementById("dl-delay-seconds").value, 10) || 0,
         folder_format:
           document.getElementById("dl-folder-format").value.trim() || null,
         track_format:
           document.getElementById("dl-track-format").value.trim() || null,
+        no_album_artist_tag:
+          document.getElementById("dl-tag-album-artist").checked === false,
+        no_album_title_tag:
+          document.getElementById("dl-tag-album-title").checked === false,
+        no_track_artist_tag:
+          document.getElementById("dl-tag-track-artist").checked === false,
+        no_track_title_tag:
+          document.getElementById("dl-tag-track-title").checked === false,
+        no_release_date_tag:
+          document.getElementById("dl-tag-release-date").checked === false,
+        no_media_type_tag:
+          document.getElementById("dl-tag-media-type").checked === false,
+        no_genre_tag: document.getElementById("dl-tag-genre").checked === false,
+        no_track_number_tag:
+          document.getElementById("dl-tag-track-number").checked === false,
+        no_track_total_tag:
+          document.getElementById("dl-tag-track-total").checked === false,
+        no_disc_number_tag:
+          document.getElementById("dl-tag-disc-number").checked === false,
+        no_disc_total_tag:
+          document.getElementById("dl-tag-disc-total").checked === false,
+        no_composer_tag:
+          document.getElementById("dl-tag-composer").checked === false,
+        no_explicit_tag:
+          document.getElementById("dl-tag-explicit").checked === false,
+        no_copyright_tag:
+          document.getElementById("dl-tag-copyright").checked === false,
+        no_label_tag: document.getElementById("dl-tag-label").checked === false,
+        no_upc_tag: document.getElementById("dl-tag-upc").checked === false,
+        no_isrc_tag: document.getElementById("dl-tag-isrc").checked === false,
       };
 
       try {
@@ -1105,6 +1674,9 @@
           _dlTrackTotal = _textMode ? data.queued : _calcTrackTotal();
           _dlTrackDone = 0;
           _dlTotalLocked = false;
+          _dlTrackFinished = new Set();
+          _purchaseOnlyCountByUrl = new Map();
+        _resetTrackStatusCards();
           document.querySelectorAll("#dl-queue .queue-card").forEach((c) => {
             c.classList.add("dl-pending");
           });
@@ -1118,6 +1690,14 @@
     document.getElementById("dl-clear-log").addEventListener("click", () => {
       document.getElementById("log-output").innerHTML = "";
     });
+    const clearTrackStatusBtn = document.getElementById("dl-clear-track-status");
+    if (clearTrackStatusBtn) {
+      clearTrackStatusBtn.addEventListener("click", () => {
+        _resetTrackStatusCards();
+      });
+    }
+    _initCollapsibleContainer("dl-track-status-container", "dl-track-status-toggle");
+    _initCollapsibleContainer("dl-log-container", "dl-log-toggle");
   }
 
   // ── Search tab ────────────────────────────────────────────
@@ -1416,6 +1996,7 @@
       const res = await fetch("/api/status");
       const data = await res.json();
       const cfg = data.config || {};
+      const capabilities = data.capabilities || {};
 
       setValue("cfg-email", cfg.email || "");
       setValue("cfg-folder", cfg.default_folder || "Qobuz Downloads");
@@ -1429,6 +2010,7 @@
         cfg.track_format || "{tracknumber} - {tracktitle}",
       );
       setCheck("cfg-embed-art", cfg.embed_art === "true");
+      setCheck("cfg-lyrics-enabled", cfg.lyrics_enabled === "true");
       setCheck("cfg-og-cover", cfg.og_cover === "true");
       setCheck("cfg-no-cover", cfg.no_cover === "true");
       setCheck("cfg-albums-only", cfg.albums_only === "true");
@@ -1443,6 +2025,7 @@
       setValue("dl-folder-format", cfg.folder_format || "");
       setValue("dl-track-format", cfg.track_format || "");
       setCheck("dl-embed-art", cfg.embed_art === "true");
+      setCheck("dl-lyrics-enabled", cfg.lyrics_enabled === "true");
       setCheck("dl-og-cover", cfg.og_cover === "true");
       setCheck("dl-no-cover", cfg.no_cover === "true");
       setCheck("dl-albums-only", cfg.albums_only === "true");
@@ -1450,6 +2033,47 @@
       setCheck("dl-no-fallback", cfg.no_fallback === "true");
       setCheck("dl-no-db", cfg.no_database === "true");
       setCheck("dl-smart-discography", cfg.smart_discography === "true");
+      setCheck("dl-fix-md5s", cfg.fix_md5s === "true");
+      setCheck("dl-segmented-fallback", cfg.segmented_fallback !== "false");
+      setCheck("dl-multiple-disc-one-dir", cfg.multiple_disc_one_dir !== "true");
+      setValue("dl-multiple-disc-prefix", cfg.multiple_disc_prefix || "Disc");
+      setValue(
+        "dl-multiple-disc-track-format",
+        cfg.multiple_disc_track_format ||
+          "{disc_number_unpadded}{track_number} - {tracktitle}",
+      );
+      setValue("dl-max-workers", cfg.max_workers || "1");
+      setValue("dl-delay-seconds", cfg.delay_seconds || "0");
+      setCheck("dl-tag-album-artist", cfg.no_album_artist_tag !== "true");
+      setCheck("dl-tag-album-title", cfg.no_album_title_tag !== "true");
+      setCheck("dl-tag-track-artist", cfg.no_track_artist_tag !== "true");
+      setCheck("dl-tag-track-title", cfg.no_track_title_tag !== "true");
+      setCheck("dl-tag-release-date", cfg.no_release_date_tag !== "true");
+      setCheck("dl-tag-media-type", cfg.no_media_type_tag !== "true");
+      setCheck("dl-tag-genre", cfg.no_genre_tag !== "true");
+      setCheck("dl-tag-track-number", cfg.no_track_number_tag !== "true");
+      setCheck("dl-tag-track-total", cfg.no_track_total_tag !== "true");
+      setCheck("dl-tag-disc-number", cfg.no_disc_number_tag !== "true");
+      setCheck("dl-tag-disc-total", cfg.no_disc_total_tag !== "true");
+      setCheck("dl-tag-composer", cfg.no_composer_tag !== "true");
+      setCheck("dl-tag-explicit", cfg.no_explicit_tag !== "true");
+      setCheck("dl-tag-copyright", cfg.no_copyright_tag !== "true");
+      setCheck("dl-tag-label", cfg.no_label_tag !== "true");
+      setCheck("dl-tag-upc", cfg.no_upc_tag !== "true");
+      setCheck("dl-tag-isrc", cfg.no_isrc_tag !== "true");
+
+      const md5Toggle = document.getElementById("dl-fix-md5s");
+      if (md5Toggle) {
+        const hasFlac = !!capabilities.flac_cli;
+        md5Toggle.disabled = !hasFlac;
+        if (!hasFlac) {
+          md5Toggle.checked = false;
+          md5Toggle.closest(".toggle-label")?.setAttribute(
+            "data-tip",
+            "Fix FLAC MD5 needs the `flac` CLI tool. It is not available in this runtime.",
+          );
+        }
+      }
     } catch (e) {
       console.error("Failed to load settings", e);
     }
@@ -1739,41 +2363,138 @@
   // ── Format field help panels (click ⓘ to open; click out to close) ──
   function initFormatTooltips() {
     let openTip = null;
+    const tooltipToTrigger = new Map();
 
     function positionFormatTooltip(tip, anchorEl) {
       const zone = anchorEl.closest(".form-group");
       if (!zone) return;
-      const zoneRect = zone.getBoundingClientRect();
+      
       tip.style.position = "fixed";
       tip.style.display = "block";
       tip.style.top = "auto";
-      tip.style.bottom = window.innerHeight - zoneRect.top + 8 + "px";
-      const rightFromEdge = window.innerWidth - zoneRect.right;
-      tip.style.right = Math.max(8, rightFromEdge) + "px";
+      tip.style.bottom = "auto";
       tip.style.left = "auto";
-      const rect = tip.getBoundingClientRect();
-      if (rect.left < 8) {
-        tip.style.right = "auto";
-        tip.style.left = "8px";
+      tip.style.right = "auto";
+      tip.style.transform = "";
+      
+      const tipRect = tip.getBoundingClientRect();
+      const tipHeight = tipRect.height;
+      const tipWidth = tipRect.width;
+      
+      const zoneRect = zone.getBoundingClientRect();
+      const margin = 8;
+      
+      const spaceAbove = zoneRect.top;
+      const spaceBelow = window.innerHeight - zoneRect.bottom;
+      const spaceLeft = zoneRect.left;
+      const spaceRight = window.innerWidth - zoneRect.right;
+      
+      if (spaceAbove >= tipHeight + margin) {
+        tip.style.bottom = (window.innerHeight - zoneRect.top + margin) + "px";
+        const rightFromEdge = window.innerWidth - zoneRect.right;
+        tip.style.right = Math.max(margin, rightFromEdge) + "px";
+      } else if (spaceRight >= tipWidth + margin) {
+        tip.style.left = (zoneRect.right + margin) + "px";
+        let topPos = zoneRect.top + (zoneRect.height / 2) - (tipHeight / 2);
+        if (topPos < margin) {
+          topPos = margin;
+        } else if (topPos + tipHeight + margin > window.innerHeight) {
+          topPos = window.innerHeight - tipHeight - margin;
+        }
+        tip.style.top = topPos + "px";
+      } else if (spaceLeft >= tipWidth + margin) {
+        tip.style.right = (window.innerWidth - zoneRect.left + margin) + "px";
+        let topPos = zoneRect.top + (zoneRect.height / 2) - (tipHeight / 2);
+        if (topPos < margin) {
+          topPos = margin;
+        } else if (topPos + tipHeight + margin > window.innerHeight) {
+          topPos = window.innerHeight - tipHeight - margin;
+        }
+        tip.style.top = topPos + "px";
+      } else if (spaceBelow >= tipHeight + margin) {
+        tip.style.top = (zoneRect.bottom + margin) + "px";
+        const rightFromEdge = window.innerWidth - zoneRect.right;
+        tip.style.right = Math.max(margin, rightFromEdge) + "px";
+      } else {
+        tip.style.top = "50%";
+        tip.style.left = "50%";
+        tip.style.transform = "translate(-50%, -50%)";
       }
+      
+      if (tip.style.right && tip.style.right !== "auto" && (!tip.style.left || tip.style.left === "auto")) {
+        const rect = tip.getBoundingClientRect();
+        if (rect.left < margin) {
+          tip.style.right = "auto";
+          tip.style.left = margin + "px";
+        }
+      }
+    }
+
+    const formatExamples = {
+      "{artist}": "Bastille",
+      "{albumartist}": "Bastille",
+      "{album}": "Bad Blood X (10th Anniversary Edition)",
+      "{album_title_base}": "Bad Blood X",
+      "{year}": "2013",
+      "{release_date}": "2013-03-04",
+      "{label}": "UMC (Universal Music Catalogue)",
+      "{barcode}": "0602458674385",
+      "{disc_count}": "2",
+      "{track_count}": "33",
+      "{bit_depth}": "24",
+      "{sampling_rate}": "96.0",
+      "{format}": "FLAC",
+      "{tracknumber}": "08",
+      "{track_number}": "08",
+      "{tracktitle}": "Icarus (Dan's Bedroom Demo)",
+      "{track_title_base}": "Icarus",
+      "{version}": "10th Anniversary Edition",
+      "{disc_number}": "02",
+      "{disc_number_unpadded}": "2",
+      "{isrc}": "GBUM72301353"
+    };
+
+    function generatePreview(text) {
+      return text.replace(/\{[^}]+\}/g, match => formatExamples[match] || match);
+    }
+
+    function updateBuilderPreview(tip, builderInput) {
+      const preview = tip.querySelector(".fmt-preview-output");
+      if (!preview || !builderInput) return;
+      const val = builderInput.value;
+      if (!val) {
+        resetFormatPreview(tip);
+        return;
+      }
+      let generated = generatePreview(val);
+      const targetId = builderInput.getAttribute("data-target");
+      if (targetId && targetId.includes("track-format")) {
+        generated += ".flac";
+      }
+      preview.textContent = generated;
+      preview.classList.remove("fmt-preview-placeholder");
+      preview.classList.add("fmt-preview-builder");
     }
 
     function resetFormatPreview(tip) {
       const preview = tip.querySelector(".fmt-preview-output");
+      const builderInput = tip.querySelector(".fmt-builder-input");
       if (!preview) return;
-      const ph = preview.dataset.placeholder || "Hover a template below";
+      if (builderInput && builderInput.value) {
+        updateBuilderPreview(tip, builderInput);
+        return;
+      }
+      const ph = preview.dataset.placeholder || "Hover a template or type in builder";
       preview.textContent = ph;
       preview.classList.add("fmt-preview-placeholder");
+      preview.classList.remove("fmt-preview-builder");
     }
 
     function closeAllFormatTips() {
       if (!openTip) return;
       openTip.style.display = "none";
       resetFormatPreview(openTip);
-      const prevId =
-        openTip.id === "folder-format-tooltip"
-          ? "folder-format-help"
-          : "track-format-help";
+      const prevId = tooltipToTrigger.get(openTip.id);
       const prevTrigger = document.getElementById(prevId);
       if (prevTrigger) {
         prevTrigger.classList.remove("active");
@@ -1785,28 +2506,136 @@
     function bindTemplatePreviews(tip) {
       const preview = tip.querySelector(".fmt-preview-output");
       const container = tip.querySelector(".fmt-templates");
-      if (!preview || !container) return;
-      const placeholder =
-        preview.dataset.placeholder || "Hover a template below";
+      const builderInput = tip.querySelector(".fmt-builder-input");
+      const builderHighlights = tip.querySelector(".fmt-builder-highlights");
+      
+      if (!preview) return;
+      const placeholder = preview.dataset.placeholder || "Hover a template or type in builder";
 
-      container.querySelectorAll(".fmt-template-chip").forEach((chip) => {
-        chip.addEventListener("mouseenter", () => {
-          const text = chip.getAttribute("data-preview");
-          if (!text) return;
-          preview.textContent = text;
-          preview.classList.remove("fmt-preview-placeholder");
+      if (container) {
+        container.querySelectorAll(".fmt-template-chip").forEach((chip) => {
+          chip.addEventListener("mouseenter", () => {
+            const text = chip.getAttribute("data-preview");
+            if (!text) return;
+            preview.textContent = text;
+            preview.classList.remove("fmt-preview-placeholder");
+            preview.classList.remove("fmt-preview-builder");
+          });
+          chip.addEventListener("click", () => {
+            if (builderInput) {
+              builderInput.value = chip.textContent;
+              builderInput.dispatchEvent(new Event("input", { bubbles: true }));
+              
+              // Flash effect
+              const originalBg = chip.style.background;
+              chip.style.background = "var(--success-dim)";
+              chip.style.borderColor = "var(--success)";
+              setTimeout(() => {
+                chip.style.background = originalBg;
+                chip.style.borderColor = "";
+              }, 300);
+            }
+          });
         });
-      });
-      container.addEventListener("mouseleave", () => {
-        preview.textContent = placeholder;
-        preview.classList.add("fmt-preview-placeholder");
-      });
+        container.addEventListener("mouseleave", () => {
+          resetFormatPreview(tip);
+        });
+      }
+
+      if (builderInput && builderHighlights) {
+        const applyBtn = tip.querySelector(".fmt-builder-apply");
+        const targetId = builderInput.getAttribute("data-target");
+        const targetInput = targetId ? document.getElementById(targetId) : null;
+
+        const checkApplyState = () => {
+          if (!applyBtn || !targetInput) return;
+          if (targetInput.value !== builderInput.value) {
+            applyBtn.classList.add("active");
+            applyBtn.disabled = false;
+          } else {
+            applyBtn.classList.remove("active");
+            applyBtn.disabled = true;
+          }
+        };
+
+        const updateHighlights = () => {
+          const text = builderInput.value;
+          // Escape HTML
+          const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          // Wrap {vars} in span
+          const highlighted = escaped.replace(/(\{[^}]+\})/g, '<span class="var">$1</span>');
+          builderHighlights.innerHTML = highlighted;
+          updateBuilderPreview(tip, builderInput);
+          checkApplyState();
+        };
+
+        builderInput.addEventListener("input", () => {
+          updateHighlights();
+        });
+
+        if (applyBtn && targetInput) {
+          applyBtn.addEventListener("click", () => {
+            if (applyBtn.disabled) return;
+            targetInput.value = builderInput.value;
+            targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+            checkApplyState();
+          });
+        }
+
+        builderInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (applyBtn && !applyBtn.disabled) {
+              applyBtn.click();
+            }
+          }
+        });
+        
+        // Sync back from main input if user types there while tooltip is open
+        if (targetInput) {
+          targetInput.addEventListener("input", () => {
+            if (openTip === tip && builderInput.value !== targetInput.value) {
+              builderInput.value = targetInput.value;
+              updateHighlights();
+            }
+          });
+        }
+        builderInput.addEventListener("scroll", () => {
+          builderHighlights.scrollLeft = builderInput.scrollLeft;
+        });
+        
+        // Handle clicking variables
+        tip.querySelectorAll(".fmt-vars-table code").forEach(codeEl => {
+          codeEl.addEventListener("click", () => {
+            const varText = codeEl.textContent;
+            const start = builderInput.selectionStart;
+            const end = builderInput.selectionEnd;
+            const val = builderInput.value;
+            builderInput.value = val.substring(0, start) + varText + val.substring(end);
+            builderInput.selectionStart = builderInput.selectionEnd = start + varText.length;
+            builderInput.focus();
+            updateHighlights();
+          });
+        });
+      }
     }
 
     const pairs = [
       ["folder-format-help", "folder-format-tooltip"],
       ["track-format-help", "track-format-tooltip"],
+      ["multi-disc-format-help", "multi-disc-format-tooltip"],
     ];
+
+    /** Open tooltip id → its format text field (only this element keeps the panel open on click-outside). */
+    const tooltipInputId = {
+      "folder-format-tooltip": "dl-folder-format",
+      "track-format-tooltip": "dl-track-format",
+      "multi-disc-format-tooltip": "dl-multiple-disc-track-format",
+    };
+
+    pairs.forEach(([triggerId, tooltipId]) => {
+      tooltipToTrigger.set(tooltipId, triggerId);
+    });
 
     pairs.forEach(([triggerId, tooltipId]) => {
       const trigger = document.getElementById(triggerId);
@@ -1827,6 +2656,19 @@
           openTip = tip;
           trigger.classList.add("active");
           trigger.setAttribute("aria-expanded", "true");
+          
+          // Sync builder with main input when opening
+          const builderInput = tip.querySelector(".fmt-builder-input");
+          if (builderInput) {
+            const targetId = builderInput.getAttribute("data-target");
+            if (targetId) {
+              const targetInput = document.getElementById(targetId);
+              if (targetInput) {
+                builderInput.value = targetInput.value;
+                builderInput.dispatchEvent(new Event("input", { bubbles: true }));
+              }
+            }
+          }
         }
       }
 
@@ -1839,25 +2681,63 @@
       });
     });
 
+    let mousedownTarget = null;
+    document.addEventListener("mousedown", (e) => {
+      mousedownTarget = e.target;
+    });
+
     document.addEventListener("click", (e) => {
       if (!openTip) return;
-      if (openTip.contains(e.target)) return;
+      const target = mousedownTarget || e.target;
+      if (openTip.contains(target)) return;
       const triggers = pairs
         .map(([id]) => document.getElementById(id))
         .filter(Boolean);
-      if (triggers.some((t) => t.contains(e.target))) return;
+      if (triggers.some((t) => t.contains(target))) return;
+      const fieldId = tooltipInputId[openTip.id];
+      if (fieldId && target && target.id === fieldId) return;
       closeAllFormatTips();
     });
 
     window.addEventListener("resize", () => {
       if (!openTip) return;
-      const tid =
-        openTip.id === "folder-format-tooltip"
-          ? "folder-format-help"
-          : "track-format-help";
+      const tid = tooltipToTrigger.get(openTip.id);
       const tr = document.getElementById(tid);
       if (tr) positionFormatTooltip(openTip, tr);
     });
+
+    let isHoveringVars = false;
+
+    pairs.forEach(([triggerId, tooltipId]) => {
+      const tip = document.getElementById(tooltipId);
+      if (!tip) return;
+      const scrollArea = tip.querySelector(".fmt-vars-scroll");
+      if (scrollArea) {
+        scrollArea.addEventListener("mouseenter", () => isHoveringVars = true);
+        scrollArea.addEventListener("mouseleave", () => isHoveringVars = false);
+      }
+    });
+
+    // Scroll does not bubble; use capture so any scrollable ancestor closes the panel.
+    window.addEventListener(
+      "scroll",
+      (e) => {
+        if (isHoveringVars) return;
+        if (e.target && e.target.tagName === "INPUT") return;
+        if (e.target && e.target.classList) {
+          if (
+            e.target.classList.contains("fmt-vars-scroll") ||
+            e.target.classList.contains("fmt-builder-input") ||
+            e.target.classList.contains("fmt-builder-highlights") ||
+            e.target.classList.contains("format-tooltip")
+          ) {
+            return;
+          }
+        }
+        closeAllFormatTips();
+      },
+      true,
+    );
   }
 
   function initDonationPopover() {
@@ -1924,7 +2804,107 @@
     }
   }
 
+  function initGlobalTooltip() {
+    const tooltip = document.getElementById("global-tooltip");
+    if (!tooltip) return;
+
+    let activeTarget = null;
+
+    const formatHelpTooltipId = {
+      "folder-format-help": "folder-format-tooltip",
+      "track-format-help": "track-format-tooltip",
+      "multi-disc-format-help": "multi-disc-format-tooltip",
+    };
+
+    function shouldSuppressDataTip(targetEl) {
+      if (!targetEl || !targetEl.id) return false;
+      if (targetEl.id === "settings-gear-btn") {
+        const pop = document.getElementById("settings-popover");
+        return !!(pop && !pop.classList.contains("hidden"));
+      }
+      if (targetEl.id === "monero-btn") {
+        const pop = document.getElementById("donation-popover");
+        return !!(pop && !pop.classList.contains("hidden"));
+      }
+      const tipId = formatHelpTooltipId[targetEl.id];
+      if (tipId) {
+        const tip = document.getElementById(tipId);
+        return !!(tip && tip.style.display === "block");
+      }
+      return false;
+    }
+
+    document.addEventListener("mouseover", (e) => {
+      let el = e.target;
+      if (!el) return;
+      if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+      if (!el || el.nodeType !== Node.ELEMENT_NODE) return;
+
+      let targetEl = el.closest("[data-tip]");
+      let tipText = targetEl ? targetEl.getAttribute("data-tip") : null;
+
+      if (!targetEl) {
+        // Auto-detect truncation
+        const style = window.getComputedStyle(el);
+        if (style.textOverflow === "ellipsis" && el.offsetWidth < el.scrollWidth) {
+          targetEl = el;
+          tipText = el.textContent.trim();
+        }
+      }
+
+      if (targetEl && tipText && shouldSuppressDataTip(targetEl)) {
+        return;
+      }
+
+      if (targetEl && tipText) {
+        activeTarget = targetEl;
+        tooltip.textContent = tipText;
+        tooltip.classList.add("visible");
+
+        const rect = targetEl.getBoundingClientRect();
+        let top = rect.top - tooltip.offsetHeight - 10;
+        let left = rect.left + rect.width / 2 - tooltip.offsetWidth / 2;
+
+        if (top < 10) top = rect.bottom + 10;
+        if (left < 10) left = 10;
+        else if (left + tooltip.offsetWidth > window.innerWidth - 10) {
+          left = window.innerWidth - tooltip.offsetWidth - 10;
+        }
+
+        tooltip.style.top = top + "px";
+        tooltip.style.left = left + "px";
+      }
+    });
+
+    document.addEventListener("mouseout", (e) => {
+      if (activeTarget && !activeTarget.contains(e.relatedTarget)) {
+        tooltip.classList.remove("visible");
+        activeTarget = null;
+      }
+    });
+
+    document.addEventListener("scroll", () => {
+      if (activeTarget) {
+        tooltip.classList.remove("visible");
+        activeTarget = null;
+      }
+    }, true);
+
+    // Capture so this runs before handlers that call stopPropagation() (e.g. monero, format help).
+    document.addEventListener(
+      "click",
+      () => {
+        if (activeTarget) {
+          tooltip.classList.remove("visible");
+          activeTarget = null;
+        }
+      },
+      true,
+    );
+  }
+
   document.addEventListener("DOMContentLoaded", init);
   document.addEventListener("DOMContentLoaded", initFormatTooltips);
   document.addEventListener("DOMContentLoaded", initDonationPopover);
+  document.addEventListener("DOMContentLoaded", initGlobalTooltip);
 })();

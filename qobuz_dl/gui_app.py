@@ -6,6 +6,7 @@ import hashlib
 import logging
 import queue
 import re
+import shutil
 import threading
 import time
 import socket
@@ -60,8 +61,7 @@ class _QueueHandler(logging.Handler):
         msg = self.format(record)
         # Track whether an error was logged during the current URL's download
         if record.levelno >= logging.ERROR:
-            if getattr(_url_error_tls, "tracking", False):
-                _url_error_tls.had_error = True
+            _ctx_mark_error()
 
         # Strip ANSI colour codes for processing
         clean = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
@@ -69,15 +69,79 @@ class _QueueHandler(logging.Handler):
         # Intercept [TRACK_START] markers — emit a structured SSE event AND
         # replace the raw marker with a human-readable log line.
         if clean.startswith("[TRACK_START] "):
-            title = clean[len("[TRACK_START] ") :]
-            _emit_event({"type": "track_start", "title": title})
-            display = f"  \u2193 {title}"
+            payload = clean[len("[TRACK_START] ") :]
+            if "|" in payload:
+                parts = payload.split("|", 2)
+                track_no = parts[0].strip()
+                title = parts[1].strip() if len(parts) > 1 else ""
+                cover_url = parts[2].strip() if len(parts) > 2 else ""
+                _emit_event(
+                    {
+                        "type": "track_start",
+                        "track_no": track_no,
+                        "title": title,
+                        "cover_url": cover_url,
+                    }
+                )
+                display = f"  \u2193 {track_no}. {title}".strip()
+            else:
+                _emit_event({"type": "track_start", "title": payload})
+                display = f"  \u2193 {payload}"
             with _log_lock:
                 for q in _log_queues:
                     try:
                         q.put_nowait(display)
                     except queue.Full:
                         pass
+            return
+
+        if clean.startswith("[TRACK_RESULT] "):
+            payload = clean[len("[TRACK_RESULT] ") :]
+            parts = payload.split("|")
+            if len(parts) >= 4:
+                track_no, title, status, detail = (
+                    parts[0],
+                    parts[1],
+                    parts[2],
+                    parts[3],
+                )
+                queue_url = parts[4] if len(parts) >= 5 else ""
+                # Do not _ctx_mark_error() for purchase_only: it is a per-track outcome
+                # (queue card shows purchase count); URL-level url_error should reflect
+                # album/connection failures (e.g. Not streamable), not purchasable tracks.
+                ev = {
+                    "type": "track_result",
+                    "track_no": track_no,
+                    "title": title,
+                    "status": status,
+                    "detail": detail,
+                }
+                if queue_url:
+                    ev["source_url"] = queue_url
+                _emit_event(ev)
+            return
+
+        if clean.startswith("[TRACK_LYRICS] "):
+            payload = clean[len("[TRACK_LYRICS] ") :]
+            parts = payload.split("|", 4)
+            if len(parts) >= 4:
+                track_no, title, lyric_type, provider = (
+                    parts[0],
+                    parts[1],
+                    parts[2],
+                    parts[3],
+                )
+                confidence = parts[4] if len(parts) == 5 else ""
+                _emit_event(
+                    {
+                        "type": "track_lyrics",
+                        "track_no": track_no,
+                        "title": title,
+                        "lyric_type": lyric_type,
+                        "provider": provider,
+                        "confidence": confidence,
+                    }
+                )
             return
 
         with _log_lock:
@@ -117,11 +181,56 @@ _client_lock = threading.Lock()
 _qobuz_client = None  # QobuzDL instance
 _cancel_download = threading.Event()  # set by /api/cancel
 _download_active = False  # True while a download thread is running
-_url_error_tls = threading.local()  # per-thread error flag for per-URL tracking
+_url_ctx_lock = threading.Lock()
+_url_ctx = {"tracking": False, "had_error": False}  # cross-thread URL error tracking
+
+
+def _ctx_start_url():
+    with _url_ctx_lock:
+        _url_ctx["tracking"] = True
+        _url_ctx["had_error"] = False
+
+
+def _ctx_mark_error():
+    with _url_ctx_lock:
+        if _url_ctx["tracking"]:
+            _url_ctx["had_error"] = True
+
+
+def _ctx_finish_url() -> bool:
+    with _url_ctx_lock:
+        had_error = bool(_url_ctx["had_error"])
+        _url_ctx["tracking"] = False
+        _url_ctx["had_error"] = False
+        return had_error
 
 
 def _get_qobuz():
     return _qobuz_client
+
+
+def _as_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    sval = str(value).strip().lower()
+    if sval in {"1", "true", "yes", "on"}:
+        return True
+    if sval in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(default)
+
+
+def _as_int(value, default=0):
+    if value is None or value == "":
+        return int(default)
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def _build_qobuz_from_config(cfg, overrides=None):
@@ -132,26 +241,37 @@ def _build_qobuz_from_config(cfg, overrides=None):
     directory = o.get("directory") or cfg.get(
         "DEFAULT", "default_folder", fallback="Qobuz Downloads"
     )
-    quality = int(
-        o.get("quality") or cfg.get("DEFAULT", "default_quality", fallback="27")
+    quality = _as_int(
+        o.get("quality"), _as_int(cfg.get("DEFAULT", "default_quality", fallback="27"), 27)
     )
-    embed_art = o.get(
-        "embed_art", cfg.getboolean("DEFAULT", "embed_art", fallback=False)
+    embed_art = _as_bool(
+        o.get("embed_art"), cfg.getboolean("DEFAULT", "embed_art", fallback=False)
     )
-    albums_only = o.get(
-        "albums_only", cfg.getboolean("DEFAULT", "albums_only", fallback=False)
+    albums_only = _as_bool(
+        o.get("albums_only"), cfg.getboolean("DEFAULT", "albums_only", fallback=False)
     )
-    no_m3u = o.get("no_m3u", cfg.getboolean("DEFAULT", "no_m3u", fallback=False))
-    no_fallback = o.get(
-        "no_fallback", cfg.getboolean("DEFAULT", "no_fallback", fallback=False)
+    no_m3u = _as_bool(
+        o.get("no_m3u"), cfg.getboolean("DEFAULT", "no_m3u", fallback=False)
     )
-    og_cover = o.get("og_cover", cfg.getboolean("DEFAULT", "og_cover", fallback=False))
-    no_cover = o.get("no_cover", cfg.getboolean("DEFAULT", "no_cover", fallback=False))
-    no_database = o.get(
-        "no_db", cfg.getboolean("DEFAULT", "no_database", fallback=True)
+    no_fallback = _as_bool(
+        o.get("no_fallback"),
+        cfg.getboolean("DEFAULT", "no_fallback", fallback=False),
     )
-    smart_discography = o.get(
-        "smart_discography",
+    og_cover = _as_bool(
+        o.get("og_cover"), cfg.getboolean("DEFAULT", "og_cover", fallback=False)
+    )
+    no_cover = _as_bool(
+        o.get("no_cover"), cfg.getboolean("DEFAULT", "no_cover", fallback=False)
+    )
+    lyrics_enabled = _as_bool(
+        o.get("lyrics_enabled"),
+        cfg.getboolean("DEFAULT", "lyrics_enabled", fallback=False),
+    )
+    no_database = _as_bool(
+        o.get("no_db"), cfg.getboolean("DEFAULT", "no_database", fallback=True)
+    )
+    smart_discography = _as_bool(
+        o.get("smart_discography"),
         cfg.getboolean("DEFAULT", "smart_discography", fallback=False),
     )
     folder_format = o.get("folder_format") or cfg.get(
@@ -161,6 +281,38 @@ def _build_qobuz_from_config(cfg, overrides=None):
     )
     track_format = o.get("track_format") or cfg.get(
         "DEFAULT", "track_format", fallback="{tracknumber} - {tracktitle}"
+    )
+    fix_md5s = _as_bool(
+        o.get("fix_md5s"), cfg.getboolean("DEFAULT", "fix_md5s", fallback=False)
+    )
+    multiple_disc_prefix = o.get("multiple_disc_prefix") or cfg.get(
+        "DEFAULT", "multiple_disc_prefix", fallback="Disc"
+    )
+    multiple_disc_one_dir = _as_bool(
+        o.get("multiple_disc_one_dir"),
+        cfg.getboolean("DEFAULT", "multiple_disc_one_dir", fallback=False),
+    )
+    multiple_disc_track_format = o.get("multiple_disc_track_format") or cfg.get(
+        "DEFAULT",
+        "multiple_disc_track_format",
+        fallback="{disc_number_unpadded}{track_number} - {tracktitle}",
+    )
+    max_workers = max(
+        1,
+        _as_int(
+            o.get("max_workers"), _as_int(cfg.get("DEFAULT", "max_workers", fallback="1"), 1)
+        ),
+    )
+    delay_seconds = max(
+        0,
+        _as_int(
+            o.get("delay_seconds"),
+            _as_int(cfg.get("DEFAULT", "delay_seconds", fallback="0"), 0),
+        ),
+    )
+    segmented_fallback = _as_bool(
+        o.get("segmented_fallback"),
+        cfg.getboolean("DEFAULT", "segmented_fallback", fallback=True),
     )
 
     qobuz = QobuzDL(
@@ -172,10 +324,86 @@ def _build_qobuz_from_config(cfg, overrides=None):
         quality_fallback=not no_fallback,
         cover_og_quality=og_cover,
         no_cover=no_cover,
+        lyrics_enabled=lyrics_enabled,
         downloads_db=None if no_database else QOBUZ_DB,
         folder_format=folder_format,
         track_format=track_format,
         smart_discography=smart_discography,
+        fix_md5s=fix_md5s,
+        multiple_disc_prefix=multiple_disc_prefix,
+        multiple_disc_one_dir=multiple_disc_one_dir,
+        multiple_disc_track_format=multiple_disc_track_format,
+        max_workers=max_workers,
+        delay_seconds=delay_seconds,
+        segmented_fallback=segmented_fallback,
+        no_album_artist_tag=_as_bool(
+            o.get("no_album_artist_tag"),
+            cfg.getboolean("DEFAULT", "no_album_artist_tag", fallback=False),
+        ),
+        no_album_title_tag=_as_bool(
+            o.get("no_album_title_tag"),
+            cfg.getboolean("DEFAULT", "no_album_title_tag", fallback=False),
+        ),
+        no_track_artist_tag=_as_bool(
+            o.get("no_track_artist_tag"),
+            cfg.getboolean("DEFAULT", "no_track_artist_tag", fallback=False),
+        ),
+        no_track_title_tag=_as_bool(
+            o.get("no_track_title_tag"),
+            cfg.getboolean("DEFAULT", "no_track_title_tag", fallback=False),
+        ),
+        no_release_date_tag=_as_bool(
+            o.get("no_release_date_tag"),
+            cfg.getboolean("DEFAULT", "no_release_date_tag", fallback=False),
+        ),
+        no_media_type_tag=_as_bool(
+            o.get("no_media_type_tag"),
+            cfg.getboolean("DEFAULT", "no_media_type_tag", fallback=False),
+        ),
+        no_genre_tag=_as_bool(
+            o.get("no_genre_tag"),
+            cfg.getboolean("DEFAULT", "no_genre_tag", fallback=False),
+        ),
+        no_track_number_tag=_as_bool(
+            o.get("no_track_number_tag"),
+            cfg.getboolean("DEFAULT", "no_track_number_tag", fallback=False),
+        ),
+        no_track_total_tag=_as_bool(
+            o.get("no_track_total_tag"),
+            cfg.getboolean("DEFAULT", "no_track_total_tag", fallback=False),
+        ),
+        no_disc_number_tag=_as_bool(
+            o.get("no_disc_number_tag"),
+            cfg.getboolean("DEFAULT", "no_disc_number_tag", fallback=False),
+        ),
+        no_disc_total_tag=_as_bool(
+            o.get("no_disc_total_tag"),
+            cfg.getboolean("DEFAULT", "no_disc_total_tag", fallback=False),
+        ),
+        no_composer_tag=_as_bool(
+            o.get("no_composer_tag"),
+            cfg.getboolean("DEFAULT", "no_composer_tag", fallback=False),
+        ),
+        no_explicit_tag=_as_bool(
+            o.get("no_explicit_tag"),
+            cfg.getboolean("DEFAULT", "no_explicit_tag", fallback=False),
+        ),
+        no_copyright_tag=_as_bool(
+            o.get("no_copyright_tag"),
+            cfg.getboolean("DEFAULT", "no_copyright_tag", fallback=False),
+        ),
+        no_label_tag=_as_bool(
+            o.get("no_label_tag"),
+            cfg.getboolean("DEFAULT", "no_label_tag", fallback=False),
+        ),
+        no_upc_tag=_as_bool(
+            o.get("no_upc_tag"),
+            cfg.getboolean("DEFAULT", "no_upc_tag", fallback=False),
+        ),
+        no_isrc_tag=_as_bool(
+            o.get("no_isrc_tag"),
+            cfg.getboolean("DEFAULT", "no_isrc_tag", fallback=False),
+        ),
     )
     return qobuz
 
@@ -217,8 +445,25 @@ def api_status():
                 "og_cover": cfg["DEFAULT"].get("og_cover", "false"),
                 "embed_art": cfg["DEFAULT"].get("embed_art", "false"),
                 "no_cover": cfg["DEFAULT"].get("no_cover", "false"),
+                "lyrics_enabled": cfg["DEFAULT"].get("lyrics_enabled", "false"),
                 "no_database": cfg["DEFAULT"].get("no_database", "false"),
                 "smart_discography": cfg["DEFAULT"].get("smart_discography", "false"),
+                "fix_md5s": cfg["DEFAULT"].get("fix_md5s", "false"),
+                "multiple_disc_prefix": cfg["DEFAULT"].get(
+                    "multiple_disc_prefix", "Disc"
+                ),
+                "multiple_disc_one_dir": cfg["DEFAULT"].get(
+                    "multiple_disc_one_dir", "false"
+                ),
+                "multiple_disc_track_format": cfg["DEFAULT"].get(
+                    "multiple_disc_track_format",
+                    "{disc_number_unpadded}{track_number} - {tracktitle}",
+                ),
+                "max_workers": cfg["DEFAULT"].get("max_workers", "1"),
+                "delay_seconds": cfg["DEFAULT"].get("delay_seconds", "0"),
+                "segmented_fallback": cfg["DEFAULT"].get(
+                    "segmented_fallback", "true"
+                ),
                 "folder_format": cfg["DEFAULT"].get(
                     "folder_format",
                     "{artist}/{album}",
@@ -226,6 +471,45 @@ def api_status():
                 "track_format": cfg["DEFAULT"].get(
                     "track_format", "{tracknumber} - {tracktitle}"
                 ),
+                "no_album_artist_tag": cfg["DEFAULT"].get(
+                    "no_album_artist_tag", "false"
+                ),
+                "no_album_title_tag": cfg["DEFAULT"].get(
+                    "no_album_title_tag", "false"
+                ),
+                "no_track_artist_tag": cfg["DEFAULT"].get(
+                    "no_track_artist_tag", "false"
+                ),
+                "no_track_title_tag": cfg["DEFAULT"].get(
+                    "no_track_title_tag", "false"
+                ),
+                "no_release_date_tag": cfg["DEFAULT"].get(
+                    "no_release_date_tag", "false"
+                ),
+                "no_media_type_tag": cfg["DEFAULT"].get(
+                    "no_media_type_tag", "false"
+                ),
+                "no_genre_tag": cfg["DEFAULT"].get("no_genre_tag", "false"),
+                "no_track_number_tag": cfg["DEFAULT"].get(
+                    "no_track_number_tag", "false"
+                ),
+                "no_track_total_tag": cfg["DEFAULT"].get(
+                    "no_track_total_tag", "false"
+                ),
+                "no_disc_number_tag": cfg["DEFAULT"].get(
+                    "no_disc_number_tag", "false"
+                ),
+                "no_disc_total_tag": cfg["DEFAULT"].get(
+                    "no_disc_total_tag", "false"
+                ),
+                "no_composer_tag": cfg["DEFAULT"].get("no_composer_tag", "false"),
+                "no_explicit_tag": cfg["DEFAULT"].get("no_explicit_tag", "false"),
+                "no_copyright_tag": cfg["DEFAULT"].get(
+                    "no_copyright_tag", "false"
+                ),
+                "no_label_tag": cfg["DEFAULT"].get("no_label_tag", "false"),
+                "no_upc_tag": cfg["DEFAULT"].get("no_upc_tag", "false"),
+                "no_isrc_tag": cfg["DEFAULT"].get("no_isrc_tag", "false"),
             }
         except Exception:
             pass
@@ -238,6 +522,10 @@ def api_status():
             "config": config_data,
             "app_version": app_ver,
             "frozen": getattr(sys, "frozen", False),
+            "capabilities": {
+                "flac_cli": bool(shutil.which("flac")),
+                "ffmpeg_cli": bool(shutil.which("ffmpeg")),
+            },
         }
     )
 
@@ -314,6 +602,7 @@ def api_setup():
         cfg["DEFAULT"]["no_fallback"] = "false"
         cfg["DEFAULT"]["og_cover"] = "false"
         cfg["DEFAULT"]["embed_art"] = "false"
+        cfg["DEFAULT"]["lyrics_enabled"] = "false"
         cfg["DEFAULT"]["no_cover"] = "false"
         cfg["DEFAULT"]["no_database"] = "true"
         cfg["DEFAULT"]["app_id"] = app_id
@@ -324,6 +613,35 @@ def api_setup():
         cfg["DEFAULT"]["folder_format"] = "{artist}/{album}"
         cfg["DEFAULT"]["track_format"] = "{tracknumber} - {tracktitle}"
         cfg["DEFAULT"]["smart_discography"] = "false"
+        cfg["DEFAULT"]["fix_md5s"] = "false"
+        cfg["DEFAULT"]["multiple_disc_prefix"] = "Disc"
+        cfg["DEFAULT"]["multiple_disc_one_dir"] = "false"
+        cfg["DEFAULT"]["multiple_disc_track_format"] = (
+            "{disc_number_unpadded}{track_number} - {tracktitle}"
+        )
+        cfg["DEFAULT"]["max_workers"] = "1"
+        cfg["DEFAULT"]["delay_seconds"] = "0"
+        cfg["DEFAULT"]["segmented_fallback"] = "true"
+        for key in (
+            "no_album_artist_tag",
+            "no_album_title_tag",
+            "no_track_artist_tag",
+            "no_track_title_tag",
+            "no_release_date_tag",
+            "no_media_type_tag",
+            "no_genre_tag",
+            "no_track_number_tag",
+            "no_track_total_tag",
+            "no_disc_number_tag",
+            "no_disc_total_tag",
+            "no_composer_tag",
+            "no_explicit_tag",
+            "no_copyright_tag",
+            "no_label_tag",
+            "no_upc_tag",
+            "no_isrc_tag",
+        ):
+            cfg["DEFAULT"][key] = "false"
 
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)
@@ -501,11 +819,36 @@ def api_oauth_start():
                     "no_fallback",
                     "og_cover",
                     "embed_art",
+                    "lyrics_enabled",
                     "no_cover",
                     "no_database",
                     "folder_format",
                     "track_format",
                     "smart_discography",
+                    "fix_md5s",
+                    "multiple_disc_prefix",
+                    "multiple_disc_one_dir",
+                    "multiple_disc_track_format",
+                    "max_workers",
+                    "delay_seconds",
+                    "segmented_fallback",
+                    "no_album_artist_tag",
+                    "no_album_title_tag",
+                    "no_track_artist_tag",
+                    "no_track_title_tag",
+                    "no_release_date_tag",
+                    "no_media_type_tag",
+                    "no_genre_tag",
+                    "no_track_number_tag",
+                    "no_track_total_tag",
+                    "no_disc_number_tag",
+                    "no_disc_total_tag",
+                    "no_composer_tag",
+                    "no_explicit_tag",
+                    "no_copyright_tag",
+                    "no_label_tag",
+                    "no_upc_tag",
+                    "no_isrc_tag",
                 ):
                     if not cfg_write.has_option("DEFAULT", key):
                         defaults = {
@@ -517,11 +860,36 @@ def api_oauth_start():
                             "no_fallback": "false",
                             "og_cover": "false",
                             "embed_art": "false",
+                            "lyrics_enabled": "false",
                             "no_cover": "false",
                             "no_database": "true",
                             "folder_format": "{artist}/{album}",
                             "track_format": "{tracknumber} - {tracktitle}",
                             "smart_discography": "false",
+                            "fix_md5s": "false",
+                            "multiple_disc_prefix": "Disc",
+                            "multiple_disc_one_dir": "false",
+                            "multiple_disc_track_format": "{disc_number_unpadded}{track_number} - {tracktitle}",
+                            "max_workers": "1",
+                            "delay_seconds": "0",
+                            "segmented_fallback": "true",
+                            "no_album_artist_tag": "false",
+                            "no_album_title_tag": "false",
+                            "no_track_artist_tag": "false",
+                            "no_track_title_tag": "false",
+                            "no_release_date_tag": "false",
+                            "no_media_type_tag": "false",
+                            "no_genre_tag": "false",
+                            "no_track_number_tag": "false",
+                            "no_track_total_tag": "false",
+                            "no_disc_number_tag": "false",
+                            "no_disc_total_tag": "false",
+                            "no_composer_tag": "false",
+                            "no_explicit_tag": "false",
+                            "no_copyright_tag": "false",
+                            "no_label_tag": "false",
+                            "no_upc_tag": "false",
+                            "no_isrc_tag": "false",
                         }
                         cfg_write["DEFAULT"][key] = defaults.get(key, "")
                 with open(CONFIG_FILE, "w") as f:
@@ -584,6 +952,7 @@ def api_token_login():
         cfg["DEFAULT"]["no_fallback"] = "false"
         cfg["DEFAULT"]["og_cover"] = "false"
         cfg["DEFAULT"]["embed_art"] = "false"
+        cfg["DEFAULT"]["lyrics_enabled"] = "false"
         cfg["DEFAULT"]["no_cover"] = "false"
         cfg["DEFAULT"]["no_database"] = "true"
         cfg["DEFAULT"]["app_id"] = app_id
@@ -592,6 +961,35 @@ def api_token_login():
         cfg["DEFAULT"]["folder_format"] = "{artist}/{album}"
         cfg["DEFAULT"]["track_format"] = "{tracknumber} - {tracktitle}"
         cfg["DEFAULT"]["smart_discography"] = "false"
+        cfg["DEFAULT"]["fix_md5s"] = "false"
+        cfg["DEFAULT"]["multiple_disc_prefix"] = "Disc"
+        cfg["DEFAULT"]["multiple_disc_one_dir"] = "false"
+        cfg["DEFAULT"]["multiple_disc_track_format"] = (
+            "{disc_number_unpadded}{track_number} - {tracktitle}"
+        )
+        cfg["DEFAULT"]["max_workers"] = "1"
+        cfg["DEFAULT"]["delay_seconds"] = "0"
+        cfg["DEFAULT"]["segmented_fallback"] = "true"
+        for key in (
+            "no_album_artist_tag",
+            "no_album_title_tag",
+            "no_track_artist_tag",
+            "no_track_title_tag",
+            "no_release_date_tag",
+            "no_media_type_tag",
+            "no_genre_tag",
+            "no_track_number_tag",
+            "no_track_total_tag",
+            "no_disc_number_tag",
+            "no_disc_total_tag",
+            "no_composer_tag",
+            "no_explicit_tag",
+            "no_copyright_tag",
+            "no_label_tag",
+            "no_upc_tag",
+            "no_isrc_tag",
+        ):
+            cfg["DEFAULT"][key] = "false"
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)
 
@@ -646,11 +1044,16 @@ def api_config():
         return jsonify(
             {
                 "ok": True,
-                "config": {k: v for k, v in cfg["DEFAULT"].items()},
+                "config": {
+                    k: v
+                    for k, v in cfg["DEFAULT"].items()
+                    if k != "genius_token"
+                },
             }
         )
 
     data = request.json or {}
+    data.pop("genius_token", None)
     for key, val in data.items():
         if key == "new_password":
             if val:
@@ -659,6 +1062,8 @@ def api_config():
                 ).hexdigest()
         else:
             cfg["DEFAULT"][key] = str(val)
+    if cfg.has_option("DEFAULT", "genius_token"):
+        cfg.remove_option("DEFAULT", "genius_token")
     with open(CONFIG_FILE, "w") as f:
         cfg.write(f)
     return jsonify({"ok": True})
@@ -864,6 +1269,7 @@ def api_download():
         "quality": data.get("quality"),
         "directory": data.get("directory"),
         "embed_art": data.get("embed_art", False),
+        "lyrics_enabled": data.get("lyrics_enabled", False),
         "albums_only": data.get("albums_only", False),
         "no_m3u": data.get("no_m3u", False),
         "no_fallback": data.get("no_fallback", False),
@@ -873,6 +1279,30 @@ def api_download():
         "smart_discography": data.get("smart_discography", False),
         "folder_format": data.get("folder_format"),
         "track_format": data.get("track_format"),
+        "fix_md5s": data.get("fix_md5s", False),
+        "multiple_disc_prefix": data.get("multiple_disc_prefix"),
+        "multiple_disc_one_dir": data.get("multiple_disc_one_dir", False),
+        "multiple_disc_track_format": data.get("multiple_disc_track_format"),
+        "max_workers": data.get("max_workers"),
+        "delay_seconds": data.get("delay_seconds"),
+        "segmented_fallback": data.get("segmented_fallback", True),
+        "no_album_artist_tag": data.get("no_album_artist_tag", False),
+        "no_album_title_tag": data.get("no_album_title_tag", False),
+        "no_track_artist_tag": data.get("no_track_artist_tag", False),
+        "no_track_title_tag": data.get("no_track_title_tag", False),
+        "no_release_date_tag": data.get("no_release_date_tag", False),
+        "no_media_type_tag": data.get("no_media_type_tag", False),
+        "no_genre_tag": data.get("no_genre_tag", False),
+        "no_track_number_tag": data.get("no_track_number_tag", False),
+        "no_track_total_tag": data.get("no_track_total_tag", False),
+        "no_disc_number_tag": data.get("no_disc_number_tag", False),
+        "no_disc_total_tag": data.get("no_disc_total_tag", False),
+        "no_composer_tag": data.get("no_composer_tag", False),
+        "no_explicit_tag": data.get("no_explicit_tag", False),
+        "no_copyright_tag": data.get("no_copyright_tag", False),
+        "no_label_tag": data.get("no_label_tag", False),
+        "no_upc_tag": data.get("no_upc_tag", False),
+        "no_isrc_tag": data.get("no_isrc_tag", False),
     }
 
     def run():
@@ -893,15 +1323,13 @@ def api_download():
                     logging.info("Download cancelled by user.")
                     break
                 _emit_event({"type": "url_start", "url": url})
-                _url_error_tls.tracking = True
-                _url_error_tls.had_error = False
+                _ctx_start_url()
                 try:
                     tmp.handle_url(url)
                 except Exception as e:
                     logging.error(f"Error downloading {url}: {e}")
-                    _url_error_tls.had_error = True
-                had_error = getattr(_url_error_tls, "had_error", False)
-                _url_error_tls.tracking = False
+                    _ctx_mark_error()
+                had_error = _ctx_finish_url()
                 # If the user cancelled mid-item, don't mark it done or errored —
                 # leave the card in its current state; dl_complete will clean up.
                 if _cancel_download.is_set():

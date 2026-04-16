@@ -103,20 +103,87 @@ def add_common_arg(custom_parser, default_folder, default_quality):
         "--no-db", action="store_true", help="don't call the database"
     )
     custom_parser.add_argument(
+        "--lyrics",
+        action="store_true",
+        help="fetch synced lyrics sidecar (.lrc) while downloading",
+    )
+    custom_parser.add_argument(
         "-ff",
         "--folder-format",
         metavar="PATTERN",
         help="""pattern for formatting folder names, e.g
-        "{artist} - {album} ({year})". available keys: artist,
-        albumartist, album, year, sampling_rate, bit_depth, tracktitle, version.
+        "{artist}/{album} ({year})". available keys include: artist,
+        albumartist, album_artist, album, album_title, album_title_base, year,
+        release_date, label, barcode, upc, media_type, format, bit_depth,
+        sampling_rate, disc_count, track_count, album_version.
         cannot contain characters used by the system, which includes /:<>""",
     )
     custom_parser.add_argument(
         "-tf",
         "--track-format",
         metavar="PATTERN",
-        help="pattern for formatting track names. see `folder-format`.",
+        help="""pattern for formatting track names. see `folder-format`.
+        useful extra keys: track_number, tracknumber, track_title, track_title_base,
+        track_artist, track_composer, isrc, disc_number, discnumber.""",
     )
+    custom_parser.add_argument(
+        "--multiple-disc-prefix",
+        default="Disc",
+        metavar="PREFIX",
+        help='folder prefix for multi-disc releases (default: "Disc")',
+    )
+    custom_parser.add_argument(
+        "--multiple-disc-one-dir",
+        action="store_true",
+        help="store multi-disc tracks in one directory",
+    )
+    custom_parser.add_argument(
+        "--multiple-disc-track-format",
+        metavar="PATTERN",
+        help='track format for multi-disc one-dir mode (default: "{disc_number}.{track_number} - {track_title_base}")',
+    )
+    custom_parser.add_argument(
+        "--fix-md5s",
+        action="store_true",
+        help="recompute FLAC MD5 checksums after tagging",
+    )
+    custom_parser.add_argument(
+        "--max-workers",
+        metavar="int",
+        type=int,
+        help="parallel track download workers per release (default: config or 1)",
+    )
+    custom_parser.add_argument(
+        "--delay",
+        metavar="SECONDS",
+        type=int,
+        default=0,
+        help="delay between track downloads (forces sequential mode)",
+    )
+    custom_parser.add_argument(
+        "--no-segmented-fallback",
+        action="store_true",
+        help="disable segmented download + remux fallback",
+    )
+
+    tag_group = custom_parser.add_argument_group("tag options")
+    tag_group.add_argument("--no-album-artist-tag", action="store_true")
+    tag_group.add_argument("--no-album-title-tag", action="store_true")
+    tag_group.add_argument("--no-track-artist-tag", action="store_true")
+    tag_group.add_argument("--no-track-title-tag", action="store_true")
+    tag_group.add_argument("--no-release-date-tag", action="store_true")
+    tag_group.add_argument("--no-media-type-tag", action="store_true")
+    tag_group.add_argument("--no-genre-tag", action="store_true")
+    tag_group.add_argument("--no-track-number-tag", action="store_true")
+    tag_group.add_argument("--no-track-total-tag", action="store_true")
+    tag_group.add_argument("--no-disc-number-tag", action="store_true")
+    tag_group.add_argument("--no-disc-total-tag", action="store_true")
+    tag_group.add_argument("--no-composer-tag", action="store_true")
+    tag_group.add_argument("--no-explicit-tag", action="store_true")
+    tag_group.add_argument("--no-copyright-tag", action="store_true")
+    tag_group.add_argument("--no-label-tag", action="store_true")
+    tag_group.add_argument("--no-upc-tag", action="store_true")
+    tag_group.add_argument("--no-isrc-tag", action="store_true")
     # TODO: add customization options
     custom_parser.add_argument(
         "-s",

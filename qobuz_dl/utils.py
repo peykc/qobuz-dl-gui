@@ -2,6 +2,7 @@ import re
 import string
 import os
 import logging
+import subprocess
 import time
 
 from mutagen.mp3 import EasyMP3
@@ -69,8 +70,64 @@ def make_m3u(pl_directory):
             track_list.append(index)
 
     if len(track_list) > 1:
-        with open(os.path.join(pl_directory, pl_name), "w") as pl:
+        with open(os.path.join(pl_directory, pl_name), "w", encoding="utf-8") as pl:
             pl.write("\n\n".join(track_list))
+
+
+def get_album_artist(qobuz_album: dict) -> str:
+    """Get the album's main artist(s) with sane fallback behavior."""
+    try:
+        artists = qobuz_album.get("artists") or []
+        if not artists:
+            return qobuz_album.get("artist", {}).get("name", "")
+
+        main_artists = [a for a in artists if "main-artist" in (a.get("roles") or [])]
+        if not main_artists:
+            return qobuz_album.get("artist", {}).get("name", "")
+        if len(main_artists) == 1:
+            return main_artists[0].get("name", "") or qobuz_album.get("artist", {}).get(
+                "name", ""
+            )
+
+        names = [a.get("name", "").strip() for a in main_artists if a.get("name")]
+        if not names:
+            return qobuz_album.get("artist", {}).get("name", "")
+        if len(names) == 1:
+            return names[0]
+        return ", ".join(names[:-1]) + " & " + names[-1]
+    except Exception:
+        return qobuz_album.get("artist", {}).get("name", "")
+
+
+def flac_fix_md5s(flac_file_path: str) -> bool:
+    """Recompute FLAC MD5 checksum in-place using `flac -sf8`."""
+    if not os.path.isfile(flac_file_path):
+        logger.error("File not found for MD5 fix: %s", flac_file_path)
+        return False
+
+    try:
+        result = subprocess.run(
+            ["flac", "-sf8", flac_file_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        logger.warning("FLAC binary not found; skipping MD5 fix.")
+        return False
+    except Exception as exc:
+        logger.warning("FLAC MD5 fix failed to start: %s", exc)
+        return False
+
+    if result.returncode == 0:
+        if result.stderr.strip():
+            logger.debug(result.stderr.strip())
+        return True
+
+    logger.warning(
+        "FLAC MD5 fix failed (%s): %s", result.returncode, result.stderr.strip()
+    )
+    return False
 
 
 def smart_discography_filter(

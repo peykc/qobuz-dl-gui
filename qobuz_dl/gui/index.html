@@ -69,7 +69,7 @@
                     <div class="input-browse-wrap">
                         <input type="text" id="setup-folder-oauth" placeholder="Qobuz Downloads"
                             value="Qobuz Downloads" />
-                        <button class="btn-browse" data-target="setup-folder-oauth" title="Browse">
+                        <button class="btn-browse" data-target="setup-folder-oauth" data-tip="Browse">
                             Browse
                         </button>
                     </div>
@@ -120,7 +120,7 @@
                     <div class="input-browse-wrap">
                         <input type="text" id="setup-folder-token" placeholder="Qobuz Downloads"
                             value="Qobuz Downloads" />
-                        <button class="btn-browse" data-target="setup-folder-token" title="Browse">
+                        <button class="btn-browse" data-target="setup-folder-token" data-tip="Browse">
                             Browse
                         </button>
                     </div>
@@ -158,7 +158,7 @@
                     <label for="setup-folder">Default Download Folder</label>
                     <div class="input-browse-wrap">
                         <input type="text" id="setup-folder" placeholder="Qobuz Downloads" value="Qobuz Downloads" />
-                        <button class="btn-browse" data-target="setup-folder" title="Browse">
+                        <button class="btn-browse" data-target="setup-folder" data-tip="Browse">
                             Browse
                         </button>
                     </div>
@@ -193,7 +193,7 @@
                     <span>Qobuz<strong>DL</strong></span>
                 </div>
                 <div class="settings-wrapper">
-                    <button id="settings-gear-btn" class="settings-gear-btn" title="Settings">
+                    <button id="settings-gear-btn" class="settings-gear-btn" data-tip="Settings">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="12" cy="12" r="3" />
@@ -318,7 +318,7 @@
                     <span id="status-dot" class="status-dot disconnected"></span>
                     <span id="status-label">Disconnected</span>
                 </div>
-                <button id="monero-btn" class="monero-btn" title="Donate Monero">
+                <button id="monero-btn" class="monero-btn" data-tip="Donate Monero">
                     <svg width="15" height="15" viewBox="-200 -200 4156 4156" xmlns="http://www.w3.org/2000/svg" style="overflow: visible;">
                         <!-- Background circle (Transparent by default, White on hover) -->
                         <path class="xmr-bg-circle" d="M4128,2249.81C4128,3287,3287.26,4127.86,2250,4127.86S372,3287,372,2249.81,1212.76,371.75,2250,371.75,4128,1212.54,4128,2249.81Z" transform="translate(-371.96 -371.75)" fill="transparent"/>
@@ -344,11 +344,11 @@
                     <div class="url-input-row">
                         <input type="text" id="dl-url-input" placeholder="Paste a Qobuz URL and press Enter…"
                             autocomplete="off" />
-                        <button id="dl-url-add" class="btn-accent" title="Add URL">
+                        <button id="dl-url-add" class="btn-accent" data-tip="Add URL">
                             +
                         </button>
                         <div class="view-mode-btns">
-                            <button id="btn-mode-card" class="btn-mode active" title="Card view">
+                            <button id="btn-mode-card" class="btn-mode active" data-tip="Card view">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -357,7 +357,7 @@
                                     <rect x="14" y="14" width="7" height="7" rx="1" />
                                 </svg>
                             </button>
-                            <button id="btn-mode-text" class="btn-mode" title="Text view">
+                            <button id="btn-mode-text" class="btn-mode" data-tip="Text view">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <line x1="3" y1="6" x2="21" y2="6" />
@@ -414,6 +414,18 @@
                     </div>
                 </div>
 
+                <div class="log-container" id="dl-track-status-container">
+                    <div class="log-header">
+                        <button class="log-header-toggle" id="dl-track-status-toggle" type="button"
+                            aria-expanded="true" aria-controls="dl-track-status">
+                            <span>Download History / LRC Status</span>
+                            <span class="log-header-chevron">▾</span>
+                        </button>
+                        <button class="btn-ghost btn-sm" id="dl-clear-track-status">Clear</button>
+                    </div>
+                    <div class="track-status-list" id="dl-track-status"></div>
+                </div>
+
                 <div class="card">
                     <button class="collapse-toggle" id="dl-options-toggle" aria-expanded="false">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -441,153 +453,350 @@
                                 <label for="dl-directory">Output Folder</label>
                                 <div class="input-browse-wrap">
                                     <input type="text" id="dl-directory" placeholder="Use default from settings" />
-                                    <button class="btn-browse" data-target="dl-directory" title="Browse">
+                                    <button class="btn-browse" data-target="dl-directory" data-tip="Browse">
                                         Browse
                                     </button>
                                 </div>
                             </div>
+                            <div class="form-group compact-runtime-row">
+                                <div class="compact-number-field">
+                                    <label for="dl-max-workers">Parallel Downloads</label>
+                                    <input type="number" id="dl-max-workers" min="1" max="12" value="1" />
+                                </div>
+                                <div class="compact-number-field">
+                                    <label for="dl-delay-seconds">Delay Between Tracks (s)</label>
+                                    <input type="number" id="dl-delay-seconds" min="0" max="30" value="0" />
+                                </div>
+                            </div>
+                            <div class="options-separator"></div>
                             <div class="form-group">
-                                <label for="dl-folder-format" class="format-label">
-                                    Folder Format
+                                <div class="format-label">
+                                    <label for="dl-folder-format">Folder Format</label>
                                     <span class="format-help-icon" id="folder-format-help" role="button"
-                                        tabindex="0" title="Format help" aria-expanded="false"
+                                        tabindex="0" data-tip="Format help" aria-expanded="false"
                                         aria-controls="folder-format-tooltip">ⓘ</span>
-                                </label>
+                                </div>
                                 <div class="format-tooltip" id="folder-format-tooltip">
                                     <div class="fmt-tooltip-title">📁 Folder Format Variables</div>
-                                    <table class="fmt-vars-table">
-                                        <tr>
-                                            <td><code>{artist}</code></td>
-                                            <td>Album artist name</td>
-                                            <td class="fmt-example">J. Cole</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{album}</code></td>
-                                            <td>Album title</td>
-                                            <td class="fmt-example">Born Sinner</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{year}</code></td>
-                                            <td>Release year</td>
-                                            <td class="fmt-example">2013</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{bit_depth}</code></td>
-                                            <td>Audio bit depth</td>
-                                            <td class="fmt-example">24</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{sampling_rate}</code></td>
-                                            <td>Sample rate in kHz</td>
-                                            <td class="fmt-example">96.0</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{format}</code></td>
-                                            <td>Container format</td>
-                                            <td class="fmt-example">FLAC</td>
-                                        </tr>
-                                    </table>
+                                    <div class="fmt-vars-scroll">
+                                        <table class="fmt-vars-table">
+                                            <tr>
+                                                <td><code>{artist}</code></td>
+                                                <td>Album artist (fallback display name)</td>
+                                                <td class="fmt-example">Bastille</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{album}</code></td>
+                                                <td>Album title (with version if present)</td>
+                                                <td class="fmt-example">Bad Blood X (10th Anniversary Edition)</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{album_title_base}</code></td>
+                                                <td>Album title only (no version suffix)</td>
+                                                <td class="fmt-example">Bad Blood X</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{year}</code></td>
+                                                <td>Release year</td>
+                                                <td class="fmt-example">2013</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{release_date}</code></td>
+                                                <td>Full release date</td>
+                                                <td class="fmt-example">2013-03-04</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{label}</code></td>
+                                                <td>Record label</td>
+                                                <td class="fmt-example">UMC (Universal Music Catalogue)</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{barcode}</code></td>
+                                                <td>UPC/Barcode</td>
+                                                <td class="fmt-example">0602458674385</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{disc_count}</code></td>
+                                                <td>Total disc count</td>
+                                                <td class="fmt-example">2</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{track_count}</code></td>
+                                                <td>Total track count</td>
+                                                <td class="fmt-example">33</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{bit_depth}</code></td>
+                                                <td>Audio bit depth</td>
+                                                <td class="fmt-example">24</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{sampling_rate}</code></td>
+                                                <td>Sample rate in kHz</td>
+                                                <td class="fmt-example">96.0</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{format}</code></td>
+                                                <td>Container format</td>
+                                                <td class="fmt-example">FLAC</td>
+                                            </tr>
+                                        </table>
+                                    </div>
                                     <div class="fmt-tooltip-section">Structure Templates</div>
                                     <div class="fmt-templates">
-                                        <span class="fmt-template-chip"
-                                            data-preview="/J. Cole/Born Sinner">{artist}/{album}</span>
-                                        <span class="fmt-template-chip"
-                                            data-preview="/J. Cole - Born Sinner (2013)">{artist} - {album} ({year})</span>
-                                        <span class="fmt-template-chip"
-                                            data-preview="/J. Cole/2013 - Born Sinner">{artist}/{year} - {album}</span>
-                                        <span class="fmt-template-chip"
-                                            data-preview="/J. Cole/Born Sinner (2013) [24B-96.0kHz]">{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]</span>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="/Bastille/Bad Blood X (10th Anniversary Edition)">{artist}/{album}</span>
+                                            <span class="fmt-template-badge" data-tip="Default format for Plex">
+                                                <img src="/gui/plex.png" alt="Plex" />
+                                            </span>
+                                        </div>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="/Bastille - Bad Blood X (10th Anniversary Edition) (2013)">{artist} - {album} ({year})</span>
+                                        </div>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="/Bastille/Bad Blood X (10th Anniversary Edition) (2013) [24B-96.0kHz]">{artist}/{album} ({year}) [{bit_depth}B-{sampling_rate}kHz]</span>
+                                        </div>
+                                    </div>
+                                    <div class="fmt-tooltip-section">Builder</div>
+                                    <div class="fmt-builder-wrap">
+                                        <div class="fmt-builder-input-container">
+                                            <div class="fmt-builder-highlights"></div>
+                                            <input type="text" class="fmt-builder-input" spellcheck="false" placeholder="Type format or click variables..." data-target="dl-folder-format" />
+                                        </div>
+                                        <button type="button" class="fmt-builder-apply" data-tip="Apply format" disabled>
+                                            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                                        </button>
                                     </div>
                                     <div class="fmt-tooltip-section">Preview</div>
                                     <div class="fmt-preview-output fmt-preview-placeholder"
                                         id="folder-format-preview"
-                                        data-placeholder="Hover a template to see the folder path">Hover a template to see the folder path</div>
+                                        data-placeholder="Hover a template or type in builder">Hover a template or type in builder</div>
                                 </div>
                                 <div class="input-reset-wrap">
                                     <input type="text" id="dl-folder-format"
                                         placeholder="{artist}/{album}" />
                                     <button class="btn-reset" data-reset="dl-folder-format"
                                         data-default="{artist}/{album}"
-                                        title="Reset to default">
+                                        data-tip="Reset to default">
                                         ↺
                                     </button>
                                 </div>
                             </div>
                             <div class="form-group">
-                                <label for="dl-track-format" class="format-label">
-                                    Track Format
+                                <div class="format-label">
+                                    <label for="dl-track-format">Track Format</label>
                                     <span class="format-help-icon" id="track-format-help" role="button" tabindex="0"
-                                        title="Format help" aria-expanded="false"
+                                        data-tip="Format help" aria-expanded="false"
                                         aria-controls="track-format-tooltip">ⓘ</span>
-                                </label>
+                                </div>
                                 <div class="format-tooltip" id="track-format-tooltip">
                                     <div class="fmt-tooltip-title">🎵 Track Format Variables</div>
-                                    <table class="fmt-vars-table">
-                                        <tr>
-                                            <td><code>{tracknumber}</code></td>
-                                            <td>Track number</td>
-                                            <td class="fmt-example">03</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{tracktitle}</code></td>
-                                            <td>Track title</td>
-                                            <td class="fmt-example">Power Trip</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{artist}</code></td>
-                                            <td>Track/album artist</td>
-                                            <td class="fmt-example">J. Cole</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{albumartist}</code></td>
-                                            <td>Primary album artist</td>
-                                            <td class="fmt-example">J. Cole</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{album}</code></td>
-                                            <td>Album title</td>
-                                            <td class="fmt-example">Born Sinner</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{year}</code></td>
-                                            <td>Release year</td>
-                                            <td class="fmt-example">2013</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{bit_depth}</code></td>
-                                            <td>Audio bit depth</td>
-                                            <td class="fmt-example">24</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{sampling_rate}</code></td>
-                                            <td>Sample rate in kHz</td>
-                                            <td class="fmt-example">96.0</td>
-                                        </tr>
-                                        <tr>
-                                            <td><code>{version}</code></td>
-                                            <td>Album version (if any)</td>
-                                            <td class="fmt-example">Deluxe</td>
-                                        </tr>
-                                    </table>
+                                    <div class="fmt-vars-scroll">
+                                        <table class="fmt-vars-table">
+                                            <tr>
+                                                <td><code>{tracknumber}</code></td>
+                                                <td>Track number</td>
+                                                <td class="fmt-example">08</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{tracktitle}</code></td>
+                                                <td>Track title (with version if present)</td>
+                                                <td class="fmt-example">Icarus (Dan's Bedroom Demo)</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{track_title_base}</code></td>
+                                                <td>Track title without version suffix</td>
+                                                <td class="fmt-example">Icarus</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{artist}</code></td>
+                                                <td>Track artist (fallback album artist)</td>
+                                                <td class="fmt-example">Bastille</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{albumartist}</code></td>
+                                                <td>Primary album artist</td>
+                                                <td class="fmt-example">Bastille</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{album}</code></td>
+                                                <td>Album title</td>
+                                                <td class="fmt-example">Bad Blood X (10th Anniversary Edition)</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{year}</code></td>
+                                                <td>Release year</td>
+                                                <td class="fmt-example">2013</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{bit_depth}</code></td>
+                                                <td>Audio bit depth</td>
+                                                <td class="fmt-example">24</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{sampling_rate}</code></td>
+                                                <td>Sample rate in kHz</td>
+                                                <td class="fmt-example">96.0</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{version}</code></td>
+                                                <td>Album version (if any)</td>
+                                                <td class="fmt-example">10th Anniversary Edition</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{disc_number}</code></td>
+                                                <td>Disc number (zero-padded)</td>
+                                                <td class="fmt-example">02</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{disc_number_unpadded}</code></td>
+                                                <td>Disc number (no padding)</td>
+                                                <td class="fmt-example">2</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{isrc}</code></td>
+                                                <td>Track ISRC</td>
+                                                <td class="fmt-example">GBUM72301353</td>
+                                            </tr>
+                                        </table>
+                                    </div>
                                     <div class="fmt-tooltip-section">Structure Templates</div>
                                     <div class="fmt-templates">
-                                        <span class="fmt-template-chip"
-                                            data-preview="03 - Power Trip.flac">{tracknumber} - {tracktitle}</span>
-                                        <span class="fmt-template-chip"
-                                            data-preview="03. Power Trip.flac">{tracknumber}. {tracktitle}</span>
-                                        <span class="fmt-template-chip"
-                                            data-preview="03. J. Cole - Power Trip.flac">{tracknumber}. {artist} - {tracktitle}</span>
-                                        <span class="fmt-template-chip"
-                                            data-preview="03 - Power Trip (2013).flac">{tracknumber} - {tracktitle} ({year})</span>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="08 - Icarus (Dan's Bedroom Demo).flac">{tracknumber} - {tracktitle}</span>
+                                            <span class="fmt-template-badge" data-tip="Default format for Plex">
+                                                <img src="/gui/plex.png" alt="Plex" />
+                                            </span>
+                                        </div>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="08. Icarus (Dan's Bedroom Demo).flac">{tracknumber}. {tracktitle}</span>
+                                        </div>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="08. Bastille - Icarus (Dan's Bedroom Demo).flac">{tracknumber}. {artist} - {tracktitle}</span>
+                                        </div>
+                                    </div>
+                                    <div class="fmt-tooltip-section">Builder</div>
+                                    <div class="fmt-builder-wrap">
+                                        <div class="fmt-builder-input-container">
+                                            <div class="fmt-builder-highlights"></div>
+                                            <input type="text" class="fmt-builder-input" spellcheck="false" placeholder="Type format or click variables..." data-target="dl-track-format" />
+                                        </div>
+                                        <button type="button" class="fmt-builder-apply" data-tip="Apply format" disabled>
+                                            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                                        </button>
                                     </div>
                                     <div class="fmt-tooltip-section">Preview</div>
                                     <div class="fmt-preview-output fmt-preview-placeholder" id="track-format-preview"
-                                        data-placeholder="Hover a template to see the filename">Hover a template to see the filename</div>
+                                        data-placeholder="Hover a template or type in builder">Hover a template or type in builder</div>
                                 </div>
                                 <div class="input-reset-wrap">
                                     <input type="text" id="dl-track-format" placeholder="{tracknumber} - {tracktitle}" />
                                     <button class="btn-reset" data-reset="dl-track-format"
-                                        data-default="{tracknumber} - {tracktitle}" title="Reset to default">
+                                        data-default="{tracknumber} - {tracktitle}" data-tip="Reset to default">
+                                        ↺
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="compact-split-row">
+                                <div class="form-group">
+                                    <label for="dl-multiple-disc-prefix" class="format-label" data-tip="The folder name prefix used for each disc when 'Store multi-disc release in one folder' is unchecked. (e.g. 'Disc' creates 'Disc 01', 'Disc 02', or 'CD' creates 'CD 01')">
+                                        Multi-Disc Prefix
+                                    </label>
+                                    <input type="text" id="dl-multiple-disc-prefix" placeholder="Disc" value="Disc" />
+                                </div>
+                                <div class="form-group compact-inline-switch">
+                                    <label class="toggle-label"
+                                        data-tip="Create individual folders per disc (e.g. CD 01, CD 02). If disabled, all tracks from a multi-disc release are stored in a single folder.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-multiple-disc-one-dir" checked />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Individual folder per disc
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <div class="format-label">
+                                    <label for="dl-multiple-disc-track-format">Multi-Disc Track Format</label>
+                                    <span class="format-help-icon" id="multi-disc-format-help" role="button" tabindex="0"
+                                        data-tip="Format help" aria-expanded="false"
+                                        aria-controls="multi-disc-format-tooltip">ⓘ</span>
+                                </div>
+                                <div class="format-tooltip" id="multi-disc-format-tooltip">
+                                    <div class="fmt-tooltip-title">💽 Multi-Disc Track Format</div>
+                                    <div class="fmt-vars-scroll">
+                                        <table class="fmt-vars-table">
+                                            <tr>
+                                                <td><code>{disc_number}</code></td>
+                                                <td>Disc index, zero-padded</td>
+                                                <td class="fmt-example">02</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{disc_number_unpadded}</code></td>
+                                                <td>Disc index, no padding</td>
+                                                <td class="fmt-example">2</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{track_number}</code></td>
+                                                <td>Track index, zero-padded</td>
+                                                <td class="fmt-example">08</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{track_title_base}</code></td>
+                                                <td>Track title without version</td>
+                                                <td class="fmt-example">Icarus</td>
+                                            </tr>
+                                            <tr>
+                                                <td><code>{tracktitle}</code></td>
+                                                <td>Track title with version if any</td>
+                                                <td class="fmt-example">Icarus (Dan's Bedroom Demo)</td>
+                                            </tr>
+                                        </table>
+                                    </div>
+                                    <div class="fmt-tooltip-section">Structure Templates</div>
+                                    <div class="fmt-templates">
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="208 - Icarus (Dan's Bedroom Demo).flac">{disc_number_unpadded}{track_number} - {tracktitle}</span>
+                                            <span class="fmt-template-badge" data-tip="Default format for Plex">
+                                                <img src="/gui/plex.png" alt="Plex" />
+                                            </span>
+                                        </div>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="02.08 - Icarus.flac">{disc_number}.{track_number} - {track_title_base}</span>
+                                        </div>
+                                        <div class="fmt-template-row">
+                                            <span class="fmt-template-chip"
+                                                data-preview="CD2-08 - Icarus.flac">CD{disc_number}-{track_number} - {track_title_base}</span>
+                                        </div>
+                                    </div>
+                                    <div class="fmt-tooltip-section">Builder</div>
+                                    <div class="fmt-builder-wrap">
+                                        <div class="fmt-builder-input-container">
+                                            <div class="fmt-builder-highlights"></div>
+                                            <input type="text" class="fmt-builder-input" spellcheck="false" placeholder="Type format or click variables..." data-target="dl-multiple-disc-track-format" />
+                                        </div>
+                                        <button type="button" class="fmt-builder-apply" data-tip="Apply format" disabled>
+                                            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                                        </button>
+                                    </div>
+                                    <div class="fmt-tooltip-section">Preview</div>
+                                    <div class="fmt-preview-output fmt-preview-placeholder" id="multi-disc-format-preview"
+                                        data-placeholder="Hover a template or type in builder">Hover a template or type in builder</div>
+                                </div>
+                                <div class="input-reset-wrap">
+                                    <input type="text" id="dl-multiple-disc-track-format"
+                                        placeholder="{disc_number_unpadded}{track_number} - {tracktitle}" />
+                                    <button class="btn-reset" data-reset="dl-multiple-disc-track-format"
+                                        data-default="{disc_number_unpadded}{track_number} - {tracktitle}"
+                                        data-tip="Reset to default">
                                         ↺
                                     </button>
                                 </div>
@@ -651,6 +860,30 @@
                                         </span>
                                         Skip Playlist File
                                     </label>
+                                    <label class="toggle-label"
+                                        data-tip="Fetch synchronized lyrics from LRCLIB (lrclib.net) and save a .lrc sidecar next to each downloaded track.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-lyrics-enabled" />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Synced Lyrics (.lrc)
+                                    </label>
+                                    <label class="toggle-label"
+                                        data-tip="Enable segmented fallback with optional remux if regular single-stream download stalls or fails.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-segmented-fallback" checked />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Segmented Fallback
+                                    </label>
+                                    <label class="toggle-label"
+                                        data-tip="Rewrites each finished FLAC so the STREAMINFO MD5 checksum matches the actual audio data. Useful for strict library validators. Requires the `flac` CLI tool.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-fix-md5s" />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Fix FLAC MD5
+                                    </label>
                                 </div>
                             </div>
 
@@ -675,16 +908,41 @@
                                     </label>
                                 </div>
                             </div>
+
+                            <div class="toggle-group">
+                                <span class="toggle-group-label">Tag Controls (checked = write tag)</span>
+                                <div class="tag-checkbox-grid">
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-track-title" checked /> Track Title</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-track-artist" checked /> Track Artist</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-album-title" checked /> Album Title</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-track-number" checked /> Track Number</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-release-date" checked /> Release Date</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-album-artist" checked /> Album Artist</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-upc" checked /> UPC/Barcode</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-composer" checked /> Composer</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-copyright" checked /> Copyright</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-disc-number" checked /> Disc Number</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-genre" checked /> Genre</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-isrc" checked /> ISRC</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-explicit" checked /> Explicit</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-media-type" checked /> Media Type</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-label" checked /> Label</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-disc-total" checked /> Disc Total</label>
+                                    <label class="tag-check"><input type="checkbox" id="dl-tag-track-total" checked /> Track Total</label>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <div class="log-container" id="dl-log-container">
+                <div class="log-container collapsed" id="dl-log-container">
                     <div class="log-header">
-                        <span>Output Log</span>
-                        <button class="btn-ghost btn-sm" id="dl-clear-log">
-                            Clear
+                        <button class="log-header-toggle" id="dl-log-toggle" type="button" aria-expanded="false"
+                            aria-controls="log-output">
+                            <span>Output Log</span>
+                            <span class="log-header-chevron">▾</span>
                         </button>
+                        <button class="btn-ghost btn-sm" id="dl-clear-log">Clear</button>
                     </div>
                     <div class="log-body" id="log-output"></div>
                 </div>
@@ -713,7 +971,10 @@
             </div>
         </div>
 
-        <script src="/gui/app.js?v=8"></script>
+        <!-- Global Tooltip -->
+    <div id="global-tooltip" class="global-tooltip"></div>
+
+    <script src="/gui/app.js?v=16"></script>
 </body>
 
 </html>
