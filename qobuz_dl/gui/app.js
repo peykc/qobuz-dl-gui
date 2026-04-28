@@ -4309,7 +4309,17 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ download_url: _updateInfo.download_url }),
         });
-        const data = await res.json();
+        const raw = await res.text();
+        let data = {};
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          throw new Error(
+            res.ok
+              ? "Invalid response from server—try again or install from GitHub Releases."
+              : `Install failed (HTTP ${res.status}).`,
+          );
+        }
         if (!data.ok) throw new Error(data.error || "Install failed");
         installBtn.textContent = "Restarting…";
       } catch (e) {

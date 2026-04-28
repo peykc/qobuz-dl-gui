@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import re
@@ -257,10 +258,23 @@ def restart_after_swap(current_exe: str, backup_exe: str | None) -> None:
     if hasattr(subprocess, "DETACHED_PROCESS"):
         creation |= subprocess.DETACHED_PROCESS
 
+    # PyInstaller onefile (6.9+): a child that outlives this process must unpack
+    # independently. Without this, the new exe may inherit _MEIPASS / DLL search
+    # state and block cleanup — "[PYI-…] Failed to remove temporary directory".
+    # https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html
+    env = os.environ.copy()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
+            pass
+
     try:
         subprocess.Popen(
             [current_exe],
             cwd=os.path.dirname(current_exe) or None,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

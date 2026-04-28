@@ -1,6 +1,6 @@
 # Qobuz-DL-GUI: modern search, queue, and download
 
-**Version 1.1.2** · Desktop app for lossless and Hi-Res downloads from Qobuz: rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
+**Version 1.1.3** · Desktop app for lossless and Hi-Res downloads from Qobuz: rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
 
 ---
 
