@@ -1504,8 +1504,9 @@ td.fmt-example {
     z-index: 1;
 }
 
+/* Above .settings-wrapper (110) so format-tooltips (inside this card) aren’t covered by the sidebar icons */
 #tab-download .dl-options-card:has(#dl-options-body:not(.hidden)) {
-    z-index: 100;
+    z-index: 125;
     /* Flush horizontal edges so panel borders line up with the card outline; inset handled on children. */
     padding-left: 0;
     padding-right: 0;

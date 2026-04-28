@@ -161,6 +161,25 @@ def check_for_update(config_dir: str, *, force: bool = False) -> dict:
     }
 
 
+def _verify_windows_pe(path: str) -> None:
+    """Reject truncated or non-EXE downloads before swapping the running binary."""
+    try:
+        sz = os.path.getsize(path)
+    except OSError as e:
+        raise RuntimeError(f"Cannot read downloaded update: {e}") from e
+    if sz < 512 * 1024:
+        raise RuntimeError(
+            f"Downloaded file is too small ({sz} bytes) to be a valid installer."
+        )
+    try:
+        with open(path, "rb") as f:
+            sig = f.read(2)
+    except OSError as e:
+        raise RuntimeError(f"Cannot read downloaded update: {e}") from e
+    if sig != b"MZ":
+        raise RuntimeError("Downloaded file is not a valid Windows executable (missing MZ header).")
+
+
 def download_update_to_temp(url: str) -> str:
     headers = {"User-Agent": f"Qobuz-DL-GUI/{__version__}"}
     with requests.get(url, headers=headers, timeout=180, stream=True) as r:
@@ -172,6 +191,7 @@ def download_update_to_temp(url: str) -> str:
                 for chunk in r.iter_content(65536):
                     if chunk:
                         f.write(chunk)
+            _verify_windows_pe(path)
             return path
         except Exception:
             try:
@@ -181,9 +201,15 @@ def download_update_to_temp(url: str) -> str:
             raise
 
 
-def apply_update_windows(downloaded_exe: str) -> None:
+def swap_windows_exe_inplace(downloaded_exe: str) -> tuple[str, str]:
+    """Rename running exe to ``.old``, copy ``downloaded_exe`` into place, verify PE.
+
+    Returns ``(current_exe_path, old_exe_path)``. Does not launch or exit.
+    """
     if os.name != "nt" or not getattr(sys, "frozen", False):
         raise RuntimeError("Auto-install is only for the frozen Windows EXE")
+
+    _verify_windows_pe(downloaded_exe)
 
     current = os.path.abspath(sys.executable)
     old = current + ".old"
@@ -194,30 +220,87 @@ def apply_update_windows(downloaded_exe: str) -> None:
         except OSError:
             pass
 
-    os.rename(current, old)
-    shutil.copy2(downloaded_exe, current)
+    try:
+        os.rename(current, old)
+    except OSError as e:
+        raise RuntimeError(
+            "Could not rename the running executable (close other instances or "
+            "install updates manually from GitHub Releases)."
+        ) from e
+    try:
+        shutil.copy2(downloaded_exe, current)
+        _verify_windows_pe(current)
+    except Exception:
+        try:
+            if os.path.isfile(current):
+                os.remove(current)
+        except OSError:
+            pass
+        try:
+            os.rename(old, current)
+        except OSError:
+            logging.error(
+                "Update failed and could not restore previous exe; reinstall from "
+                "https://github.com/%s/releases",
+                GITHUB_RELEASE_REPO,
+            )
+        raise
 
+    return current, old
+
+
+def restart_after_swap(current_exe: str, backup_exe: str | None) -> None:
+    """Start the new exe detached, pause, then terminate this process."""
     creation = 0
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         creation |= subprocess.CREATE_NO_WINDOW
     if hasattr(subprocess, "DETACHED_PROCESS"):
         creation |= subprocess.DETACHED_PROCESS
 
-    subprocess.Popen(
-        [current],
-        close_fds=True,
-        creationflags=creation,
-        cwd=os.path.dirname(current) or None,
-    )
+    try:
+        subprocess.Popen(
+            [current_exe],
+            cwd=os.path.dirname(current_exe) or None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creation,
+            shell=False,
+        )
+    except OSError as e:
+        if backup_exe and os.path.isfile(backup_exe):
+            try:
+                if os.path.isfile(current_exe):
+                    os.remove(current_exe)
+                os.rename(backup_exe, current_exe)
+            except OSError:
+                logging.error(
+                    "Could not roll back after failed restart; reinstall from "
+                    "https://github.com/%s/releases",
+                    GITHUB_RELEASE_REPO,
+                )
+        raise RuntimeError(f"Could not start updated application: {e}") from e
+
+    time.sleep(1.6)
     os._exit(0)
 
 
-def schedule_apply_update(downloaded_exe: str, delay: float = 0.35) -> None:
+def apply_update_windows(downloaded_exe: str) -> None:
+    """Swap on disk, then spawn new process and exit (used by tests or manual calls)."""
+    current, old = swap_windows_exe_inplace(downloaded_exe)
+    restart_after_swap(current, old)
+
+
+def schedule_restart_only(
+    current_exe: str, backup_exe: str | None, delay: float = 0.25
+) -> None:
+    """After swap succeeded and HTTP responded: spawn new EXE and exit this process."""
+
     def run():
         time.sleep(delay)
         try:
-            apply_update_windows(downloaded_exe)
+            restart_after_swap(current_exe, backup_exe)
         except Exception as e:
-            logging.error("Apply update failed: %s", e)
+            logging.error("Restart after update failed: %s", e)
 
     threading.Thread(target=run, daemon=True).start()
