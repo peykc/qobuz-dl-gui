@@ -1,9 +1,11 @@
 import logging
 import os
+import re
 import concurrent.futures
 import subprocess
 import time
-from typing import Tuple
+from html import unescape
+from typing import Optional, Tuple
 
 import requests
 import urllib3
@@ -34,6 +36,110 @@ DEFAULT_TRACK = "{tracknumber} - {tracktitle}"
 DEFAULT_MULTIPLE_DISC_TRACK = "{disc_number_unpadded}{track_number} - {tracktitle}"
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_html_to_text(raw: str) -> str:
+    if not raw:
+        return ""
+    t = re.sub(r"<[^>]+>", " ", str(raw))
+    t = unescape(t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _genre_line_from_album_meta(meta: dict) -> str:
+    g = meta.get("genre")
+    if isinstance(g, dict):
+        name = (g.get("name") or "").strip()
+        if name:
+            return name
+    gl = meta.get("genres_list")
+    if gl and isinstance(gl, list):
+        try:
+            from qobuz_dl.metadata import _format_genres
+
+            return _format_genres(gl)
+        except Exception:
+            return ", ".join(str(x) for x in gl if x)
+    return ""
+
+
+def _write_digital_booklet(meta: dict, dirn: str) -> None:
+    """Write Digital Booklet.txt (editorial, credits context, tracklist) next to audio files."""
+    path = os.path.join(dirn, "Digital Booklet.txt")
+    if os.path.isfile(path):
+        return
+
+    lines = []
+    title = _get_title(meta)
+    artist = _safe_get(meta, "artist", "name") or ""
+    lines.append(title)
+    lines.append("=" * min(max(len(title), 8), 72))
+    lines.append("")
+    if artist:
+        lines.append(f"Artist: {artist}")
+    rd = meta.get("release_date_original") or meta.get("release_date") or ""
+    if rd:
+        lines.append(f"Release date: {rd}")
+    label = meta.get("label")
+    if isinstance(label, dict):
+        label = label.get("name") or ""
+    if label:
+        lines.append(f"Label: {label}")
+    upc = meta.get("upc") or meta.get("barcode")
+    if upc:
+        lines.append(f"UPC: {upc}")
+    genre = _genre_line_from_album_meta(meta)
+    if genre:
+        lines.append(f"Genre: {genre}")
+    cl = meta.get("catchline") or meta.get("product_line")
+    if cl:
+        lines.append("")
+        lines.append(_strip_html_to_text(str(cl)))
+    desc = meta.get("description")
+    if desc:
+        lines.append("")
+        lines.append("--- Description ---")
+        lines.append(_strip_html_to_text(str(desc)))
+    articles = meta.get("articles")
+    if isinstance(articles, list):
+        for art in articles:
+            if not isinstance(art, dict):
+                continue
+            at = (art.get("title") or "").strip()
+            ac = art.get("content") or art.get("text") or ""
+            body = _strip_html_to_text(str(ac))
+            if not at and not body:
+                continue
+            lines.append("")
+            lines.append(f"--- {at} ---" if at else "--- Editorial ---")
+            if body:
+                lines.append(body)
+    cr = meta.get("copyright")
+    if cr:
+        lines.append("")
+        lines.append("--- Copyright ---")
+        lines.append(_strip_html_to_text(str(cr)))
+
+    tracks = list((meta.get("tracks") or {}).get("items") or [])
+    if tracks:
+        lines.append("")
+        lines.append("--- Tracklist ---")
+        for t in tracks:
+            tn = t.get("track_number", 0)
+            try:
+                tn_s = f"{int(tn):02d}"
+            except (TypeError, ValueError):
+                tn_s = str(tn)
+            tt = _get_title(t) if isinstance(t, dict) else ""
+            lines.append(f"{tn_s}. {tt}")
+
+    body = "\n".join(lines).strip()
+    if len(body) < 12:
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body + "\n")
+    logger.info(f"{CYAN}[+] Wrote Digital Booklet.txt{OFF}")
 
 
 def _safe_marker_value(value) -> str:
@@ -77,15 +183,68 @@ def _album_cover_thumb(meta: dict) -> str:
     )
 
 
-def _emit_track_start(track_num, track_title: str, cover_url: str = "") -> None:
+def _lyric_ctx_for_ui(track_meta: dict, album_meta: Optional[dict]) -> Tuple[str, str, int, bool]:
+    """Artist, album title, duration (sec), and Qobuz explicit flag for the GUI."""
+    album_meta = album_meta if isinstance(album_meta, dict) else None
+    if not album_meta and isinstance((track_meta or {}).get("album"), dict):
+        album_meta = track_meta["album"]
+    album_meta = album_meta or {}
+    artist = (
+        _safe_get(track_meta, "performer", "name")
+        or get_album_artist(album_meta)
+        or _safe_get(album_meta, "artist", "name", default="")
+        or ""
+    )
+    album_title = _get_title(album_meta) if album_meta else ""
+    try:
+        dur = int((track_meta or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        dur = 0
+    explicit = lyrics.qobuz_track_is_explicit(track_meta or {})
+    return str(artist).strip(), str(album_title).strip(), dur, explicit
+
+
+def _emit_track_start(
+    track_num,
+    track_title: str,
+    cover_url: str = "",
+    *,
+    artist: str = "",
+    album: str = "",
+    duration_sec: int = 0,
+    track_explicit: bool = False,
+) -> None:
     num = (
         f"{int(track_num):02d}"
         if str(track_num).isdigit()
         else _safe_marker_value(track_num)
     )
-    logger.info(
-        f"[TRACK_START] {num}|{_safe_marker_value(track_title)}|{_safe_marker_value(cover_url)}"
-    )
+    title_s = _safe_marker_value(track_title)
+    cov = _safe_marker_value(cover_url)
+    if (artist or "").strip() or (album or "").strip() or int(duration_sec or 0) > 0:
+        a = _safe_marker_value(artist)
+        al = _safe_marker_value(album)
+        d = int(duration_sec or 0)
+        e = 1 if track_explicit else 0
+        logger.info(f"[TRACK_START] {num}|{title_s}|{cov}|{a}|{al}|{d}|{e}")
+    else:
+        logger.info(f"[TRACK_START] {num}|{title_s}|{cov}")
+
+
+def _album_title_for_track_marker(
+    is_track: bool, track_metadata: dict, album_or_track_metadata
+) -> str:
+    """Album title for GUI / history disambiguation (same track title on different releases)."""
+    try:
+        if not is_track and isinstance(album_or_track_metadata, dict):
+            return _get_title(album_or_track_metadata)
+        if is_track:
+            am = (track_metadata or {}).get("album")
+            if isinstance(am, dict):
+                return _get_title(am)
+    except (KeyError, TypeError, AttributeError):
+        pass
+    return ""
 
 
 def _emit_track_marker(
@@ -95,26 +254,107 @@ def _emit_track_marker(
     status: str,
     detail: str = "",
     queue_url: str = "",
+    local_path: str = "",
+    lyric_album: str = "",
 ):
     num = f"{int(track_num):02d}" if str(track_num).isdigit() else _safe_marker_value(track_num)
     base = f"[{marker}] {num}|{_safe_marker_value(title)}|{_safe_marker_value(status)}|{_safe_marker_value(detail)}"
     qu = _safe_marker_value(queue_url) if queue_url else ""
-    if qu:
+    lp = _safe_marker_value(local_path) if (local_path or "").strip() else ""
+    alb = _safe_marker_value(lyric_album) if (lyric_album or "").strip() else ""
+    if lp:
+        if alb:
+            logger.info(f"{base}|{qu}|{lp}|{alb}")
+        else:
+            logger.info(f"{base}|{qu}|{lp}")
+    elif qu:
         logger.info(f"{base}|{qu}")
     else:
         logger.info(base)
 
 
-def _emit_lyrics_marker(track_num, title: str, lyric_type: str, provider: str, confidence=None):
+def _emit_lyrics_marker(
+    track_num,
+    title: str,
+    lyric_type: str,
+    provider: str,
+    confidence=None,
+    audio_path: str = "",
+):
     num = f"{int(track_num):02d}" if str(track_num).isdigit() else _safe_marker_value(track_num)
     conf = (
         ""
         if confidence is None
         else str(max(0, min(100, int(round(float(confidence))))))
     )
-    logger.info(
-        f"[TRACK_LYRICS] {num}|{_safe_marker_value(title)}|{_safe_marker_value(lyric_type)}|{_safe_marker_value(provider)}|{_safe_marker_value(conf)}"
+    ap = _safe_marker_value(audio_path) if (audio_path or "").strip() else ""
+    line = (
+        f"[TRACK_LYRICS] {num}|{_safe_marker_value(title)}|"
+        f"{_safe_marker_value(lyric_type)}|{_safe_marker_value(provider)}|{_safe_marker_value(conf)}"
     )
+    if ap:
+        line += f"|{ap}"
+    logger.info(line)
+
+
+def _make_throttled_download_progress(
+    track_metadata: dict,
+    tmp_count,
+    track_title: str,
+    *,
+    is_track: bool = True,
+    album_or_track_metadata=None,
+):
+    """Emit SSE track_download_progress while bytes stream in (throttled).
+
+    lyric_album must match track_start / track_result (see _album_title_for_track_marker).
+    Album downloads use is_track=False and pass the release album dict — progress must not
+    rely only on track_metadata[\"album\"] or the GUI row key will not match.
+    """
+    import qobuz_dl.core as _core
+
+    track_num = track_metadata.get("track_number", tmp_count)
+    title = track_title or _get_title(track_metadata)
+    state = {"last_t": 0.0, "last_pct": -1}
+
+    def cb(received: int, total: int) -> None:
+        emit = getattr(_core, "ui_emitter", None)
+        if not emit or total <= 0:
+            return
+        received = int(max(0, min(received, total)))
+        now = time.monotonic()
+        pct = int(100 * received / total)
+        force_final = received >= total
+        if (
+            not force_final
+            and (now - state["last_t"] < 0.18)
+            and (pct == state["last_pct"])
+        ):
+            return
+        state["last_t"] = now
+        state["last_pct"] = pct
+        num = (
+            f"{int(track_num):02d}"
+            if str(track_num).isdigit()
+            else _safe_marker_value(track_num)
+        )
+        alb = _album_title_for_track_marker(
+            is_track,
+            track_metadata or {},
+            album_or_track_metadata,
+        )
+        emit(
+            {
+                "type": "track_download_progress",
+                "track_no": num,
+                "title": _safe_marker_value(title),
+                "lyric_album": _safe_marker_value(alb),
+                "received": received,
+                "total": total,
+            }
+        )
+
+    return cb
 
 
 class Download:
@@ -142,6 +382,7 @@ class Download:
         max_workers: int = 1,
         delay_seconds: int = 0,
         segmented_fallback: bool = True,
+        no_credits: bool = False,
     ):
         self.client = client
         self.item_id = item_id
@@ -166,6 +407,7 @@ class Download:
         self.max_workers = max(1, int(max_workers or 1))
         self.delay_seconds = max(0, int(delay_seconds or 0))
         self.segmented_fallback = bool(segmented_fallback)
+        self.no_credits = bool(no_credits)
 
     def download_id_by_type(self, track=True):
         if not track:
@@ -239,6 +481,11 @@ class Download:
                 )
             except:  # noqa
                 pass
+        if not self.no_credits:
+            try:
+                _write_digital_booklet(meta, dirn)
+            except Exception as exc:
+                logger.debug("Digital Booklet.txt: %s", exc)
         tracks = list((meta.get("tracks") or {}).get("items") or [])
         media_numbers = [track.get("media_number", 1) for track in tracks]
         is_multiple = len(set(media_numbers)) > 1
@@ -305,6 +552,7 @@ class Download:
 
         track_title = _get_title(track_meta)
         track_num = track_meta.get("track_number", tmp_count)
+        la, alb, dura, tr_ex = _lyric_ctx_for_ui(track_meta, album_meta)
         try:
             parse = self.client.get_track_url(track_meta["id"], fmt_id=self.quality)
         except Exception as exc:
@@ -319,7 +567,15 @@ class Download:
             return track_title
 
         if "sample" in parse or not parse.get("sampling_rate"):
-            _emit_track_start(track_num, track_title, _album_cover_thumb(album_meta))
+            _emit_track_start(
+                track_num,
+                track_title,
+                _album_cover_thumb(album_meta),
+                artist=la,
+                album=alb,
+                duration_sec=dura,
+                track_explicit=tr_ex,
+            )
             _emit_track_marker(
                 "TRACK_RESULT",
                 track_num,
@@ -331,7 +587,15 @@ class Download:
             logger.info(f"{OFF}Track not available for download (no stream URL)")
             return None
 
-        _emit_track_start(track_num, track_title, _album_cover_thumb(album_meta))
+        _emit_track_start(
+            track_num,
+            track_title,
+            _album_cover_thumb(album_meta),
+            artist=la,
+            album=alb,
+            duration_sec=dura,
+            track_explicit=tr_ex,
+        )
         is_mp3 = int(self.quality) == 5
         try:
             self._download_and_tag(
@@ -371,7 +635,16 @@ class Download:
             track_num = meta.get("track_number", 1)
             artist = _safe_get(meta, "performer", "name")
             logger.info(f"\n{YELLOW}Downloading: {artist} - {track_title}")
-            _emit_track_start(track_num, track_title, _album_cover_thumb(meta))
+            la, alb, dura, tr_ex = _lyric_ctx_for_ui(meta, None)
+            _emit_track_start(
+                track_num,
+                track_title,
+                _album_cover_thumb(meta),
+                artist=la,
+                album=alb,
+                duration_sec=dura,
+                track_explicit=tr_ex,
+            )
             format_info = self._get_format(meta, is_track_id=True, track_url_dict=parse)
             file_format, quality_met, bit_depth, sampling_rate = format_info
 
@@ -427,7 +700,16 @@ class Download:
             track_title = _get_title(meta) if meta else f"track {self.item_id}"
             track_num = meta.get("track_number", 1) if meta else 1
             thumb = _album_cover_thumb(meta) if meta else ""
-            _emit_track_start(track_num, track_title, thumb)
+            la, alb, dura, tr_ex = _lyric_ctx_for_ui(meta if meta else {}, None)
+            _emit_track_start(
+                track_num,
+                track_title,
+                thumb,
+                artist=la,
+                album=alb,
+                duration_sec=dura,
+                track_explicit=tr_ex,
+            )
             _emit_track_marker(
                 "TRACK_RESULT",
                 track_num,
@@ -506,6 +788,11 @@ class Download:
                 track_title,
                 "downloaded",
                 "already-exists",
+                queue_url=self.source_queue_url,
+                local_path=final_file,
+                lyric_album=_album_title_for_track_marker(
+                    is_track, track_metadata, album_or_track_metadata
+                ),
             )
             return
 
@@ -540,6 +827,13 @@ class Download:
                     cancel_event=self.cancel_event,
                     segmented_fallback=self.segmented_fallback and not is_mp3,
                     remux_flac=not is_mp3,
+                    progress_callback=_make_throttled_download_progress(
+                        track_metadata,
+                        tmp_count,
+                        track_title,
+                        is_track=is_track,
+                        album_or_track_metadata=album_or_track_metadata,
+                    ),
                 )
                 download_ok = True
                 break
@@ -570,10 +864,27 @@ class Download:
             track_title,
             "downloaded",
             os.path.basename(final_file),
+            queue_url=self.source_queue_url,
+            local_path=final_file,
+            lyric_album=_album_title_for_track_marker(
+                is_track, track_metadata, album_or_track_metadata
+            ),
         )
-        self._write_track_lyrics_sidecar(final_file, track_metadata)
+        if is_track:
+            lyrics_release_album = (
+                (album_or_track_metadata or {}).get("album")
+                if isinstance(album_or_track_metadata, dict)
+                else None
+            )
+        else:
+            lyrics_release_album = album_or_track_metadata
+        self._write_track_lyrics_sidecar(
+            final_file, track_metadata, lyrics_release_album
+        )
 
-    def _write_track_lyrics_sidecar(self, final_file, track_metadata):
+    def _write_track_lyrics_sidecar(
+        self, final_file, track_metadata, release_album_meta: Optional[dict] = None
+    ):
         if not self.lyrics_enabled:
             return
         # Finish lyrics for this file even if the user cancelled the queue: the
@@ -581,12 +892,17 @@ class Download:
         # "Synced Lyrics" is enabled.
         if not os.path.isfile(final_file):
             return
+        try:
+            lyrics_ui_title = _get_title(track_metadata)
+        except Exception:
+            lyrics_ui_title = str((track_metadata or {}).get("title") or "track")
         _emit_lyrics_marker(
             track_metadata.get("track_number"),
-            track_metadata.get("title", "track"),
+            lyrics_ui_title,
             "loading",
             "searching",
             None,
+            final_file,
         )
         explicit = bool(
             track_metadata.get("parental_warning")
@@ -597,19 +913,22 @@ class Download:
             or _safe_get(track_metadata, "album", "explicit")
         )
         try:
-            result = lyrics.fetch_synced_lyrics(
-                track_metadata,
+            track_for_lyrics = _track_dict_for_lrclib(track_metadata, release_album_meta)
+            result = lyrics.fetch_synced_lyrics_with_search_fallback(
+                track_for_lyrics,
                 prefer_explicit=explicit,
                 timeout_sec=12.0,
+                max_fallback_candidates=5,
             )
             if not result:
                 logger.info(f"{OFF}No synced lyrics found for {track_metadata.get('title', 'track')}")
                 _emit_lyrics_marker(
                     track_metadata.get("track_number"),
-                    track_metadata.get("title", "track"),
+                    lyrics_ui_title,
                     "none",
                     "not-found",
                     0,
+                    final_file,
                 )
                 return
             lyric_type = str(result.get("lyrics_type", "synced"))
@@ -621,10 +940,11 @@ class Download:
                 )
                 _emit_lyrics_marker(
                     track_metadata.get("track_number"),
-                    track_metadata.get("title", "track"),
+                    lyrics_ui_title,
                     lyric_type,
                     result.get("provider", "none"),
                     conf,
+                    final_file,
                 )
                 return
             if not lyrics_body:
@@ -633,10 +953,11 @@ class Download:
                 )
                 _emit_lyrics_marker(
                     track_metadata.get("track_number"),
-                    track_metadata.get("title", "track"),
+                    lyrics_ui_title,
                     "none",
                     result.get("provider", "none"),
                     conf,
+                    final_file,
                 )
                 return
             out = lyrics.write_lrc_sidecar(
@@ -648,14 +969,25 @@ class Download:
                 logger.info(f"{OFF}Lyrics sidecar already exists for {track_metadata.get('title', 'track')}")
                 _emit_lyrics_marker(
                     track_metadata.get("track_number"),
-                    track_metadata.get("title", "track"),
+                    lyrics_ui_title,
                     result.get("lyrics_type", "unknown"),
                     "already-exists",
                     conf,
+                    final_file,
                 )
                 return
+            lid = result.get("lrclib_id")
+            if lid is not None:
+                try:
+                    lyrics.write_lrclib_id_sidecar(final_file, int(lid))
+                except (TypeError, ValueError, OSError):
+                    pass
             provider = result.get("provider", "provider")
-            if result.get("fallback_used"):
+            if result.get("search_fallback_used"):
+                logger.info(
+                    f"{YELLOW}Synced lyrics saved via {provider} (search fallback): {os.path.basename(out)}"
+                )
+            elif result.get("fallback_used"):
                 logger.info(
                     f"{YELLOW}Synced lyrics saved via {provider} (explicit fallback used): {os.path.basename(out)}"
                 )
@@ -665,19 +997,21 @@ class Download:
                 )
             _emit_lyrics_marker(
                 track_metadata.get("track_number"),
-                track_metadata.get("title", "track"),
+                lyrics_ui_title,
                 lyric_type,
                 provider,
                 conf,
+                final_file,
             )
         except Exception as e:
             logger.warning(f"{YELLOW}Lyrics fetch failed for {track_metadata.get('title', 'track')}: {e}")
             _emit_lyrics_marker(
                 track_metadata.get("track_number"),
-                track_metadata.get("title", "track"),
+                lyrics_ui_title,
                 "error",
                 str(e),
                 0,
+                final_file,
             )
 
     @staticmethod
@@ -851,7 +1185,7 @@ def _quality_fallback_chain(quality):
     return all_qualities[idx:]
 
 
-def _dl_streaming(url, fname, desc, headers, cancel_event=None):
+def _dl_streaming(url, fname, desc, headers, cancel_event=None, progress_callback=None):
     """Strategy 1: streaming download with iter_content."""
     r = requests.get(
         url,
@@ -887,6 +1221,8 @@ def _dl_streaming(url, fname, desc, headers, cancel_event=None):
             size = f.write(chunk)
             bar.update(size)
             written += size
+            if progress_callback and total > 0:
+                progress_callback(written, total)
     r.close()
 
     if total > 0 and written < total:
@@ -896,7 +1232,7 @@ def _dl_streaming(url, fname, desc, headers, cancel_event=None):
     return written
 
 
-def _dl_non_streaming(url, fname, desc, headers, cancel_event=None):
+def _dl_non_streaming(url, fname, desc, headers, cancel_event=None, progress_callback=None):
     """Strategy 2: non-streaming (entire body at once, no iter_content)."""
     if cancel_event and cancel_event.is_set():
         return 0
@@ -917,10 +1253,15 @@ def _dl_non_streaming(url, fname, desc, headers, cancel_event=None):
     with open(fname, "wb") as f:
         f.write(data)
     logger.debug(f"[dl-full] wrote {len(data)} bytes")
+    if progress_callback:
+        hdr_total = int(r.headers.get("content-length", 0) or 0)
+        total = hdr_total if hdr_total > 0 else len(data)
+        if total > 0:
+            progress_callback(len(data), total)
     return len(data)
 
 
-def _dl_urllib(url, fname, desc, headers, cancel_event=None):
+def _dl_urllib(url, fname, desc, headers, cancel_event=None, progress_callback=None):
     """Strategy 3: stdlib urllib (completely different HTTP stack)."""
     if cancel_event and cancel_event.is_set():
         return 0
@@ -951,6 +1292,8 @@ def _dl_urllib(url, fname, desc, headers, cancel_event=None):
                 size = f.write(chunk)
                 bar.update(size)
                 written += size
+                if progress_callback and total > 0:
+                    progress_callback(written, total)
 
     if total > 0 and written < total:
         raise IOError(f"urllib incomplete: {written}/{total}")
@@ -969,6 +1312,7 @@ def _dl_segmented_remux(
     remux_flac=False,
     segment_bytes=4 * 1024 * 1024,
     max_workers=6,
+    progress_callback=None,
 ):
     """Fallback segmented downloader for throttled CDN responses."""
     if cancel_event and cancel_event.is_set():
@@ -1012,11 +1356,15 @@ def _dl_segmented_remux(
         return idx, data
 
     chunks = [None] * len(ranges)
+    completed_bytes = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(ranges))) as ex:
         futures = [ex.submit(_fetch_range, i, br) for i, br in enumerate(ranges)]
         for fut in concurrent.futures.as_completed(futures):
             idx, data = fut.result()
             chunks[idx] = data
+            completed_bytes += len(data)
+            if progress_callback:
+                progress_callback(completed_bytes, total)
 
     tmp = fname + ".seg.tmp"
     with open(tmp, "wb") as out:
@@ -1079,6 +1427,7 @@ def tqdm_download(
     *,
     segmented_fallback=False,
     remux_flac=False,
+    progress_callback=None,
 ):
     _UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1096,13 +1445,14 @@ def tqdm_download(
         strategies.append(
             (
                 "segmented-remux",
-                lambda u, f, d, h, cancel_event=None: _dl_segmented_remux(
+                lambda u, f, d, h, cancel_event=None, progress_callback=None: _dl_segmented_remux(
                     u,
                     f,
                     d,
                     h,
                     cancel_event=cancel_event,
                     remux_flac=remux_flac,
+                    progress_callback=progress_callback,
                 ),
             )
         )
@@ -1116,7 +1466,14 @@ def tqdm_download(
 
         try:
             logger.debug(f"[dl] attempt {attempt} strategy={strat_name}")
-            strat_fn(url, fname, desc, headers, cancel_event=cancel_event)
+            strat_fn(
+                url,
+                fname,
+                desc,
+                headers,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
             return  # Success
         except Exception as e:
             logger.debug(f"[dl] {strat_name} failed: {type(e).__name__}: {e}")
@@ -1151,6 +1508,36 @@ def _get_title(item_dict):
             else album_title
         )
     return album_title
+
+
+def _track_dict_for_lrclib(
+    track: dict, release_album_meta: Optional[dict]
+) -> dict:
+    """Album track ``items`` from Qobuz often omit a nested ``album`` dict.
+
+    LRCLIB confidence and ``/api/get`` need the release title; without it,
+    search runs album-less (neutral album score) and the UI shows a different
+    percentage than the downloader.
+    """
+    alb = track.get("album")
+    if isinstance(alb, dict) and (alb.get("title") or "").strip():
+        return track
+    if not release_album_meta or not isinstance(release_album_meta, dict):
+        return track
+    try:
+        title = _get_title(release_album_meta)
+    except (KeyError, TypeError):
+        return track
+    if not (title or "").strip():
+        return track
+    out = dict(track)
+    base = dict(alb) if isinstance(alb, dict) else {}
+    base["title"] = title
+    for key in ("parental_warning", "parental_advisory", "explicit"):
+        if key not in base and release_album_meta.get(key):
+            base[key] = release_album_meta[key]
+    out["album"] = base
+    return out
 
 
 def _get_extra(item, dirn, extra="cover.jpg", og_quality=False, cancel_event=None):

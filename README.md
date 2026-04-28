@@ -1,54 +1,70 @@
-# Qobuz-DL: The Modern Music Experience
+# Qobuz-DL-GUI — modern search, queue, and download
 
-![Qobuz-DL GUI — search, queue, and download](assets/main.gif)
-
-### Search, explore, and download Lossless and Hi-Res music from Qobuz with a beautiful, high-density interface.
+**Version 1.1** · Desktop app for lossless and Hi-Res downloads from Qobuz — rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
 
 ---
 
-## A Complete GUI Overhaul
+## Main — search and download in the app
 
-This fork of **qobuz-dl** transforms the reliable downloader into a premium desktop-grade web application. Forget the terminal—experience your music collection with rich metadata, visual badges, and a streamlined workflow.
+Use the sidebar search to find albums and tracks, inspect quality and metadata, add releases to the queue, and run downloads while watching progress and download history inside the app.
 
-### Key Features
-*   **High-Density Visuals**: View album art, "Explicit" content tags, and "Hi-Res" quality badges at a glance.
-*   **Unified Download Queue**: Track multiple downloads in real-time with detailed metadata (Bit Depth, Sample Rate, Track Count, and Release Year).
-*   **Advanced Metadata Resolution**: Every search result and queue item is enriched with granular technical details pulled directly from the Qobuz API.
-*   **Native OAuth Support**: Seamlessly login using the official Qobuz website—no more manual token digging.
-*   **Pro Configuration**: Manage your naming templates (Folder/Track) with interactive tooltips and instant examples.
-
-### Lucky queue
-
-Pick how many releases you want and add a random selection straight to the download queue—then start the download when you’re ready.
-
-![Lucky to queue and download](assets/lucky.gif)
-
-### Drag URLs from Qobuz
-
-Drag album or track links from the Qobuz web player into the app to paste them into the URL list—no copy-paste needed.
-
-![Drag URLs from Qobuz into the app](assets/drag.gif)
+![Search, queue, and download in Qobuz-DL-GUI](assets/main.gif)
 
 ---
 
-## Getting Started
+## Drag — queue from the browser
 
-### 1. Installation
-Install the package and its requirements via pip (from PyPI or your fork):
+Drag album or track URLs from the Qobuz web player (or tabs) into the app to mass-queue links without copy-paste — ideal when you are browsing and want to batch everything into one session.
 
-```bash
-pip install --upgrade qobuz-dl
-```
+![Drag URLs from the browser into the app for mass queueing](assets/drag.gif)
 
-Or install from this repository:
+---
+
+## Settings — configuration tour
+
+Open settings to walk quality tiers, folder/track naming templates, duplicate checks, synced lyrics options, and other behavior so your library layout and tags stay consistent release after release.
+
+![Tour of settings and configuration](assets/settings.gif)
+
+---
+
+## Lyrics — download → match → preview
+
+After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc` sidecars next to your files, and preview synced playback so you know what hits your folder before you leave the app.
+
+![From download through lyric search and lyric playback](assets/lyric.gif)
+
+---
+
+## Highlights
+
+- **High-density visuals** — Album art, explicit tags, Hi-Res cues, and technical detail from the Qobuz API on results and queue rows.
+- **Unified queue** — Multiple URLs and releases with live status (bit depth, sample rate, tracks, year).
+- **OAuth** — Sign in through the official Qobuz site; no manual token hunting.
+- **Naming templates** — Folder and track patterns with variables such as `{artist}`, `{album}`, `{year}`, `{bit_depth}`.
+- **Library database** — Optional duplicate awareness so you do not re-grab the same rips blindly.
+- **Synced lyrics** — Optional `.lrc` via the public [LRCLIB](https://lrclib.net) API (`/api/get`, `/api/search`).
+- **Lucky queue** — Pick how many releases to add at random from search, then start when you are ready (no separate GIF; use it from the search panel).
+
+---
+
+## Getting started
+
+### Install
 
 ```bash
 pip install git+https://github.com/peykc/qobuz-dl-gui.git
 ```
 
-### 2. Launch the Interface
-**Windows:**
-Run the included `launch_gui.bat` or:
+Or from PyPI when published:
+
+```bash
+pip install --upgrade qobuz-dl
+```
+
+### Launch
+
+**Windows:** run `launch_gui.bat`, or:
 
 ```bash
 qobuz-dl-gui
@@ -62,46 +78,43 @@ qobuz-dl-gui
 qobuz-dl-gui
 ```
 
-The GUI runs as a **desktop window** (via [pywebview](https://github.com/r0x0r/pywebview); on Windows this uses **Edge WebView2**). If you set the environment variable `QOBUZ_DL_GUI_BROWSER=1`, the app opens in your **system browser** at `http://127.0.0.1` on a local port instead.
+The GUI uses [pywebview](https://github.com/r0x0r/pywebview) (on Windows, **Edge WebView2**). Set `QOBUZ_DL_GUI_BROWSER=1` to open in your system browser at `http://127.0.0.1` instead.
 
 ### Pre-built binaries ([Releases](https://github.com/peykc/qobuz-dl-gui/releases))
 
-| Platform | File | Notes |
-|----------|------|--------|
-| **Windows** | `Qobuz-DL-GUI-Windows-x64.exe` | No Python. [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if the window does not load. In-app updates use this asset. |
-| **Linux** | `Qobuz-DL-GUI-Linux-x64` | `chmod +x` then run. Needs WebKitGTK/GTK stack for [pywebview](https://pywebview.flowrl.com/guide/installation.html#linux) (e.g. `libwebkit2gtk`, `python3-gi` on Ubuntu). |
-| **macOS** | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip, open `Qobuz-DL-GUI.app`. Unsigned builds: right-click → **Open** the first time if Gatekeeper warns. |
+| Platform | Artifact | Notes |
+|----------|----------|--------|
+| **Windows** | `Qobuz-DL-GUI-Windows-x64.exe` | No Python install. [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if the shell does not render. In-app updates expect this asset name pattern. |
+| **Linux** | `Qobuz-DL-GUI-Linux-x64` | `chmod +x`. Needs WebKitGTK/GTK per [pywebview Linux notes](https://pywebview.flowrl.com/guide/installation.html#linux). |
+| **macOS** | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip and open `Qobuz-DL-GUI.app`. Unsigned: right-click → **Open** if Gatekeeper warns. |
 
-**CI:** Pushing a tag matching `v*` runs [.github/workflows/build-desktop.yml](.github/workflows/build-desktop.yml), builds all three, and attaches them to a GitHub Release for that tag. **Actions → Build desktop → Run workflow** builds the same artifacts without creating a release (for testing).
-
----
-
-## Advanced Settings
-The GUI provides a full **Configuration Manager** where you can:
-- **Set Quality**: Toggle between MP3, CD Lossless, and Hi-Res (up to 24-bit/192kHz).
-- **Custom Naming**: Use variables like `{artist}`, `{album}`, `{year}`, and `{bit_depth}` to organize your library exactly how you want.
-- **Library Database**: Built-in duplicate checking ensures you never download the same track twice.
+Pushing a Git tag `v*` runs [.github/workflows/build-desktop.yml](.github/workflows/build-desktop.yml) and attaches builds to that release. **Actions → Build desktop → Run workflow** produces the same artifacts without a release.
 
 ---
 
-## Command Line Interface (CLI)
-For power users who prefer the terminal or want to automate downloads via scripting, the full original CLI is still available.
+## CLI
 
-[View CLI Documentation](CLI.md)
+The original terminal workflow is still shipped for scripting and automation.
 
----
-
-## ⚖️ Disclaimer
-* This tool is for educational purposes. Please respect the [Qobuz API Terms of Use](https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf).
-* **qobuz-dl** is not affiliated with Qobuz.
+[CLI documentation](CLI.md)
 
 ---
 
-### Support the Project
+## Disclaimer
 
-**Donate to GUI dev (Monero)**
+- For educational use. Respect the [Qobuz API Terms of Use](https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf).
+- **qobuz-dl** / **Qobuz-DL-GUI** are not affiliated with Qobuz.
+
+---
+
+### Support
+
+**GUI (Monero)**  
 [![Donate Monero](https://img.shields.io/badge/Donate-Monero-orange.svg)](https://peykc.github.io/pktree/?pay=monero)
 
-
-**Donate to CLI dev (PayPal)**
+**CLI upstream (PayPal)**  
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VZWSWVGZGJRMU&source=url)
+
+---
+
+*Earlier README text (pre–v1.1 GIF layout) is preserved in [README-v1.0.md](README-v1.0.md) for comparison.*

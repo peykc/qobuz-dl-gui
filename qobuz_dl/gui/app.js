@@ -1,5 +1,5 @@
 /* ============================================================
-   Qobuz-DL GUI — Frontend Logic
+   Qobuz-DL GUI | Frontend Logic
    ============================================================ */
 
 (function () {
@@ -9,15 +9,27 @@
   let _sse = null;
   let _trackStatusMap = new Map();
 
+  /** Virtualized download history when many rows (reduces DOM + layout cost). */
+  const _TS_VIRT_THRESHOLD = 72;
+  const _TS_VIRT_OVERSCAN = 6;
+  let _tsVirtActive = false;
+  let _tsVirtInnerEl = null;
+  let _tsVirtRowH = 60;
+  let _tsVirtScrollHandlerBound = null;
+  let _tsVirtScrollRaf = 0;
+  let _tsVirtResizeObs = null;
+  /** Display order of row keys (oldest → newest, same as DB `updated_at ASC`). */
+  let _tsOrder = [];
+  let _tsKeyToIndex = new Map();
+  /** Serialized row for mounting/evicting virtual items (API shape + session results). */
+  let _tsDbItemByKey = new Map();
+  let _tsActiveDlKeys = new Set();
+  /** audio_path → lyric_album (avoids scanning hundreds of DOM nodes). */
+  let _tsAudioPathAlbum = new Map();
+
   function startSSE() {
     if (_sse) return;
     _sse = new EventSource("/api/stream");
-
-    // Plain log lines
-    _sse.onmessage = (e) => {
-      if (!e.data || e.data.trim() === "") return;
-      appendLog("log-output", e.data);
-    };
 
     // Structured per-URL status events
     _sse.addEventListener("status", (e) => {
@@ -34,33 +46,12 @@
     };
   }
 
-  function appendLog(targetId, text) {
-    const el = document.getElementById(targetId);
-    if (!el) return;
-    const line = document.createElement("span");
-    line.className = classifyLogLine(text);
-    line.textContent = text;
-    el.appendChild(line);
-    el.appendChild(document.createTextNode("\n"));
-    el.scrollTop = el.scrollHeight;
-  }
-
-  function classifyLogLine(text) {
-    const t = text.toLowerCase();
-    if (t.includes("error") || t.includes("failed") || t.includes("invalid"))
-      return "log-line log-error";
-    if (t.includes("complete") || t.includes("success") || t.includes("logged"))
-      return "log-line log-ok";
-    if (t.includes("skip") || t.includes("already") || t.includes("demo"))
-      return "log-line log-warn";
-    if (
-      t.includes("download") ||
-      t.includes("search") ||
-      t.includes("quality") ||
-      t.includes("connect")
-    )
-      return "log-line log-info";
-    return "log-line";
+  /** True if the scrollable element is at (or within a few px of) the bottom. */
+  function _scrollContainerAtBottom(el, slackPx = 8) {
+    if (!el) return true;
+    const max = el.scrollHeight - el.clientHeight;
+    if (max <= 0) return true;
+    return el.scrollTop >= max - slackPx;
   }
 
   function _normalizeTrackNo(trackNo) {
@@ -82,6 +73,60 @@
     return t;
   }
 
+  /**
+   * If s ends with a balanced (... ) group preceded by whitespace, return
+   * [textBefore, innerWithoutParens]; else null. Handles nested parens inside
+   * the group (e.g. Qobuz `version` like `Album Version (Explicit)`).
+   */
+  function _splitTrailingBalancedParen(s) {
+    const t = String(s || "").trimEnd();
+    if (!t || t[t.length - 1] !== ")") return null;
+    let depth = 0;
+    for (let i = t.length - 1; i >= 0; i--) {
+      const c = t[i];
+      if (c === ")") depth++;
+      else if (c === "(") {
+        depth--;
+        if (depth === 0) {
+          if (i > 0 && !/\s/.test(t[i - 1])) return null;
+          const before = t.slice(0, i).trimEnd();
+          const inner = t.slice(i + 1, -1).trim();
+          return [before, inner];
+        }
+      }
+    }
+    return null;
+  }
+
+  /** True when the trailing segment looks like Qobuz's store `version` field, not part of the song title. */
+  function _isQobuzStoreVersionSuffix(inner) {
+    const s = String(inner || "").trim().toLowerCase();
+    if (!s) return false;
+    return (
+      /\bexplicit\b/.test(s) ||
+      /\balbum version\b/.test(s) ||
+      /\bremaster(ed)?\b/.test(s) ||
+      /\bre-?master\b/.test(s) ||
+      /\bdeluxe\b/.test(s) ||
+      /\banniversary\b/.test(s) ||
+      /\bmix\b/.test(s) ||
+      /\bmono\b/.test(s) ||
+      /\bstereo\b/.test(s) ||
+      /\bedition\b/.test(s)
+    );
+  }
+
+  /** Title for the LRCLIB search field when opening from a download-history row. */
+  function _lyricSearchTitleFromDisplay(displayTitle) {
+    const t = String(displayTitle || "").trim();
+    if (!t) return "";
+    const sp = _splitTrailingBalancedParen(t);
+    if (!sp) return t;
+    const [before, inner] = sp;
+    if (_isQobuzStoreVersionSuffix(inner)) return before.trim();
+    return t;
+  }
+
   function _parseTrackRef(trackNo, title) {
     const rawTitle = String(title || "").trim();
     const rawNo = String(trackNo || "").trim();
@@ -93,10 +138,312 @@
     return { trackNo: "", title: rawTitle };
   }
 
-  function _trackKey(trackNo, title) {
+  function _trackKey(trackNo, title, lyricAlbum) {
     const num = _normalizeTrackNo(trackNo);
     const t = _normalizeTrackTitle(title);
-    return `${num}::${t}`;
+    const a = _normalizeTrackTitle(lyricAlbum || "");
+    return a ? `${num}::${t}::${a}` : `${num}::${t}`;
+  }
+
+  function _tsRegisterAudioPathAlbum(audioPath, lyricAlbum) {
+    const p = String(audioPath || "").trim();
+    if (!p) return;
+    _tsAudioPathAlbum.set(p, String(lyricAlbum || "").trim());
+  }
+
+  function _tsRebuildKeyIndex() {
+    _tsKeyToIndex.clear();
+    for (let i = 0; i < _tsOrder.length; i++) {
+      _tsKeyToIndex.set(_tsOrder[i], i);
+    }
+  }
+
+  function _tsAppendParent(list) {
+    if (_tsVirtActive && _tsVirtInnerEl) return _tsVirtInnerEl;
+    return list;
+  }
+
+  function _tsTeardownVirtScroller() {
+    const list = document.getElementById("dl-track-status");
+    if (_tsVirtResizeObs) {
+      try {
+        if (list) _tsVirtResizeObs.unobserve(list);
+      } catch (_) {
+        /* ignore */
+      }
+      try {
+        _tsVirtResizeObs.disconnect();
+      } catch (_) {
+        /* ignore */
+      }
+      _tsVirtResizeObs = null;
+    }
+    if (list && _tsVirtScrollHandlerBound) {
+      list.removeEventListener("scroll", _tsVirtScrollHandlerBound);
+      window.removeEventListener("resize", _tsVirtScrollHandlerBound);
+    }
+    _tsVirtScrollHandlerBound = null;
+    _tsVirtInnerEl = null;
+    _tsVirtActive = false;
+    if (_tsVirtScrollRaf) {
+      cancelAnimationFrame(_tsVirtScrollRaf);
+      _tsVirtScrollRaf = 0;
+    }
+  }
+
+  function _tsEnsureVirtInner(list) {
+    const inner = document.createElement("div");
+    inner.id = "ts-virt-inner";
+    inner.className = "track-status-virt-inner";
+    list.appendChild(inner);
+    _tsVirtInnerEl = inner;
+  }
+
+  function _tsUpdateVirtInnerHeight() {
+    if (!_tsVirtInnerEl) return;
+    _tsVirtInnerEl.style.minHeight = `${Math.max(0, _tsOrder.length) * _tsVirtRowH}px`;
+  }
+
+  function _tsPositionVirtCard(card, index) {
+    if (!card || !_tsVirtActive) return;
+    card.classList.add("track-status-card--virt");
+    const gap = 6;
+    const h = Math.max(44, _tsVirtRowH - gap);
+    card.style.top = `${index * _tsVirtRowH}px`;
+    card.style.minHeight = `${h}px`;
+  }
+
+  function _tsVirtPinnedIndices(n) {
+    const out = new Set();
+    for (const k of _tsActiveDlKeys) {
+      const i = _tsKeyToIndex.get(k);
+      if (i !== undefined && i >= 0 && i < n) out.add(i);
+    }
+    document
+      .querySelectorAll("#dl-track-status .lyric-search-anchor")
+      .forEach((c) => {
+        const k = c.dataset.trackKey;
+        if (!k) return;
+        const i = _tsKeyToIndex.get(k);
+        if (i !== undefined && i >= 0 && i < n) out.add(i);
+      });
+    return out;
+  }
+
+  function _tsVirtMeasureRowH() {
+    if (!_tsVirtInnerEl) return;
+    const card = _tsVirtInnerEl.querySelector(".track-status-card");
+    if (!card) return;
+    const r = card.getBoundingClientRect();
+    const cs = window.getComputedStyle(card);
+    const mb = parseFloat(cs.marginBottom) || 0;
+    if (r.height > 0) _tsVirtRowH = Math.max(48, Math.ceil(r.height + mb));
+    _tsUpdateVirtInnerHeight();
+  }
+
+  function _tsVirtOnScroll() {
+    if (!_tsVirtActive || !_tsVirtInnerEl) return;
+    if (_tsVirtScrollRaf) return;
+    _tsVirtScrollRaf = requestAnimationFrame(() => {
+      _tsVirtScrollRaf = 0;
+      _tsVirtRender();
+    });
+  }
+
+  function _tsVirtRender() {
+    if (!_tsVirtActive || !_tsVirtInnerEl) return;
+    const list = document.getElementById("dl-track-status");
+    if (!list) return;
+    const n = _tsOrder.length;
+    const H = _tsVirtRowH;
+    _tsVirtInnerEl.style.minHeight = `${Math.max(0, n) * H}px`;
+    if (n === 0) return;
+
+    const st = list.scrollTop;
+    const ch = list.clientHeight || 1;
+    let start = Math.floor(st / H) - _TS_VIRT_OVERSCAN;
+    let end = Math.ceil((st + ch) / H) + _TS_VIRT_OVERSCAN;
+    start = Math.max(0, start);
+    end = Math.min(n, end);
+
+    const want = new Set();
+    for (let i = start; i < end; i++) want.add(i);
+    for (const ii of _tsVirtPinnedIndices(n)) want.add(ii);
+
+    for (const [k, card] of [..._trackStatusMap]) {
+      const idx = _tsKeyToIndex.get(k);
+      if (idx === undefined) continue;
+      if (!want.has(idx)) {
+        card.remove();
+        _trackStatusMap.delete(k);
+      }
+    }
+
+    const sorted = [...want].sort((a, b) => a - b);
+    for (let j = 0; j < sorted.length; j++) {
+      const i = sorted[j];
+      const k = _tsOrder[i];
+      if (!k || _trackStatusMap.has(k)) continue;
+      const it = _tsDbItemByKey.get(k);
+      if (!it) continue;
+      _tsMountDbItemAtIndex(it, i);
+    }
+
+    for (const [k, card] of _trackStatusMap) {
+      const idx = _tsKeyToIndex.get(k);
+      if (idx !== undefined) _tsPositionVirtCard(card, idx);
+    }
+  }
+
+  function _tsApplyHistoryDbItemToCard(card, it) {
+    const alb = (it.lyric_album || "").trim();
+    if (it.lyric_artist) {
+      card.dataset.lyricArtist = String(it.lyric_artist);
+    }
+    if (alb) card.dataset.lyricAlbum = alb;
+    if (it.duration_sec) {
+      card.dataset.durationSec = String(parseInt(it.duration_sec, 10) || 0);
+    }
+    if (it.audio_path) {
+      card.dataset.audioPath = String(it.audio_path);
+      _tsRegisterAudioPathAlbum(String(it.audio_path), alb);
+    }
+    if (it.track_explicit === true || it.track_explicit === false) {
+      card.dataset.trackExplicit = it.track_explicit ? "1" : "0";
+      _setTrackContentRatingBadge(card, it.track_explicit);
+    }
+    const st = String(it.download_status || "downloaded").toLowerCase();
+    const detail = String(it.download_detail || "").trim();
+    const isFailed = st === "failed";
+    const isPurchase = st === "purchase_only";
+    if (isPurchase && detail) {
+      _setTrackDownloadChip(
+        it.track_no,
+        it.title,
+        "Album Purchase Only",
+        "failed",
+        {
+          href: detail,
+          titleAttr:
+            "Open album on Qobuz to purchase (full album required for these tracks)",
+        },
+        alb,
+      );
+    } else {
+      _setTrackDownloadChip(
+        it.track_no,
+        it.title,
+        isFailed ? "failed" : "downloaded",
+        isFailed ? "failed" : "done",
+        undefined,
+        alb,
+      );
+    }
+    if (it.lyric_type && String(it.lyric_type).toLowerCase() !== "loading") {
+      _setTrackLyricsChip(
+        it.track_no,
+        it.title,
+        it.lyric_type,
+        it.lyric_confidence || null,
+        alb,
+        it.lyric_provider || "",
+      );
+    }
+  }
+
+  function _tsMountDbItemAtIndex(it, index) {
+    if (!_tsVirtInnerEl) return;
+    const alb = (it.lyric_album || "").trim();
+    const { card, key } = _buildTrackStatusCardEl(
+      it.track_no || "",
+      it.title || "",
+      alb,
+      it.cover_url || "",
+    );
+    _trackStatusMap.set(key, card);
+    _tsVirtInnerEl.appendChild(card);
+    _tsApplyHistoryDbItemToCard(card, it);
+    _tsPositionVirtCard(card, index);
+  }
+
+  function _tsApplyHistoryDbItemToNewCard(it) {
+    const alb = (it.lyric_album || "").trim();
+    const card = _ensureTrackStatusCard(
+      it.track_no || "",
+      it.title || "",
+      true,
+      it.cover_url || "",
+      alb,
+    );
+    if (!card) return;
+    _tsApplyHistoryDbItemToCard(card, it);
+  }
+
+  function _tsStoreDbItemFromTrackResult(ev, resAlb, card) {
+    const tk = (card && card.dataset.trackKey) || "";
+    if (!tk) return;
+    const tEl = card.querySelector(".track-status-title");
+    const st = String(ev.status || "").toLowerCase();
+    const isFailed = st === "failed";
+    const isPurchase = st === "purchase_only";
+    const detail = String(ev.detail || "").trim();
+    const img = card.querySelector(".track-status-art-img");
+    const it = {
+      track_no: String(ev.track_no || ""),
+      title: (tEl && tEl.textContent) || String(ev.title || ""),
+      lyric_album: resAlb || "",
+      cover_url: (img && img.getAttribute("src")) || "",
+      lyric_artist: (card.dataset.lyricArtist || "").trim(),
+      duration_sec: parseInt(card.dataset.durationSec || "0", 10) || 0,
+      audio_path: (card.dataset.audioPath || "").trim(),
+      track_explicit:
+        card.dataset.trackExplicit === "1"
+          ? true
+          : card.dataset.trackExplicit === "0"
+            ? false
+            : null,
+      download_status: isPurchase ? "purchase_only" : isFailed ? "failed" : "downloaded",
+      download_detail: detail,
+      lyric_type: "",
+      lyric_provider: "",
+      lyric_confidence: "",
+    };
+    const chip = card.querySelector(".lyrics-chip");
+    if (chip) {
+      const parts = (chip.className || "").split(/\s+/);
+      const lt = parts.find((c) =>
+        ["synced", "plain", "none", "error", "instrumental"].includes(c),
+      );
+      if (lt) it.lyric_type = lt;
+    }
+    _tsDbItemByKey.set(tk, it);
+    const ap = (it.audio_path || "").trim();
+    if (ap) _tsRegisterAudioPathAlbum(ap, (it.lyric_album || "").trim());
+  }
+
+  function _lyricAlbumForTrackEv(ev) {
+    const apEv = String(ev.audio_path || "").trim();
+    if (apEv && _tsAudioPathAlbum.has(apEv)) {
+      return _tsAudioPathAlbum.get(apEv) || "";
+    }
+    let a =
+      ev.lyric_album != null && String(ev.lyric_album).trim() !== ""
+        ? String(ev.lyric_album).trim()
+        : "";
+    if (a) return a;
+    const wantN = _normalizeTrackNo(ev.track_no);
+    const wantT = _normalizeTrackTitle(ev.title || "");
+    const cards = document.querySelectorAll("#dl-track-status .track-status-card");
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      if (_normalizeTrackNo(c.dataset.trackNo) !== wantN) continue;
+      const tEl = c.querySelector(".track-status-title");
+      const ct = _normalizeTrackTitle((tEl && tEl.textContent) || "");
+      if (ct !== wantT) continue;
+      const da = (c.dataset.lyricAlbum || "").trim();
+      if (da) return da;
+    }
+    return "";
   }
 
   function _setTrackCardCover(card, coverUrl) {
@@ -122,53 +469,127 @@
     img.src = url;
   }
 
-  function _ensureTrackStatusCard(trackNo, title, createNew = false, coverUrl) {
-    const list = document.getElementById("dl-track-status");
-    if (!list) return null;
+  function _buildTrackStatusCardEl(trackNo, title, lyricAlbum, coverUrl) {
     const parsed = _parseTrackRef(trackNo, title);
-    const key = _trackKey(parsed.trackNo, parsed.title);
-    if (key && _trackStatusMap.has(key)) {
-      const existing = _trackStatusMap.get(key);
-      if (coverUrl) _setTrackCardCover(existing, coverUrl);
-      return existing;
-    }
-    if (!createNew && !key) return null;
-
+    const alb =
+      lyricAlbum != null && String(lyricAlbum).trim() !== ""
+        ? String(lyricAlbum).trim()
+        : "";
+    const key = _trackKey(parsed.trackNo, parsed.title, alb);
     const card = document.createElement("div");
     card.className = "track-status-card";
     card.dataset.trackKey = key;
     card.dataset.trackNo = _normalizeTrackNo(parsed.trackNo);
     card.dataset.trackTitle = _normalizeTrackTitle(parsed.title);
+    if (alb) card.dataset.lyricAlbum = alb;
     card.innerHTML = `
       <div class="track-status-art track-status-art--empty"></div>
       <div class="track-status-main">
         <span class="track-status-title"></span>
-        <span class="track-status-sub"></span>
+        <div class="track-status-meta-row">
+          <span class="track-status-sub"></span>
+          <span class="track-content-rating" aria-hidden="true"></span>
+        </div>
       </div>
       <div class="track-status-tags"></div>
     `;
     card.querySelector(".track-status-title").textContent =
       parsed.title || "Track";
     card.querySelector(".track-status-sub").textContent = `#${parsed.trackNo || "?"}`;
-    list.appendChild(card);
-    if (key) _trackStatusMap.set(key, card);
     if (coverUrl) _setTrackCardCover(card, coverUrl);
-    list.scrollTop = list.scrollHeight;
+    return { card, key, parsed, alb };
+  }
+
+  function _ensureTrackStatusCard(
+    trackNo,
+    title,
+    createNew = false,
+    coverUrl,
+    lyricAlbum,
+  ) {
+    const list = document.getElementById("dl-track-status");
+    if (!list) return null;
+    const parsed = _parseTrackRef(trackNo, title);
+    const alb =
+      lyricAlbum != null && String(lyricAlbum).trim() !== ""
+        ? String(lyricAlbum).trim()
+        : "";
+    const key = _trackKey(parsed.trackNo, parsed.title, alb);
+    if (key && _trackStatusMap.has(key)) {
+      const existing = _trackStatusMap.get(key);
+      if (coverUrl) _setTrackCardCover(existing, coverUrl);
+      if (alb) existing.dataset.lyricAlbum = alb;
+      return existing;
+    }
+    if (!createNew && !key) return null;
+
+    const { card } = _buildTrackStatusCardEl(trackNo, title, lyricAlbum, coverUrl);
+    const stickToBottom = _scrollContainerAtBottom(list);
+    const parent = _tsAppendParent(list);
+    parent.appendChild(card);
+    if (key) {
+      const isNewKey = !_tsKeyToIndex.has(key);
+      if (isNewKey) {
+        _tsOrder.push(key);
+        _tsRebuildKeyIndex();
+      }
+      _trackStatusMap.set(key, card);
+      if (_tsVirtActive && _tsVirtInnerEl) {
+        const idx = _tsKeyToIndex.get(key);
+        if (idx !== undefined) _tsPositionVirtCard(card, idx);
+        _tsUpdateVirtInnerHeight();
+        requestAnimationFrame(() => {
+          _tsVirtMeasureRowH();
+          _tsVirtOnScroll();
+        });
+      }
+    }
+    if (stickToBottom) list.scrollTop = list.scrollHeight;
     return card;
   }
 
-  function _setTrackDownloadChip(trackNo, title, statusText, cls, linkOpts) {
-    const card = _ensureTrackStatusCard(trackNo, title, false);
+  function _setTrackContentRatingBadge(card, trackExplicitKnown) {
+    if (!card) return;
+    const el = card.querySelector(".track-content-rating");
+    if (!el) return;
+    if (trackExplicitKnown === true) {
+      el.innerHTML = `<span class="track-explicit-badge explicit-tag-badge" data-tip="Marked explicit on Qobuz">${_EXPLICIT_BADGE_SVG}</span>`;
+      el.className = "track-content-rating track-content-rating--explicit";
+    } else if (trackExplicitKnown === false) {
+      el.innerHTML = "";
+      el.className = "track-content-rating";
+    } else {
+      el.innerHTML = "";
+      el.className = "track-content-rating";
+    }
+  }
+
+  const _TRACK_DL_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 12 12 17 17 12"/><path d="M5 21h14"/></svg>`;
+  const _TRACK_FOLDER_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>`;
+  /** Shown after explicit/clean in lyric search when this LRCLIB id matches the saved sidecar. */
+  const _LYRIC_SEARCH_ATTACHED_SVG = `<svg class="lyric-search-attached-ico lucide-folder-check" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m9 13 2 2 4-4"/></svg>`;
+  const _TRACK_DL_FAIL_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
+  /** Qobuz / lyric explicit badge | same E icon as queue cards and search. */
+  const _EXPLICIT_BADGE_SVG = `<svg viewBox="0 0 24 24" class="explicit-badge-icon" aria-hidden="true"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg>`;
+
+  function _setTrackDownloadChip(
+    trackNo,
+    title,
+    statusText,
+    cls,
+    linkOpts,
+    lyricAlbum,
+  ) {
+    const card = _ensureTrackStatusCard(trackNo, title, false, undefined, lyricAlbum);
     if (!card) return;
     const tags = card.querySelector(".track-status-tags");
-    const old = card.querySelector(".track-status-chip.download-chip");
+    const old = card.querySelector(".download-chip");
     if (old) old.remove();
 
     const href = linkOpts && String(linkOpts.href || "").trim();
-    const el = href ? document.createElement("a") : document.createElement("span");
-    el.className = "track-status-chip download-chip";
     if (href) {
-      el.classList.add("purchase-only");
+      const el = document.createElement("a");
+      el.className = "track-dl-btn download-chip purchase-only";
       el.href = href;
       el.target = "_blank";
       el.rel = "noopener noreferrer";
@@ -177,22 +598,107 @@
         el.setAttribute("data-tip", tip);
         el.setAttribute("aria-label", tip);
         el.removeAttribute("title");
+      } else {
+        el.setAttribute("aria-label", "Open in Qobuz store");
       }
+      el.textContent = statusText || "Purchase";
+      tags.appendChild(el);
+      return;
     }
-    if (cls) el.classList.add(cls);
-    el.textContent = statusText;
+
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "track-dl-btn download-chip";
+    el.disabled = true;
+    el.innerHTML = `<span class="track-dl-btn-fill"></span>${_TRACK_DL_ICON_SVG}`;
+
+    const revealPath = (card.dataset.audioPath || "").trim();
+    const canReveal = cls === "done" && revealPath !== "";
+
+    if (cls === "done") {
+      el.classList.add("track-dl-btn--done");
+      if (canReveal) {
+        el.classList.add("track-dl-btn--reveal");
+        el.disabled = false;
+        el.setAttribute("aria-label", "Show downloaded file in folder");
+        el.setAttribute("data-tip", "Show in folder");
+        el.innerHTML =
+          '<span class="track-dl-btn-fill"></span>' +
+          '<span class="track-dl-btn-ico-stack">' +
+          `<span class="track-dl-btn-ico-layer track-dl-btn-ico--dl">${_TRACK_DL_ICON_SVG}</span>` +
+          `<span class="track-dl-btn-ico-layer track-dl-btn-ico--folder">${_TRACK_FOLDER_ICON_SVG}</span>` +
+          "</span>";
+      } else {
+        el.setAttribute("aria-label", "Downloaded");
+      }
+    } else if (cls === "failed") {
+      el.classList.add("track-dl-btn--failed");
+      el.setAttribute("aria-label", statusText === "failed" ? "Download failed" : String(statusText || "Failed"));
+      el.innerHTML = _TRACK_DL_FAIL_SVG;
+    } else {
+      el.classList.add("track-dl-btn--active");
+      el.setAttribute("aria-label", "Downloading");
+    }
     tags.appendChild(el);
   }
 
-  /** Interpolate chip colors from red (0%) to app success green (100%). */
+  function _trackStatusCardForProgress(trackNo, title, lyricAlbum) {
+    const parsed = _parseTrackRef(trackNo, title);
+    const pa = lyricAlbum != null && String(lyricAlbum).trim() !== "" ? String(lyricAlbum).trim() : "";
+    let key = _trackKey(parsed.trackNo, parsed.title, pa);
+    let card = key ? _trackStatusMap.get(key) : null;
+    if (!card && pa) {
+      key = _trackKey(parsed.trackNo, parsed.title, "");
+      card = key ? _trackStatusMap.get(key) : null;
+    }
+    if (!card) {
+      const wantN = _normalizeTrackNo(parsed.trackNo);
+      const wantT = _normalizeTrackTitle(parsed.title);
+      for (const c of _trackStatusMap.values()) {
+        const tn = _normalizeTrackNo(c.dataset.trackNo || "");
+        const tEl = c.querySelector(".track-status-title");
+        const tt = _normalizeTrackTitle((tEl && tEl.textContent) || "");
+        if (tn === wantN && tt === wantT) {
+          card = c;
+          break;
+        }
+      }
+    }
+    return card;
+  }
+
+  function _updateTrackDownloadProgress(
+    trackNo,
+    title,
+    received,
+    total,
+    lyricAlbum,
+  ) {
+    const card = _trackStatusCardForProgress(trackNo, title, lyricAlbum);
+    if (!card) return;
+    const btn = card.querySelector("button.download-chip.track-dl-btn");
+    if (!btn || !btn.classList.contains("track-dl-btn--active")) return;
+    const t = Number(total);
+    const r = Number(received);
+    if (!Number.isFinite(t) || t <= 0 || !Number.isFinite(r)) return;
+    const pct = Math.max(0, Math.min(100, Math.round((r / t) * 100)));
+    const fill = btn.querySelector(".track-dl-btn-fill");
+    if (fill) {
+      const f = pct / 100;
+      fill.style.transform = `scaleY(${f})`;
+    }
+    btn.setAttribute("aria-label", `Downloading, ${pct}%`);
+  }
+
+  /** Interpolate chip colors from red (0%) to accent teal (100%) | pairs with synced tag. */
   function _confidenceChipStyles(pct) {
     const p = Math.max(0, Math.min(100, pct)) / 100;
     const r0 = 255;
     const g0 = 77;
     const b0 = 77;
-    const r1 = 77;
-    const g1 = 255;
-    const b1 = 145;
+    const r1 = 110;
+    const g1 = 231;
+    const b1 = 247;
     const r = Math.round(r0 + (r1 - r0) * p);
     const g = Math.round(g0 + (g1 - g0) * p);
     const b = Math.round(b0 + (b1 - b0) * p);
@@ -318,7 +824,7 @@
       `Lyric match confidence ${pct} percent. Hover for details.`,
     );
     const lyricsChip = tags.querySelector(".track-status-chip.lyrics-chip");
-    const download = tags.querySelector(".track-status-chip.download-chip");
+    const download = tags.querySelector(".download-chip");
     if (lyricsChip) tags.insertBefore(wrap, lyricsChip);
     else if (download) tags.insertBefore(wrap, download);
     else tags.appendChild(wrap);
@@ -335,8 +841,21 @@
     wrap.remove();
   }
 
-  function _setTrackLyricsChip(trackNo, title, lyricType, confidence) {
-    const card = _ensureTrackStatusCard(trackNo, title, false);
+  function _setTrackLyricsChip(
+    trackNo,
+    title,
+    lyricType,
+    confidence,
+    lyricAlbum,
+    lyricProvider,
+  ) {
+    const card = _ensureTrackStatusCard(
+      trackNo,
+      title,
+      false,
+      undefined,
+      lyricAlbum,
+    );
     if (!card) return;
     const tags = card.querySelector(".track-status-tags");
     let chip = card.querySelector(".track-status-chip.lyrics-chip");
@@ -357,12 +876,12 @@
 
     chip.textContent =
       lt === "none"
-        ? "lyrics: none"
+        ? "none"
         : lt === "error"
-          ? "lyrics: error"
+          ? "error"
           : lt === "loading"
-            ? "lyrics: loading"
-            : `lyrics: ${lt}`;
+            ? "loading"
+            : lt;
     chip.removeAttribute("title");
 
     if (lt === "loading" || !hasConf) {
@@ -370,13 +889,1358 @@
     } else {
       _setLyricConfidenceChip(tags, confNum);
     }
+
+    const apHist = (card.dataset.audioPath || "").trim();
+    if (apHist && lt !== "loading") {
+      void fetch("/api/download-history/lyrics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          audio_path: apHist,
+          lyric_type: lt,
+          lyric_provider: lyricProvider != null ? String(lyricProvider) : "",
+          lyric_confidence: confRaw,
+        }),
+      }).catch(() => {});
+    }
   }
 
-  function _resetTrackStatusCards() {
+  /** LRCLIB duration delta vs reference (±2s hidden; same threshold as LRCLIB matching). */
+  function _formatLyricDeltaSec(sec) {
+    if (sec == null || !Number.isFinite(Number(sec))) return "";
+    const n = Math.round(Number(sec));
+    const sign = n > 0 ? "+" : "\u2212";
+    const a = Math.abs(n);
+    const m = Math.floor(a / 60);
+    const s = a % 60;
+    return `${sign}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  function _lyricKindLabel(kind) {
+    const k = String(kind || "").toLowerCase();
+    if (k === "synced") return "Synced";
+    if (k === "plain") return "Plain";
+    if (k === "instrumental") return "Instrumental";
+    return "\u2014";
+  }
+
+  let _lyricSearchModalCtx = null;
+  let _lyricAttachAbort = null;
+  let _lyricSearchReqAbort = null;
+  let _lyricOpenSession = 0;
+  const _LYRIC_SEARCH_PAGE_INITIAL = 10;
+  const _LYRIC_SEARCH_PAGE_STEP = 5;
+  let _lyricSearchScrollRaf = null;
+  let _lyricSearchSeq = 0;
+  let _lyricPreviewRaf = 0;
+  let _lyricPreviewLastActiveIdx = -1;
+  let _lyricPreviewSeekMouse = false;
+  const _LYRIC_SEARCH_ANCHOR_CLASS = "lyric-search-anchor";
+
+  function _abortLyricSearchFetches() {
+    if (_lyricAttachAbort) {
+      try {
+        _lyricAttachAbort.abort();
+      } catch (_) {
+        /* ignore */
+      }
+      _lyricAttachAbort = null;
+    }
+    if (_lyricSearchReqAbort) {
+      try {
+        _lyricSearchReqAbort.abort();
+      } catch (_) {
+        /* ignore */
+      }
+      _lyricSearchReqAbort = null;
+    }
+  }
+
+  function _clearLyricSearchAnchorHighlight() {
+    document
+      .querySelectorAll(".track-status-card." + _LYRIC_SEARCH_ANCHOR_CLASS)
+      .forEach((el) => {
+        el.classList.remove(_LYRIC_SEARCH_ANCHOR_CLASS);
+      });
+  }
+
+  function _setLyricSearchAnchorCard(card) {
+    _clearLyricSearchAnchorHighlight();
+    if (card) card.classList.add(_LYRIC_SEARCH_ANCHOR_CLASS);
+  }
+
+  function _formatLyricPreviewTime(sec) {
+    if (!Number.isFinite(sec) || sec < 0) sec = 0;
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  function _teardownLyricPreviewPlayback() {
+    if (_lyricPreviewRaf) {
+      cancelAnimationFrame(_lyricPreviewRaf);
+      _lyricPreviewRaf = 0;
+    }
+    _lyricPreviewSeekMouse = false;
+    _lyricPreviewLastActiveIdx = -1;
+    const audio = document.getElementById("lyric-search-preview-audio");
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+    const playBtn = document.getElementById("lyric-search-preview-play");
+    if (playBtn) {
+      const playIco = playBtn.querySelector(".lyric-search-preview-play-icon");
+      const pauseIco = playBtn.querySelector(".lyric-search-preview-pause-icon");
+      if (playIco) playIco.classList.remove("hidden");
+      if (pauseIco) pauseIco.classList.add("hidden");
+      playBtn.setAttribute("aria-label", "Play");
+    }
+    const seek = document.getElementById("lyric-search-preview-seek");
+    const cur = document.getElementById("lyric-search-preview-cur");
+    const dur = document.getElementById("lyric-search-preview-dur");
+    if (seek) seek.value = "0";
+    if (cur) cur.textContent = "0:00";
+    if (dur) dur.textContent = "0:00";
+  }
+
+  function _lyricPreviewSetPlayingUi(playing) {
+    const playBtn = document.getElementById("lyric-search-preview-play");
+    if (!playBtn) return;
+    const playIco = playBtn.querySelector(".lyric-search-preview-play-icon");
+    const pauseIco = playBtn.querySelector(".lyric-search-preview-pause-icon");
+    if (playIco) playIco.classList.toggle("hidden", playing);
+    if (pauseIco) pauseIco.classList.toggle("hidden", !playing);
+    playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  }
+
+  function _lyricPreviewSyncSeekAndTimeFromAudio() {
+    if (_lyricPreviewSeekMouse) return;
+    const audio = document.getElementById("lyric-search-preview-audio");
+    const seek = document.getElementById("lyric-search-preview-seek");
+    const cur = document.getElementById("lyric-search-preview-cur");
+    if (!audio || !seek || !cur) return;
+    const d = audio.duration;
+    if (Number.isFinite(d) && d > 0) {
+      seek.value = String(Math.round((audio.currentTime / d) * 1000));
+    }
+    cur.textContent = _formatLyricPreviewTime(audio.currentTime);
+  }
+
+  /** Apply range value to audio (used while dragging and on release). */
+  function _applyLyricPreviewSeekSliderValue() {
+    const audio = document.getElementById("lyric-search-preview-audio");
+    const seek = document.getElementById("lyric-search-preview-seek");
+    if (!audio || !seek || seek.disabled) return;
+    const d = audio.duration;
+    if (!Number.isFinite(d) || d <= 0) return;
+    const t = (Number(seek.value) / 1000) * d;
+    audio.currentTime = t;
+    const cur = document.getElementById("lyric-search-preview-cur");
+    if (cur) cur.textContent = _formatLyricPreviewTime(t);
+    _lyricPreviewUpdateActiveLine(t * 1000);
+  }
+
+  function _lyricPreviewSeekToTime(seconds) {
+    const audio = document.getElementById("lyric-search-preview-audio");
+    const seek = document.getElementById("lyric-search-preview-seek");
+    if (!audio || !seek || seek.disabled || !audio.src) return;
+    const d = audio.duration;
+    if (!Number.isFinite(d) || d <= 0) return;
+    const t = Math.min(Math.max(0, seconds), d);
+    audio.currentTime = t;
+    seek.value = String(Math.round((t / d) * 1000));
+    const cur = document.getElementById("lyric-search-preview-cur");
+    if (cur) cur.textContent = _formatLyricPreviewTime(t);
+    _lyricPreviewUpdateActiveLine(t * 1000);
+  }
+
+  function _lyricPreviewUpdateActiveLine(progressMs) {
+    const body = document.getElementById("lyric-search-preview-body");
+    if (!body || !body.classList.contains("lyric-search-preview-body--synced")) {
+      return;
+    }
+    const rows = body.querySelectorAll(".lyric-preview-line");
+    if (!rows.length) return;
+    let active = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const start = Number(rows[i].dataset.startMs || 0);
+      const end = Number(rows[i].dataset.endMs || Number.POSITIVE_INFINITY);
+      if (progressMs >= start && progressMs < end) active = i;
+    }
+    if (active < 0) {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const start = Number(rows[i].dataset.startMs || 0);
+        if (progressMs >= start) {
+          active = i;
+          break;
+        }
+      }
+    }
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].classList.toggle("is-active", i === active);
+    }
+    if (active >= 0 && active !== _lyricPreviewLastActiveIdx) {
+      _lyricPreviewLastActiveIdx = active;
+      if (!_lyricPreviewSeekMouse) {
+        rows[active].scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    } else if (active < 0) {
+      _lyricPreviewLastActiveIdx = -1;
+    }
+  }
+
+  function _lyricPreviewFrame() {
+    const audio = document.getElementById("lyric-search-preview-audio");
+    if (!audio || audio.paused || audio.ended) {
+      _lyricPreviewRaf = 0;
+      return;
+    }
+    _lyricPreviewSyncSeekAndTimeFromAudio();
+    _lyricPreviewUpdateActiveLine(audio.currentTime * 1000);
+    _lyricPreviewRaf = requestAnimationFrame(_lyricPreviewFrame);
+  }
+
+  function _parseLrcLinesForPreview(synced) {
+    const out = [];
+    const lines = String(synced || "").split(/\r?\n/);
+    const re = /^\[(\d{1,3}):(\d{2}(?:\.\d{1,3})?)\]\s*(.*)$/;
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      const m = t.match(re);
+      if (!m) continue;
+      const mm = parseInt(m[1], 10);
+      const ss = parseFloat(m[2]);
+      if (Number.isNaN(mm) || Number.isNaN(ss)) continue;
+      const start_ms = Math.round((mm * 60 + ss) * 1000);
+      const lyricText = (m[3] || "").trim();
+      const tag = t.match(/^\[[^\]]+\]/);
+      out.push({
+        start_ms,
+        text: lyricText,
+        timeTag: tag ? tag[0] : "",
+      });
+    }
+    out.sort((a, b) => a.start_ms - b.start_ms);
+    for (let i = 0; i < out.length; i++) {
+      out[i].end_ms =
+        i + 1 < out.length ? out[i + 1].start_ms : Number.POSITIVE_INFINITY;
+    }
+    return out;
+  }
+
+  function _renderLyricPreviewSyncedBody(body, parsed) {
+    body.classList.add("lyric-search-preview-body--synced");
+    body.replaceChildren();
+    for (let i = 0; i < parsed.length; i++) {
+      const row = document.createElement("div");
+      row.className = "lyric-preview-line";
+      row.dataset.startMs = String(parsed[i].start_ms);
+      row.dataset.endMs = String(parsed[i].end_ms);
+      const ts = document.createElement("span");
+      ts.className = "lyric-preview-ts";
+      ts.textContent = parsed[i].timeTag || "";
+      const tx = document.createElement("span");
+      tx.className = "lyric-preview-text";
+      tx.textContent = parsed[i].text || " ";
+      row.appendChild(ts);
+      row.appendChild(tx);
+      body.appendChild(row);
+    }
+  }
+
+  function _renderLyricPreviewPlainBody(body, text) {
+    body.classList.remove("lyric-search-preview-body--synced");
+    body.textContent = text || "";
+  }
+
+  function _lyricPreviewAudioUrl(audioPath) {
+    if (!audioPath) return "";
+    return `/api/lyrics/stream-audio?path=${encodeURIComponent(audioPath)}`;
+  }
+
+  function _initLyricPreviewPlayer() {
+    const playBtn = document.getElementById("lyric-search-preview-play");
+    const seek = document.getElementById("lyric-search-preview-seek");
+    const audio = document.getElementById("lyric-search-preview-audio");
+    const previewRoot = document.getElementById("lyric-search-preview");
+    if (!playBtn || !seek || !audio) return;
+    if (playBtn.dataset.bound === "1") return;
+    playBtn.dataset.bound = "1";
+    playBtn.addEventListener("click", () => {
+      if (playBtn.disabled || !audio.src) return;
+      if (audio.paused) {
+        void audio.play();
+      } else {
+        audio.pause();
+      }
+    });
+    seek.addEventListener("pointerdown", (e) => {
+      _lyricPreviewSeekMouse = true;
+      try {
+        seek.setPointerCapture(e.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    function _finishLyricPreviewSeekDrag() {
+      const wasDragging = _lyricPreviewSeekMouse;
+      _lyricPreviewSeekMouse = false;
+      if (!wasDragging) return;
+      _lyricPreviewLastActiveIdx = -1;
+      if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+        _lyricPreviewUpdateActiveLine(audio.currentTime * 1000);
+      }
+    }
+    seek.addEventListener("pointerup", (e) => {
+      try {
+        seek.releasePointerCapture(e.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+      _finishLyricPreviewSeekDrag();
+    });
+    seek.addEventListener("pointercancel", () => {
+      _finishLyricPreviewSeekDrag();
+    });
+    seek.addEventListener("lostpointercapture", () => {
+      _finishLyricPreviewSeekDrag();
+    });
+    seek.addEventListener("change", () => {
+      _applyLyricPreviewSeekSliderValue();
+    });
+    seek.addEventListener("input", () => {
+      _applyLyricPreviewSeekSliderValue();
+    });
+    if (previewRoot && previewRoot.dataset.lineSeekBound !== "1") {
+      previewRoot.dataset.lineSeekBound = "1";
+      previewRoot.addEventListener("click", (e) => {
+        const line = e.target.closest(".lyric-preview-line");
+        if (!line || !previewRoot.contains(line)) return;
+        const body = document.getElementById("lyric-search-preview-body");
+        if (!body || !body.classList.contains("lyric-search-preview-body--synced")) {
+          return;
+        }
+        const startMs = Number(line.dataset.startMs);
+        if (!Number.isFinite(startMs)) return;
+        _lyricPreviewSeekToTime(startMs / 1000);
+      });
+    }
+    audio.addEventListener("play", () => {
+      _lyricPreviewSetPlayingUi(true);
+      if (!_lyricPreviewRaf) {
+        _lyricPreviewRaf = requestAnimationFrame(_lyricPreviewFrame);
+      }
+    });
+    audio.addEventListener("pause", () => {
+      _lyricPreviewSetPlayingUi(false);
+      if (_lyricPreviewRaf) {
+        cancelAnimationFrame(_lyricPreviewRaf);
+        _lyricPreviewRaf = 0;
+      }
+    });
+    audio.addEventListener("ended", () => {
+      _lyricPreviewSetPlayingUi(false);
+    });
+    audio.addEventListener("loadedmetadata", () => {
+      const durEl = document.getElementById("lyric-search-preview-dur");
+      const d = audio.duration;
+      if (durEl && Number.isFinite(d)) {
+        durEl.textContent = _formatLyricPreviewTime(d);
+      }
+    });
+  }
+
+  function _closeLyricPreviewOverlay() {
+    _teardownLyricPreviewPlayback();
+    const panel = document.getElementById("lyric-search-preview-panel");
+    if (panel) {
+      panel.classList.add("hidden");
+      panel.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  function _closeLyricSearchModal() {
+    const pop = document.getElementById("lyric-search-popover");
+    if (pop) {
+      pop.classList.add("hidden");
+      pop.setAttribute("aria-hidden", "true");
+    }
+    _closeLyricPreviewOverlay();
+    _abortLyricSearchFetches();
+    _clearLyricSearchAnchorHighlight();
+    _clearLyricSearchFieldErrors();
+    _lyricSearchModalCtx = null;
+  }
+
+  /**
+   * Place the lyric search popover above the download history block, centered on it,
+   * so the history list stays visible below the panel.
+   */
+  function _positionLyricSearchPopover() {
+    const pop = document.getElementById("lyric-search-popover");
+    if (!pop || pop.classList.contains("hidden")) return;
+    const hist = document.getElementById("dl-track-status-container");
+    const margin = 10;
+    const gap = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const pw = pop.offsetWidth;
+    const ph = pop.offsetHeight;
+    let left;
+    let top;
+    if (hist) {
+      const hr = hist.getBoundingClientRect();
+      left = hr.left + (hr.width - pw) / 2;
+      top = hr.top - ph - gap;
+    } else {
+      left = (vw - pw) / 2;
+      top = margin;
+    }
+    left = Math.min(Math.max(margin, left), vw - pw - margin);
+    if (top < margin) top = margin;
+    if (top + ph > vh - margin) {
+      top = Math.max(margin, vh - ph - margin);
+    }
+    pop.style.bottom = "auto";
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+  }
+
+  function _lyricSearchKindClass(kind) {
+    const k = String(kind || "").toLowerCase();
+    if (k === "plain") return "lyric-search-kind lyric-search-kind--plain";
+    if (k === "instrumental") return "lyric-search-kind lyric-search-kind--instrumental";
+    return "lyric-search-kind";
+  }
+
+  function _clearLyricSearchFieldErrors() {
+    const ti = document.getElementById("lyric-search-title");
+    const ar = document.getElementById("lyric-search-artist");
+    if (ti) ti.classList.remove("lyric-search-input-invalid");
+    if (ar) ar.classList.remove("lyric-search-input-invalid");
+  }
+
+  function _applyLyricSearchFieldErrors(hasTitle, hasArtist) {
+    const titleEl = document.getElementById("lyric-search-title");
+    const artistEl = document.getElementById("lyric-search-artist");
+    if (titleEl) {
+      titleEl.classList.toggle("lyric-search-input-invalid", !hasTitle);
+    }
+    if (artistEl) {
+      artistEl.classList.toggle("lyric-search-input-invalid", !hasArtist);
+    }
+  }
+
+  function _showLyricSearchResultsLoading(container) {
+    if (!container) return;
+    container.replaceChildren();
+    const root = document.createElement("div");
+    root.className = "lyric-search-loading";
+    root.setAttribute("role", "status");
+    root.setAttribute("aria-busy", "true");
+    root.setAttribute("aria-label", "Searching lyrics");
+    for (let i = 0; i < 3; i++) {
+      const row = document.createElement("div");
+      row.className = "lyric-search-skeleton-row";
+      const l1 = document.createElement("div");
+      l1.className = "lyric-search-skeleton-line lyric-search-skeleton-line--a";
+      const l2 = document.createElement("div");
+      l2.className = "lyric-search-skeleton-line lyric-search-skeleton-line--b";
+      const l3 = document.createElement("div");
+      l3.className = "lyric-search-skeleton-line lyric-search-skeleton-line--c";
+      const t = document.createElement("span");
+      t.className = "lyric-search-skeleton-text";
+      const p = document.createElement("span");
+      p.className = "lyric-search-skeleton-pill";
+      l3.appendChild(t);
+      l3.appendChild(p);
+      row.appendChild(l1);
+      row.appendChild(l2);
+      row.appendChild(l3);
+      root.appendChild(row);
+    }
+    container.appendChild(root);
+  }
+
+  function _formatLyricConfidencePct(confVal) {
+    const c = Number(confVal);
+    if (!Number.isFinite(c)) return "";
+    if (Number.isInteger(c)) return String(Math.round(c));
+    const r = Math.round(c * 10) / 10;
+    return String(r);
+  }
+
+  function _bindLyricSearchKindConfidenceHover(kindEl, kindLabel, confVal) {
+    const pct = _formatLyricConfidencePct(confVal);
+    if (!pct) return;
+    kindEl.dataset.kindLabel = kindLabel;
+    kindEl.dataset.confidencePct = pct;
+    kindEl.classList.add("lyric-search-kind--pct-swap");
+    kindEl.addEventListener("mouseenter", () => {
+      kindEl.textContent = pct + "%";
+    });
+    kindEl.addEventListener("mouseleave", () => {
+      kindEl.textContent = kindEl.dataset.kindLabel || kindLabel;
+    });
+  }
+
+  function _createLyricSearchResultRow(row) {
+    const div = document.createElement("div");
+    div.className = "lyric-search-row";
+    const audioPath = _lyricSearchModalCtx && _lyricSearchModalCtx.audioPath;
+    const attachedId =
+      _lyricSearchModalCtx && _lyricSearchModalCtx.attachedLrclibId != null
+        ? Number(_lyricSearchModalCtx.attachedLrclibId)
+        : null;
+    const rowId = row.id != null ? Number(row.id) : NaN;
+    const isRowAttached =
+      attachedId != null &&
+      Number.isFinite(attachedId) &&
+      Number.isFinite(rowId) &&
+      rowId === attachedId;
+    if (isRowAttached) {
+      div.classList.add("lyric-search-row--attached");
+      div.setAttribute("data-lyric-attached", "1");
+    }
+
+    const trackNameRaw = row.trackName || "";
+    const albumRaw = row.albumName || "";
+    const artistRaw = row.artistName || "";
+
+    const line1 = document.createElement("div");
+    line1.className =
+      "lyric-search-row-line lyric-search-row-line--title";
+
+    const t = document.createElement("span");
+    t.className = "lyric-search-track";
+    t.textContent = trackNameRaw;
+
+    const kind = document.createElement("span");
+    kind.className = _lyricSearchKindClass(row.kind);
+    const kindLabel = _lyricKindLabel(row.kind);
+    kind.textContent = kindLabel;
+    _bindLyricSearchKindConfidenceHover(kind, kindLabel, row.confidence);
+
+    line1.appendChild(t);
+    line1.appendChild(kind);
+
+    const ex = document.createElement("span");
+    if (row.lyrics_explicit) {
+      ex.className =
+        "lyric-search-rating lyric-search-rating--explicit explicit-tag-badge";
+      ex.innerHTML = _EXPLICIT_BADGE_SVG;
+      line1.appendChild(ex);
+    } else {
+      ex.className = "lyric-search-rating lyric-search-rating--clean";
+      ex.textContent = "clean";
+      line1.appendChild(ex);
+    }
+
+    const deltaStr = _formatLyricDeltaSec(row.delta_sec);
+    if (deltaStr) {
+      const d = document.createElement("span");
+      d.className = "lyric-search-delta";
+      d.textContent = deltaStr;
+      d.setAttribute(
+        "aria-label",
+        "LRCLIB duration vs this track: " + deltaStr + " (mm:ss)",
+      );
+      line1.appendChild(d);
+    }
+
+    const line2 = document.createElement("div");
+    line2.className =
+      "lyric-search-row-line lyric-search-row-line--album";
+    const albumEl = document.createElement("span");
+    albumEl.className = "lyric-search-album";
+    albumEl.textContent = albumRaw || "\u2014";
+    line2.appendChild(albumEl);
+
+    const line3 = document.createElement("div");
+    line3.className =
+      "lyric-search-row-line lyric-search-row-line--footer";
+
+    const artistSpan = document.createElement("span");
+    artistSpan.className = "lyric-search-artist";
+    artistSpan.textContent = artistRaw || "\u2014";
+
+    const actions = document.createElement("div");
+    actions.className = "lyric-search-row-actions";
+
+    const prevBtn = document.createElement("button");
+    prevBtn.type = "button";
+    prevBtn.className = "btn-ghost btn-sm";
+    prevBtn.textContent = "Preview";
+    const rid = row.id;
+    prevBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void _previewLyricRow(rid);
+    });
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btn-primary btn-sm";
+    saveBtn.textContent = "Attach";
+    saveBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (saveBtn.disabled) return;
+      void _attachLyricRow(rid, row.confidence, row.kind, saveBtn);
+    });
+    if (!audioPath) {
+      saveBtn.disabled = true;
+      saveBtn.title =
+        "Audio path is available after the track file is saved to disk.";
+    }
+
+    actions.appendChild(prevBtn);
+    if (isRowAttached) {
+      const slot = document.createElement("span");
+      slot.className = "lyric-search-attached-slot";
+      slot.setAttribute("aria-label", "Already attached to this track");
+      slot.setAttribute(
+        "data-tip",
+        "Lyrics already attached\nThis LRCLIB match is saved as the .lrc sidecar next to the track. Plex and other players can read it from the album folder.",
+      );
+      slot.setAttribute("data-tip-icon", "/gui/plex.png");
+      slot.innerHTML = _LYRIC_SEARCH_ATTACHED_SVG;
+      actions.appendChild(slot);
+    } else {
+      actions.appendChild(saveBtn);
+    }
+
+    line3.appendChild(artistSpan);
+    line3.appendChild(actions);
+
+    div.appendChild(line1);
+    div.appendChild(line2);
+    div.appendChild(line3);
+    return div;
+  }
+
+  function _lyricSearchResultsRenderEmpty() {
+    const el = document.getElementById("lyric-search-results");
+    if (!el) return;
+    el.innerHTML = "";
+    el.scrollTop = 0;
+    const empty = document.createElement("div");
+    empty.className = "lyric-search-empty";
+    empty.textContent = "No matches.";
+    el.appendChild(empty);
+  }
+
+  function _lyricSearchAppendResultsPage(isInitial) {
+    const el = document.getElementById("lyric-search-results");
+    const ctx = _lyricSearchModalCtx;
+    if (!el || !ctx || !Array.isArray(ctx.lastSearchResults)) return;
+    const all = ctx.lastSearchResults;
+    const total = all.length;
+    if (!total) return;
+    const step = isInitial ? _LYRIC_SEARCH_PAGE_INITIAL : _LYRIC_SEARCH_PAGE_STEP;
+    let shown = ctx.lyricSearchPagedShown || 0;
+    if (isInitial) {
+      el.innerHTML = "";
+      shown = 0;
+    }
+    const next = Math.min(shown + step, total);
+    for (let i = shown; i < next; i++) {
+      el.appendChild(_createLyricSearchResultRow(all[i]));
+    }
+    ctx.lyricSearchPagedShown = next;
+  }
+
+  /** After results render: scroll to the row matching attached LRCLIB id, or top if none / not in list. */
+  function _lyricSearchScrollToAttachedOrTop(el, list) {
+    const ctx = _lyricSearchModalCtx;
+    if (!el || !ctx || !Array.isArray(list) || !list.length) return;
+    const attachedId =
+      ctx.attachedLrclibId != null ? Number(ctx.attachedLrclibId) : NaN;
+    let attachedIdx = -1;
+    if (Number.isFinite(attachedId)) {
+      attachedIdx = list.findIndex((r) => Number(r.id) === attachedId);
+    }
+    if (attachedIdx < 0) {
+      el.scrollTop = 0;
+      return;
+    }
+    const total = list.length;
+    let guard = 0;
+    while (
+      (ctx.lyricSearchPagedShown || 0) <= attachedIdx &&
+      (ctx.lyricSearchPagedShown || 0) < total &&
+      guard < 200
+    ) {
+      _lyricSearchAppendResultsPage(false);
+      guard++;
+    }
+    requestAnimationFrame(() => {
+      const row = el.querySelector(".lyric-search-row--attached");
+      if (row) {
+        row.scrollIntoView({ block: "center", behavior: "auto" });
+      } else {
+        el.scrollTop = 0;
+      }
+    });
+  }
+
+  function _lyricSearchRebuildVisibleRows() {
+    const ctx = _lyricSearchModalCtx;
+    const el = document.getElementById("lyric-search-results");
+    if (!ctx || !el || !Array.isArray(ctx.lastSearchResults)) return;
+    const all = ctx.lastSearchResults;
+    if (!all.length) {
+      _lyricSearchResultsRenderEmpty();
+      return;
+    }
+    const n = Math.min(ctx.lyricSearchPagedShown || 0, all.length);
+    el.innerHTML = "";
+    for (let i = 0; i < n; i++) {
+      el.appendChild(_createLyricSearchResultRow(all[i]));
+    }
+    requestAnimationFrame(() => {
+      const row = el.querySelector(".lyric-search-row--attached");
+      if (row) {
+        row.scrollIntoView({ block: "center", behavior: "auto" });
+      }
+    });
+  }
+
+  function _onLyricSearchResultsScroll() {
+    if (_lyricSearchScrollRaf != null) {
+      cancelAnimationFrame(_lyricSearchScrollRaf);
+    }
+    _lyricSearchScrollRaf = requestAnimationFrame(() => {
+      _lyricSearchScrollRaf = null;
+      const el = document.getElementById("lyric-search-results");
+      const ctx = _lyricSearchModalCtx;
+      if (!el || !ctx || !Array.isArray(ctx.lastSearchResults) || !ctx.lastSearchResults.length) {
+        return;
+      }
+      const shown = ctx.lyricSearchPagedShown || 0;
+      const total = ctx.lastSearchResults.length;
+      if (shown >= total) return;
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      if (scrollHeight - scrollTop - clientHeight > 100) return;
+      _lyricSearchAppendResultsPage(false);
+    });
+  }
+
+  function _renderLyricSearchResults(rows) {
+    const el = document.getElementById("lyric-search-results");
+    if (!el || !_lyricSearchModalCtx) return;
+    const list = Array.isArray(rows) ? rows : [];
+    _lyricSearchModalCtx.lastSearchResults = list;
+    _lyricSearchModalCtx.lyricSearchPagedShown = 0;
+    if (!list.length) {
+      _lyricSearchResultsRenderEmpty();
+      el.scrollTop = 0;
+      return;
+    }
+    _lyricSearchAppendResultsPage(true);
+    _lyricSearchScrollToAttachedOrTop(el, list);
+  }
+
+  async function _runLyricSearchFromForm() {
+    const statusEl = document.getElementById("lyric-search-status");
+    const resultsEl = document.getElementById("lyric-search-results");
+    const titleEl = document.getElementById("lyric-search-title");
+    const artistEl = document.getElementById("lyric-search-artist");
+    const albumEl = document.getElementById("lyric-search-album");
+    const title = titleEl ? titleEl.value.trim() : "";
+    const artist = artistEl ? artistEl.value.trim() : "";
+    const album = albumEl ? albumEl.value.trim() : "";
+    const refDur =
+      _lyricSearchModalCtx && Number.isFinite(_lyricSearchModalCtx.durationSec)
+        ? _lyricSearchModalCtx.durationSec
+        : 0;
+
+    if (!title || !artist) {
+      _applyLyricSearchFieldErrors(!!title, !!artist);
+      if (statusEl) {
+        statusEl.textContent = "Title and artist are required.";
+        statusEl.classList.remove("hidden");
+      }
+      return;
+    }
+    _clearLyricSearchFieldErrors();
+
+    if (_lyricSearchReqAbort) {
+      try {
+        _lyricSearchReqAbort.abort();
+      } catch (_) {
+        /* ignore */
+      }
+      _lyricSearchReqAbort = null;
+    }
+    const searchSeq = ++_lyricSearchSeq;
+    if (_lyricSearchModalCtx) {
+      _lyricSearchModalCtx.searchSeq = searchSeq;
+    }
+    _lyricSearchReqAbort = new AbortController();
+    const searchSignal = _lyricSearchReqAbort.signal;
+
+    if (statusEl) {
+      statusEl.textContent = "Searching\u2026";
+      statusEl.classList.remove("hidden");
+    }
+    _showLyricSearchResultsLoading(resultsEl);
+    _closeLyricPreviewOverlay();
+
+    try {
+      const res = await fetch("/api/lyrics/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          artist,
+          album,
+          duration_sec: refDur,
+          track_explicit:
+            _lyricSearchModalCtx &&
+            _lyricSearchModalCtx.trackExplicit !== null &&
+            _lyricSearchModalCtx.trackExplicit !== undefined
+              ? _lyricSearchModalCtx.trackExplicit
+              : null,
+          filter_mismatched: true,
+        }),
+        signal: searchSignal,
+      });
+      const data = await res.json();
+      if (
+        !_lyricSearchModalCtx ||
+        _lyricSearchModalCtx.searchSeq !== searchSeq
+      ) {
+        return;
+      }
+      if (!data.ok) {
+        if (statusEl) statusEl.textContent = data.error || "Search failed.";
+        if (resultsEl) resultsEl.innerHTML = "";
+        return;
+      }
+      const n = (data.results || []).length;
+      if (statusEl) statusEl.textContent = `${n} result(s)`;
+      const list = Array.isArray(data.results) ? data.results : [];
+      if (_lyricSearchModalCtx) {
+        _lyricSearchModalCtx.lastSearchResults = list.slice();
+      }
+      _renderLyricSearchResults(list);
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        const ctx = _lyricSearchModalCtx;
+        if (ctx && ctx.searchSeq === searchSeq && resultsEl) {
+          resultsEl.innerHTML = "";
+        }
+        return;
+      }
+      if (
+        !_lyricSearchModalCtx ||
+        _lyricSearchModalCtx.searchSeq !== searchSeq
+      ) {
+        return;
+      }
+      if (statusEl) statusEl.textContent = "Network error.";
+      if (resultsEl) resultsEl.innerHTML = "";
+    }
+    if (
+      !_lyricSearchModalCtx ||
+      _lyricSearchModalCtx.searchSeq !== searchSeq
+    ) {
+      return;
+    }
+    const popAfter = document.getElementById("lyric-search-popover");
+    if (popAfter && !popAfter.classList.contains("hidden")) {
+      requestAnimationFrame(() => _positionLyricSearchPopover());
+    }
+  }
+
+  async function _previewLyricRow(id) {
+    _teardownLyricPreviewPlayback();
+    _lyricPreviewLastActiveIdx = -1;
+    const panel = document.getElementById("lyric-search-preview-panel");
+    const prev = document.getElementById("lyric-search-preview");
+    const body = document.getElementById("lyric-search-preview-body");
+    const flag = document.getElementById("lyric-search-preview-flag");
+    const audio = document.getElementById("lyric-search-preview-audio");
+    const playBtn = document.getElementById("lyric-search-preview-play");
+    const seek = document.getElementById("lyric-search-preview-seek");
+    const ctx = _lyricSearchModalCtx;
+    const audioPath = ctx && ctx.audioPath ? String(ctx.audioPath).trim() : "";
+    if (!prev || !body) return;
+    _renderLyricPreviewPlainBody(body, "Loading\u2026");
+    if (playBtn) playBtn.disabled = true;
+    if (seek) seek.disabled = true;
+    if (flag) {
+      flag.classList.add("hidden");
+      flag.textContent = "";
+    }
+    if (panel) {
+      panel.classList.remove("hidden");
+      panel.setAttribute("aria-hidden", "false");
+      requestAnimationFrame(() => _positionLyricSearchPopover());
+    }
+    try {
+      const res = await fetch(
+        `/api/lyrics/fetch?id=${encodeURIComponent(id)}`,
+      );
+      const data = await res.json();
+      if (!data.ok) {
+        _renderLyricPreviewPlainBody(body, data.error || "Fetch failed.");
+        return;
+      }
+      const rec = data.record || {};
+      const synced = (rec.syncedLyrics || "").trim();
+      const plain = (rec.plainLyrics || "").trim();
+      if (synced) {
+        const parsed = _parseLrcLinesForPreview(synced);
+        if (parsed.length) {
+          _renderLyricPreviewSyncedBody(body, parsed);
+        } else {
+          _renderLyricPreviewPlainBody(body, synced || plain || "(empty)");
+        }
+      } else {
+        _renderLyricPreviewPlainBody(body, plain || "(empty)");
+      }
+      if (audioPath && audio) {
+        audio.src = _lyricPreviewAudioUrl(audioPath);
+        if (playBtn) playBtn.disabled = false;
+        if (seek) seek.disabled = false;
+      } else {
+        if (audio) {
+          audio.removeAttribute("src");
+          audio.load();
+        }
+        if (playBtn) playBtn.disabled = true;
+        if (seek) seek.disabled = true;
+      }
+      if (flag) {
+        flag.classList.remove("hidden");
+        if (data.lyrics_explicit) {
+          flag.className = "lyric-search-preview-flag lyric-search-preview-flag--explicit";
+          flag.innerHTML = `${_EXPLICIT_BADGE_SVG}<span class="lyric-search-preview-flag-text">Explicit: Lyric text contains explicit language.</span>`;
+        } else {
+          flag.className = "lyric-search-preview-flag lyric-search-preview-flag--clean";
+          flag.innerHTML = `<span class="lyric-search-preview-flag-text lyric-search-preview-flag-text--clean">Clean: No explicit language detected in these lyrics.</span>`;
+        }
+      }
+    } catch (_) {
+      _renderLyricPreviewPlainBody(body, "Network error.");
+    } finally {
+      requestAnimationFrame(() => _positionLyricSearchPopover());
+    }
+  }
+
+  async function _attachLyricRow(id, confidence, kind, triggerBtn) {
+    const ctx = _lyricSearchModalCtx;
+    if (!ctx || !ctx.audioPath) return;
+    const idNum = id != null ? Number(id) : NaN;
+    if (!Number.isFinite(idNum)) return;
+    const lyricTypeRaw = kind != null && String(kind).trim() !== ""
+      ? String(kind).trim().toLowerCase()
+      : "synced";
+    let confForChip = "";
+    if (confidence != null && String(confidence).trim() !== "") {
+      const n = Math.round(Number(confidence));
+      if (Number.isFinite(n)) {
+        confForChip = String(Math.max(0, Math.min(100, n)));
+      }
+    }
+    const prevBtnText = triggerBtn ? triggerBtn.textContent : "";
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = "Attaching\u2026";
+    }
+    const statusEl = document.getElementById("lyric-search-status");
+    try {
+      const res = await fetch("/api/lyrics/attach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audio_path: ctx.audioPath, lrclib_id: idNum }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        if (statusEl) {
+          statusEl.textContent = data.error || "Attach failed.";
+          statusEl.classList.remove("hidden");
+        }
+        if (triggerBtn) {
+          triggerBtn.disabled = false;
+          triggerBtn.textContent = prevBtnText;
+        }
+        return;
+      }
+      ctx.attachedLrclibId = idNum;
+      const anchor = ctx.anchorCard;
+      if (anchor) {
+        const tEl = anchor.querySelector(".track-status-title");
+        const tTitle = ((tEl && tEl.textContent) || "").trim();
+        const tNo = (anchor.dataset.trackNo || "").trim();
+        if (tNo && tTitle) {
+          _setTrackLyricsChip(
+            tNo,
+            tTitle,
+            lyricTypeRaw,
+            confForChip !== "" ? confForChip : null,
+            (anchor.dataset.lyricAlbum || "").trim(),
+            "Lrclib",
+          );
+        }
+      }
+      if (ctx.lastSearchResults && ctx.lastSearchResults.length) {
+        _lyricSearchRebuildVisibleRows();
+      }
+      if (statusEl) {
+        statusEl.textContent = "Lyrics attached to file.";
+        statusEl.classList.remove("hidden");
+      }
+      requestAnimationFrame(() => _positionLyricSearchPopover());
+    } catch (_) {
+      if (statusEl) {
+        statusEl.textContent = "Network error.";
+        statusEl.classList.remove("hidden");
+      }
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = prevBtnText;
+      }
+    }
+  }
+
+  async function _openLyricSearchModal(card) {
+    const pop = document.getElementById("lyric-search-popover");
+    if (!pop || !card) return;
+    _abortLyricSearchFetches();
+    _closeLyricPreviewOverlay();
+    const openSession = ++_lyricOpenSession;
+    const titleEl = card.querySelector(".track-status-title");
+    const displayTitle = ((titleEl && titleEl.textContent) || "").trim();
+    const title = _lyricSearchTitleFromDisplay(displayTitle);
+    const artist = (card.dataset.lyricArtist || "").trim();
+    const album = (card.dataset.lyricAlbum || "").trim();
+    let durationSec = parseInt(String(card.dataset.durationSec || "0"), 10);
+    if (Number.isNaN(durationSec)) durationSec = 0;
+    const audioPath = (card.dataset.audioPath || "").trim();
+    const openingPath = audioPath;
+
+    const ti = document.getElementById("lyric-search-title");
+    const ar = document.getElementById("lyric-search-artist");
+    const al = document.getElementById("lyric-search-album");
+    if (ti) ti.value = title;
+    if (ar) ar.value = artist;
+    if (al) al.value = album;
+    _clearLyricSearchFieldErrors();
+
+    const teRaw = card.dataset.trackExplicit;
+    let trackExplicit = null;
+    if (teRaw === "1") trackExplicit = true;
+    else if (teRaw === "0") trackExplicit = false;
+    _lyricSearchModalCtx = {
+      audioPath,
+      durationSec,
+      trackExplicit,
+      attachedLrclibId: null,
+      lastSearchResults: null,
+      lyricSearchPagedShown: 0,
+      anchorCard: card,
+      openSession,
+      searchSeq: 0,
+    };
+    _setLyricSearchAnchorCard(card);
+
+    pop.classList.remove("hidden");
+    pop.setAttribute("aria-hidden", "false");
+    requestAnimationFrame(() => _positionLyricSearchPopover());
+
+    const statusEl = document.getElementById("lyric-search-status");
+    if (statusEl) statusEl.classList.add("hidden");
+    const resultsEl = document.getElementById("lyric-search-results");
+    _showLyricSearchResultsLoading(resultsEl);
+    const pflag = document.getElementById("lyric-search-preview-flag");
+    if (pflag) {
+      pflag.classList.add("hidden");
+      pflag.textContent = "";
+    }
+
+    _lyricAttachAbort = new AbortController();
+    const attachSignal = _lyricAttachAbort.signal;
+
+    let attachedLrclibId = null;
+    if (audioPath) {
+      try {
+        const res = await fetch(
+          `/api/lyrics/attached-id?audio_path=${encodeURIComponent(audioPath)}`,
+          { signal: attachSignal },
+        );
+        const data = await res.json();
+        if (data.ok && data.attached_lrclib_id != null) {
+          attachedLrclibId = data.attached_lrclib_id;
+        }
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        /* ignore other attach-id errors */
+      }
+    }
+    _lyricAttachAbort = null;
+    if (
+      !_lyricSearchModalCtx ||
+      _lyricSearchModalCtx.openSession !== openSession ||
+      _lyricSearchModalCtx.audioPath !== openingPath
+    ) {
+      return;
+    }
+    _lyricSearchModalCtx.attachedLrclibId = attachedLrclibId;
+    await _runLyricSearchFromForm();
+  }
+
+  function _initLyricSearchModal() {
+    _initLyricPreviewPlayer();
+    const pop = document.getElementById("lyric-search-popover");
+    if (!pop) return;
+    let lyricSearchMousedownTarget = null;
+    document.addEventListener(
+      "mousedown",
+      (e) => {
+        if (!pop || pop.classList.contains("hidden")) {
+          lyricSearchMousedownTarget = null;
+          return;
+        }
+        lyricSearchMousedownTarget = e.target;
+      },
+      true,
+    );
+    const closeBtn = document.getElementById("lyric-search-close");
+    const previewCloseBtn = document.getElementById("lyric-search-preview-close");
+    const submitBtn = document.getElementById("lyric-search-submit");
+    if (closeBtn) closeBtn.addEventListener("click", () => _closeLyricSearchModal());
+    if (previewCloseBtn) {
+      previewCloseBtn.addEventListener("click", () => _closeLyricPreviewOverlay());
+    }
+    document.addEventListener("click", (e) => {
+      if (!pop || pop.classList.contains("hidden")) return;
+      const target = lyricSearchMousedownTarget || e.target;
+      if (pop.contains(target)) return;
+      if (e.target.closest && e.target.closest("#dl-track-status")) return;
+      _closeLyricSearchModal();
+    });
+    window.addEventListener("resize", () => {
+      if (!pop || pop.classList.contains("hidden") || !_lyricSearchModalCtx) {
+        return;
+      }
+      _positionLyricSearchPopover();
+    });
+    let _lyricPopWinScrollRaf = null;
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (!pop || pop.classList.contains("hidden") || !_lyricSearchModalCtx) {
+          return;
+        }
+        if (_lyricPopWinScrollRaf != null) {
+          cancelAnimationFrame(_lyricPopWinScrollRaf);
+        }
+        _lyricPopWinScrollRaf = requestAnimationFrame(() => {
+          _lyricPopWinScrollRaf = null;
+          _positionLyricSearchPopover();
+        });
+      },
+      true,
+    );
+    if (submitBtn) submitBtn.addEventListener("click", () => _runLyricSearchFromForm());
+    const lyricResultsScroll = document.getElementById("lyric-search-results");
+    if (lyricResultsScroll && !lyricResultsScroll.dataset.pagingScrollBound) {
+      lyricResultsScroll.dataset.pagingScrollBound = "1";
+      lyricResultsScroll.addEventListener(
+        "scroll",
+        _onLyricSearchResultsScroll,
+        { passive: true },
+      );
+    }
+    const lyricTitleIn = document.getElementById("lyric-search-title");
+    const lyricArtistIn = document.getElementById("lyric-search-artist");
+    if (lyricTitleIn) {
+      lyricTitleIn.addEventListener("input", () => {
+        lyricTitleIn.classList.remove("lyric-search-input-invalid");
+      });
+    }
+    if (lyricArtistIn) {
+      lyricArtistIn.addEventListener("input", () => {
+        lyricArtistIn.classList.remove("lyric-search-input-invalid");
+      });
+    }
+
     const list = document.getElementById("dl-track-status");
     if (!list) return;
+    list.addEventListener("click", (e) => {
+      const revealBtn = e.target.closest("button.track-dl-btn--reveal");
+      if (revealBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const rcard = revealBtn.closest(".track-status-card");
+        const rp = rcard && (rcard.dataset.audioPath || "").trim();
+        if (!rp) return;
+        void (async () => {
+          try {
+            const res = await fetch("/api/reveal-in-folder", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audio_path: rp }),
+            });
+            await res.json();
+          } catch (_) {
+            /* ignore */
+          }
+        })();
+        return;
+      }
+      if (e.target.closest(".confidence-chip-tooltip")) return;
+      const wrap = e.target.closest(".confidence-chip-wrap");
+      const lyricsChip = e.target.closest(".track-status-chip.lyrics-chip");
+      if (!wrap && !lyricsChip) return;
+      if (lyricsChip && lyricsChip.classList.contains("loading")) return;
+      const rowCard = (wrap || lyricsChip).closest(".track-status-card");
+      if (!rowCard) return;
+      e.preventDefault();
+      e.stopPropagation();
+      _openLyricSearchModal(rowCard);
+    });
+  }
+
+  function _persistDownloadHistoryAfterResult(ev, resAlb) {
+    const ap = String(ev.audio_path || "").trim();
+    if (!ap || String(ev.status || "").toLowerCase() !== "downloaded") return;
+    const card = _ensureTrackStatusCard(
+      ev.track_no,
+      ev.title,
+      false,
+      undefined,
+      resAlb,
+    );
+    if (!card) return;
+    const tEl = card.querySelector(".track-status-title");
+    let coverUrl = "";
+    const img = card.querySelector(".track-status-art-img");
+    if (img && img.getAttribute("src")) {
+      coverUrl = img.getAttribute("src") || "";
+    }
+    const payload = {
+      audio_path: ap,
+      track_no: card.dataset.trackNo || String(ev.track_no || ""),
+      title: (tEl && tEl.textContent) || String(ev.title || ""),
+      cover_url: coverUrl,
+      lyric_artist: card.dataset.lyricArtist || "",
+      lyric_album: (card.dataset.lyricAlbum || resAlb || "").trim(),
+      duration_sec: parseInt(card.dataset.durationSec || "0", 10) || 0,
+      track_explicit:
+        card.dataset.trackExplicit === "1"
+          ? true
+          : card.dataset.trackExplicit === "0"
+            ? false
+            : null,
+      download_status: "downloaded",
+      download_detail: String(ev.detail || ""),
+      lyric_type: "",
+      lyric_provider: "",
+      lyric_confidence: "",
+    };
+    const chip = card.querySelector(".lyrics-chip");
+    if (chip) {
+      const parts = (chip.className || "").split(/\s+/);
+      const lt = parts.find((c) =>
+        ["synced", "plain", "none", "error", "instrumental"].includes(c),
+      );
+      if (lt) payload.lyric_type = lt;
+    }
+    _tsRegisterAudioPathAlbum(ap, (payload.lyric_album || "").trim());
+    void fetch("/api/download-history/upsert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
+
+  async function _hydrateDownloadHistoryFromDb() {
+    const list = document.getElementById("dl-track-status");
+    if (!list) return;
+    try {
+      const res = await fetch("/api/download-history");
+      const data = await res.json();
+      if (!data.ok || !Array.isArray(data.items)) return;
+      const items = data.items;
+      const stick = _scrollContainerAtBottom(list);
+
+      _tsTeardownVirtScroller();
+      _trackStatusMap.clear();
+      _tsOrder = [];
+      _tsKeyToIndex.clear();
+      _tsDbItemByKey.clear();
+      _tsAudioPathAlbum.clear();
+      _tsActiveDlKeys.clear();
+      list.innerHTML = "";
+
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const alb = (it.lyric_album || "").trim();
+        const parsed = _parseTrackRef(it.track_no || "", it.title || "");
+        const key = _trackKey(parsed.trackNo, parsed.title, alb);
+        _tsOrder.push(key);
+        _tsDbItemByKey.set(key, it);
+        const ap = (it.audio_path || "").trim();
+        if (ap) _tsRegisterAudioPathAlbum(ap, alb);
+      }
+      _tsRebuildKeyIndex();
+
+      if (items.length >= _TS_VIRT_THRESHOLD) {
+        _tsVirtActive = true;
+        _tsEnsureVirtInner(list);
+        _tsVirtScrollHandlerBound = () => _tsVirtOnScroll();
+        list.addEventListener("scroll", _tsVirtScrollHandlerBound, {
+          passive: true,
+        });
+        window.addEventListener("resize", _tsVirtScrollHandlerBound, {
+          passive: true,
+        });
+        if (window.ResizeObserver) {
+          _tsVirtResizeObs = new ResizeObserver(() => _tsVirtOnScroll());
+          _tsVirtResizeObs.observe(list);
+        }
+        _tsUpdateVirtInnerHeight();
+        requestAnimationFrame(() => {
+          _tsVirtRender();
+          _tsVirtMeasureRowH();
+          _tsVirtRender();
+          if (stick) list.scrollTop = list.scrollHeight;
+        });
+      } else {
+        for (let i = 0; i < items.length; i++) {
+          _tsApplyHistoryDbItemToNewCard(items[i]);
+        }
+        if (stick) list.scrollTop = list.scrollHeight;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  async function _resetTrackStatusCards() {
+    _closeLyricSearchModal();
+    try {
+      await fetch("/api/download-history/clear", { method: "POST" });
+    } catch (_) {
+      /* ignore */
+    }
+    const list = document.getElementById("dl-track-status");
+    if (!list) return;
+    _tsTeardownVirtScroller();
+    _tsOrder = [];
+    _tsKeyToIndex.clear();
+    _tsDbItemByKey.clear();
+    _tsAudioPathAlbum.clear();
+    _tsActiveDlKeys.clear();
     list.innerHTML = "";
-    _trackStatusMap = new Map();
+    _trackStatusMap.clear();
   }
 
   function _initCollapsibleContainer(containerId, toggleId) {
@@ -626,6 +2490,64 @@
   const _urlQueue = []; // [{url, resolved: {title, artist, cover, type, ...}}]
   let _textMode = false;
 
+  const _RESULT_ADD_BTN_HTML_ARROW = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      `;
+  const _RESULT_ADD_BTN_HTML_CHECK = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          `;
+
+  function _setSearchResultAddBtnAppearance(addBtn, inQueue) {
+    if (!addBtn) return;
+    addBtn.classList.toggle("result-add-btn--queued", !!inQueue);
+    if (inQueue) {
+      addBtn.setAttribute("aria-label", "In download queue");
+      addBtn.setAttribute("data-tip", "In download queue");
+      addBtn.innerHTML = _RESULT_ADD_BTN_HTML_CHECK;
+    } else {
+      addBtn.setAttribute("aria-label", "Add to Queue");
+      addBtn.setAttribute("data-tip", "Add to Queue");
+      addBtn.innerHTML = _RESULT_ADD_BTN_HTML_ARROW;
+    }
+  }
+
+  function _queuedUrlSetForSearchHighlight() {
+    if (_textMode) {
+      const lines = (document.getElementById("dl-urls")?.value || "")
+        .split(/[\n\r]+/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      return new Set(lines);
+    }
+    return new Set(_urlQueue.map((q) => q.url));
+  }
+
+  function _syncSearchQueuedHighlights() {
+    const list = document.getElementById("search-results");
+    if (!list) return;
+    const queued = _queuedUrlSetForSearchHighlight();
+    list.querySelectorAll(".result-item").forEach((row) => {
+      const url = row.dataset.queueUrl || "";
+      const inQueue = Boolean(url && queued.has(url));
+      row.classList.toggle("result-item--queued", inQueue);
+      const btn = row.querySelector(".result-add-btn");
+      _setSearchResultAddBtnAppearance(btn, inQueue);
+    });
+  }
+
+  function _scrollDlQueueToBottom() {
+    const el = document.getElementById("dl-queue");
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  }
+
   function _syncHiddenTextarea() {
     document.getElementById("dl-urls").value = _urlQueue
       .map((q) => q.url)
@@ -633,6 +2555,7 @@
     const empty = document.getElementById("dl-queue-empty");
     if (empty) empty.style.display = _urlQueue.length ? "none" : "";
     if (window._updateQueueBadge) window._updateQueueBadge();
+    _syncSearchQueuedHighlights();
   }
 
   function _addUrlToQueue(rawUrl) {
@@ -646,6 +2569,7 @@
     // Add a loading card immediately
     const card = _createQueueCard(url);
     document.getElementById("dl-queue").appendChild(card);
+    _scrollDlQueueToBottom();
 
     // Resolve metadata in background
     fetch("/api/resolve", {
@@ -742,7 +2666,9 @@
     const btn = document.createElement("button");
     btn.className = "queue-card-remove";
     btn.innerHTML = "×";
-    btn.title = "Remove";
+    btn.setAttribute("data-tip", "Remove");
+    btn.setAttribute("aria-label", "Remove");
+    btn.removeAttribute("title");
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -751,6 +2677,52 @@
     card.appendChild(btn);
 
     return card;
+  }
+
+  /** Green (low) → app teal #6ee7f7 (high) from bit depth × sample rate. */
+  function _queueQualityGradientAtT(t) {
+    t = Math.max(0, Math.min(1, t));
+    const r0 = 74;
+    const g0 = 222;
+    const b0 = 128;
+    const r1 = 110;
+    const g1 = 231;
+    const b1 = 247;
+    return {
+      r: Math.round(r0 + (r1 - r0) * t),
+      g: Math.round(g0 + (g1 - g0) * t),
+      b: Math.round(b0 + (b1 - b0) * t),
+    };
+  }
+
+  function _queueCardQualityRgb(r) {
+    const qStr = String(r.quality || "").toLowerCase();
+    if (/\bmp3\b|lossy|\b320\b|\baac\b/.test(qStr)) {
+      return _queueQualityGradientAtT(0);
+    }
+    let bd = Number(r.bit_depth);
+    let sr = Number(r.sample_rate);
+    if ((!Number.isFinite(bd) || !Number.isFinite(sr)) && r.quality) {
+      const m = String(r.quality).match(/(\d+)\s*bit\s*\/\s*([\d.]+)\s*kHz/i);
+      if (m) {
+        bd = parseInt(m[1], 10);
+        sr = parseFloat(m[2]);
+      }
+    }
+    if (!Number.isFinite(bd) || !Number.isFinite(sr)) {
+      return _queueQualityGradientAtT(0.22);
+    }
+    const minScore = 16 * 44.1;
+    const maxScore = 24 * 192;
+    const score = bd * sr;
+    const clamped = Math.max(minScore, Math.min(maxScore, score));
+    const t = (clamped - minScore) / (maxScore - minScore);
+    return _queueQualityGradientAtT(t);
+  }
+
+  function _queueCardQualityStyleAttr(r) {
+    const { r: rv, g: gv, b: bv } = _queueCardQualityRgb(r);
+    return ` style="color:rgb(${rv},${gv},${bv});border-color:rgba(${rv},${gv},${bv},0.55);background-color:rgba(${rv},${gv},${bv},0.17)"`;
   }
 
   function _updateQueueCard(card, r) {
@@ -774,17 +2746,24 @@
 
     // === Explicit icon ===
     const explicitIcon = r.explicit
-      ? `<span class="queue-card-explicit" data-tip="Explicit"><svg viewBox="0 0 24 24" class="queue-explicit-icon"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg></span>`
+      ? `<span class="queue-card-explicit explicit-tag-badge" data-tip="Explicit"><svg viewBox="0 0 24 24" class="queue-explicit-icon"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg></span>`
       : "";
 
-    // === Meta parts ===
-    const metaParts = [];
-
+    // === Format chip (color grades green → teal by effective bitrate) ===
+    let qualityHtml = "";
     if (r.bit_depth && r.sample_rate) {
-      metaParts.push(`${r.bit_depth}bit / ${r.sample_rate}kHz`);
+      const q = `${r.bit_depth}bit / ${r.sample_rate}kHz`;
+      qualityHtml = `<span class="queue-card-quality"${_queueCardQualityStyleAttr(
+        r,
+      )} data-tip="Source format from Qobuz: bit depth and sample rate">${_esc(q)}</span>`;
     } else if (r.quality) {
-      metaParts.push(r.quality);
+      qualityHtml = `<span class="queue-card-quality"${_queueCardQualityStyleAttr(
+        r,
+      )} data-tip="Format from Qobuz">${_esc(r.quality)}</span>`;
     }
+
+    // === Meta parts (tracks, year, etc.) ===
+    const metaParts = [];
 
     if (r.tracks && r.type !== "artist") {
       metaParts.push(`${r.tracks} track${r.tracks !== 1 ? "s" : ""}`);
@@ -819,9 +2798,16 @@
       <span class="queue-card-artist-row">
         ${typeBadge}<span class="queue-card-artist">${_esc(r.artist || "")}</span>
       </span>
-      <span class="queue-card-bottom-row">${explicitIcon}${metaRow}</span>
+      <span class="queue-card-bottom-row">${qualityHtml}${explicitIcon}${metaRow}</span>
     `;
     if (window._updateQueueBadge) window._updateQueueBadge();
+    const qEl = document.getElementById("dl-queue");
+    if (qEl) {
+      const cards = qEl.querySelectorAll(".queue-card");
+      if (cards.length && cards[cards.length - 1] === card) {
+        _scrollDlQueueToBottom();
+      }
+    }
   }
 
   function _esc(s) {
@@ -848,6 +2834,7 @@
         });
       }
     });
+    _scrollDlQueueToBottom();
   }
 
   // Sync textarea edits back into the queue (when switching from text → card mode)
@@ -999,9 +2986,10 @@
       }
     });
 
-    // Keep badge in sync when user edits URLs in text mode
+    // Keep badge + search highlights in sync when user edits URLs in text mode
     document.getElementById("dl-urls").addEventListener("input", () => {
       if (window._updateQueueBadge) window._updateQueueBadge();
+      if (_textMode) _syncSearchQueuedHighlights();
     });
   }
 
@@ -1033,7 +3021,7 @@
 
   // ── Cover art mutual exclusivity ──────────────────────────
   // "Skip Cover Art" is incompatible with "Write Art to Tracks" and
-  // "Full-Res Cover" — wire them up for whichever prefix is passed ('dl'/'cfg').
+      // "Full-Res Cover" | wire them up for whichever prefix is passed ('dl'/'cfg').
   function initCoverArtMutex(prefix) {
     const embedArt = document.getElementById(`${prefix}-embed-art`);
     const ogCover = document.getElementById(`${prefix}-og-cover`);
@@ -1089,6 +3077,12 @@
         no_fallback: String(document.getElementById("dl-no-fallback").checked),
         no_database: String(document.getElementById("dl-no-db").checked),
         fix_md5s: String(document.getElementById("dl-fix-md5s").checked),
+        no_credits: String(
+          !document.getElementById("dl-digital-booklet").checked,
+        ),
+        native_lang: String(
+          document.getElementById("dl-native-lang").checked,
+        ),
         segmented_fallback: String(
           document.getElementById("dl-segmented-fallback").checked,
         ),
@@ -1163,13 +3157,15 @@
       "dl-og-cover",
       "dl-no-cover",
       "dl-albums-only",
+      "dl-segmented-fallback",
+      "dl-no-db",
+      "dl-native-lang",
       "dl-no-m3u",
       "dl-no-fallback",
-      "dl-no-db",
+      "dl-fix-md5s",
       "dl-lyrics-enabled",
       "dl-smart-discography",
-      "dl-fix-md5s",
-      "dl-segmented-fallback",
+      "dl-digital-booklet",
       "dl-multiple-disc-one-dir",
       "dl-tag-album-artist",
       "dl-tag-album-title",
@@ -1296,7 +3292,7 @@
     const DL_TIP_PURCHASE_QUEUE =
       "Open album on Qobuz to purchase (full album required for these tracks)";
     const DL_TIP_NOT_STREAMABLE =
-      "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted)—open it on Qobuz to check.";
+      "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted) | open it on Qobuz to check.";
 
     function _trackCountForResolvedQueueUrl(url) {
       const qi = _urlQueue.find((q) => q.url === url);
@@ -1334,7 +3330,7 @@
           total += r.tracks;
           return;
         }
-        total += 1; // artist / label / unknown — will grow dynamically
+        total += 1; // artist / label / unknown | will grow dynamically
       });
       return Math.max(total, 1);
     }
@@ -1424,9 +3420,53 @@
           trackNo = parsed.trackNo;
           title = parsed.title;
         }
-        _ensureTrackStatusCard(trackNo, title, true, coverUrl);
-        _setTrackDownloadChip(trackNo, title, "downloading", "");
+        const evAlb =
+          ev.lyric_album != null && String(ev.lyric_album).trim() !== ""
+            ? String(ev.lyric_album).trim()
+            : "";
+        const _tcard = _ensureTrackStatusCard(
+          trackNo,
+          title,
+          true,
+          coverUrl,
+          evAlb,
+        );
+        if (_tcard) {
+          if (ev.lyric_artist != null && String(ev.lyric_artist).trim() !== "") {
+            _tcard.dataset.lyricArtist = String(ev.lyric_artist).trim();
+          }
+          if (evAlb) _tcard.dataset.lyricAlbum = evAlb;
+          if (ev.duration_sec != null && String(ev.duration_sec).trim() !== "") {
+            const ds = parseInt(String(ev.duration_sec), 10);
+            if (!Number.isNaN(ds)) _tcard.dataset.durationSec = String(ds);
+          }
+          if (typeof ev.track_explicit === "boolean") {
+            _tcard.dataset.trackExplicit = ev.track_explicit ? "1" : "0";
+            _setTrackContentRatingBadge(_tcard, ev.track_explicit);
+          }
+          if (_tcard.dataset.trackKey) _tsActiveDlKeys.add(_tcard.dataset.trackKey);
+        }
+        _setTrackDownloadChip(
+          trackNo,
+          title,
+          "downloading",
+          "",
+          undefined,
+          evAlb,
+        );
         _updateProgress();
+      } else if (ev.type === "track_download_progress") {
+        const pa =
+          ev.lyric_album != null && String(ev.lyric_album).trim() !== ""
+            ? String(ev.lyric_album).trim()
+            : "";
+        _updateTrackDownloadProgress(
+          ev.track_no,
+          ev.title,
+          ev.received,
+          ev.total,
+          pa,
+        );
       } else if (ev.type === "track_result") {
         const _trackKey = `${String(ev.track_no || "").trim()}|${String(
           ev.title || "",
@@ -1444,18 +3484,50 @@
         const isFailed = st === "failed";
         const isPurchase = st === "purchase_only";
         const detail = String(ev.detail || "").trim();
+        const ap = String(ev.audio_path || "").trim();
+        const resAlb = _lyricAlbumForTrackEv(ev);
+        const preCard = _ensureTrackStatusCard(
+          ev.track_no,
+          ev.title,
+          false,
+          undefined,
+          resAlb,
+        );
+        if (preCard && ap) {
+          preCard.dataset.audioPath = ap;
+          _tsRegisterAudioPathAlbum(ap, resAlb);
+        }
         if (isPurchase && detail) {
-          _setTrackDownloadChip(ev.track_no, ev.title, "Album Purchase Only", "failed", {
-            href: detail,
-            titleAttr: DL_TIP_PURCHASE_QUEUE,
-          });
+          _setTrackDownloadChip(
+            ev.track_no,
+            ev.title,
+            "Album Purchase Only",
+            "failed",
+            {
+              href: detail,
+              titleAttr: DL_TIP_PURCHASE_QUEUE,
+            },
+            resAlb,
+          );
         } else {
           _setTrackDownloadChip(
             ev.track_no,
             ev.title,
             isFailed ? "failed" : "downloaded",
             isFailed ? "failed" : "done",
+            undefined,
+            resAlb,
           );
+        }
+        if (st === "downloaded" && ap) {
+          _persistDownloadHistoryAfterResult(ev, resAlb);
+        }
+        if (preCard) {
+          _tsStoreDbItemFromTrackResult(ev, resAlb, preCard);
+          if (preCard.dataset.trackKey) {
+            _tsActiveDlKeys.delete(preCard.dataset.trackKey);
+          }
+          _tsVirtOnScroll();
         }
         const qurl = String(ev.source_url || "").trim();
         if (isPurchase && qurl) {
@@ -1486,12 +3558,46 @@
         }
         _updateProgress();
       } else if (ev.type === "track_lyrics") {
+        let albLy = "";
+        const apEv = String(ev.audio_path || "").trim();
+        if (apEv && _tsAudioPathAlbum.has(apEv)) {
+          albLy = _tsAudioPathAlbum.get(apEv) || "";
+        }
+        if (!albLy && apEv) {
+          const cards = document.querySelectorAll(
+            "#dl-track-status .track-status-card",
+          );
+          for (let i = 0; i < cards.length; i++) {
+            if ((cards[i].dataset.audioPath || "").trim() === apEv) {
+              albLy = (cards[i].dataset.lyricAlbum || "").trim();
+              break;
+            }
+          }
+        }
+        if (!albLy) albLy = _lyricAlbumForTrackEv(ev);
         _setTrackLyricsChip(
           ev.track_no,
           ev.title,
           ev.lyric_type || "none",
           ev.confidence,
+          albLy,
+          ev.provider,
         );
+        const lk = _trackKey(
+          _normalizeTrackNo(ev.track_no),
+          _normalizeTrackTitle(ev.title || ""),
+          albLy,
+        );
+        const rowSnap = lk ? _tsDbItemByKey.get(lk) : null;
+        if (rowSnap) {
+          rowSnap.lyric_type = String(ev.lyric_type || "none").toLowerCase();
+          rowSnap.lyric_provider =
+            ev.provider != null ? String(ev.provider) : "";
+          rowSnap.lyric_confidence =
+            ev.confidence != null && String(ev.confidence).trim() !== ""
+              ? String(ev.confidence).trim()
+              : "";
+        }
       } else if (ev.type === "url_done") {
         _dlDone++;
         // Sync track total upward if real count exceeded estimate
@@ -1546,7 +3652,6 @@
               "#dl-queue .queue-card.dl-active, #dl-queue .queue-card.dl-pending",
             )
             .forEach((c) => c.classList.remove("dl-active", "dl-pending"));
-          appendLog("log-output", "[warn] Download cancelled by user.");
         }
         // Clear the cancelling-state inline styles before restoring button
         const dlBtn = document.getElementById("dl-btn");
@@ -1584,7 +3689,6 @@
         urls = _urlQueue.map((q) => q.url).join("\n");
       }
       if (!urls) {
-        appendLog("log-output", "[error] No URLs in queue. Add some first.");
         return;
       }
 
@@ -1603,6 +3707,8 @@
         smart_discography: document.getElementById("dl-smart-discography")
           .checked,
         fix_md5s: document.getElementById("dl-fix-md5s").checked,
+        no_credits: !document.getElementById("dl-digital-booklet").checked,
+        native_lang: document.getElementById("dl-native-lang").checked,
         segmented_fallback: document.getElementById("dl-segmented-fallback")
           .checked,
         multiple_disc_prefix:
@@ -1661,13 +3767,7 @@
           body: JSON.stringify(payload),
         });
         const data = await res.json();
-        if (!data.ok) {
-          appendLog("log-output", "[error] " + data.error);
-        } else {
-          appendLog(
-            "log-output",
-            `[info] Queued ${data.queued} URL(s) for download…`,
-          );
+        if (data.ok) {
           // Mark all visible queue cards as pending (keep them in the list)
           _dlTotal = data.queued;
           _dlDone = 0;
@@ -1676,32 +3776,35 @@
           _dlTotalLocked = false;
           _dlTrackFinished = new Set();
           _purchaseOnlyCountByUrl = new Map();
-        _resetTrackStatusCards();
           document.querySelectorAll("#dl-queue .queue-card").forEach((c) => {
             c.classList.add("dl-pending");
           });
           _setDownloadingState(true);
         }
-      } catch (e) {
-        appendLog("log-output", "[error] Network error: " + e.message);
+      } catch (_) {
+        /* ignore */
       }
     });
 
-    document.getElementById("dl-clear-log").addEventListener("click", () => {
-      document.getElementById("log-output").innerHTML = "";
-    });
     const clearTrackStatusBtn = document.getElementById("dl-clear-track-status");
     if (clearTrackStatusBtn) {
       clearTrackStatusBtn.addEventListener("click", () => {
-        _resetTrackStatusCards();
+        void _resetTrackStatusCards();
       });
     }
+    _initLyricSearchModal();
     _initCollapsibleContainer("dl-track-status-container", "dl-track-status-toggle");
-    _initCollapsibleContainer("dl-log-container", "dl-log-toggle");
+    void _hydrateDownloadHistoryFromDb();
   }
 
   // ── Search tab ────────────────────────────────────────────
   let _searchResults = [];
+  const _QOBUZ_SEARCH_PAGE_INITIAL = 10;
+  const _QOBUZ_SEARCH_PAGE_STEP = 5;
+  const _QOBUZ_SEARCH_MAX = 50;
+  let _searchVisibleCount = 0;
+  let _searchLastQuery = "";
+  let _sidebarSearchScrollRaf = null;
 
   function initSearch() {
     const luckySlider = document.getElementById("lucky-number");
@@ -1710,6 +3813,28 @@
       luckySlider.addEventListener("input", () => {
         luckyVal.textContent = luckySlider.value;
       });
+    }
+
+    const luckyToggle = document.getElementById("lucky-toggle-btn");
+    const luckyPanel = document.getElementById("lucky-panel");
+    if (luckyToggle && luckyPanel) {
+      const clover = luckyToggle.querySelector(".lucky-toggle-icon--clover");
+      const closeIc = luckyToggle.querySelector(".lucky-toggle-icon--close");
+      function syncLuckyToggleUi(expanded) {
+        luckyToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+        const tip = expanded ? "Hide lucky search" : "Show lucky search";
+        luckyToggle.setAttribute("data-tip", tip);
+        luckyToggle.setAttribute("aria-label", tip);
+        luckyToggle.removeAttribute("title");
+        if (clover) clover.classList.toggle("hidden", expanded);
+        if (closeIc) closeIc.classList.toggle("hidden", !expanded);
+      }
+      luckyToggle.addEventListener("click", () => {
+        const willShow = luckyPanel.classList.contains("hidden");
+        luckyPanel.classList.toggle("hidden", !willShow);
+        syncLuckyToggleUi(willShow);
+      });
+      syncLuckyToggleUi(false);
     }
 
     document.getElementById("search-btn").addEventListener("click", doSearch);
@@ -1725,20 +3850,24 @@
       searchBtn.disabled = query.length < 3;
     });
 
-    document.getElementById("lucky-btn").addEventListener("click", doLucky);
+    const sidebarScroll = document.querySelector(".sidebar-results-scroll");
+    if (sidebarScroll && !sidebarScroll.dataset.pagingScrollBound) {
+      sidebarScroll.dataset.pagingScrollBound = "1";
+      sidebarScroll.addEventListener("scroll", _onSidebarSearchScroll, {
+        passive: true,
+      });
+    }
+
+    const luckyBtn = document.getElementById("lucky-btn");
+    if (luckyBtn) luckyBtn.addEventListener("click", doLucky);
   }
 
   async function doSearch() {
     const query = document.getElementById("search-query").value.trim();
     if (query.length < 3) {
-      appendLog(
-        "log-output",
-        "[error] Query must be at least 3 characters.",
-      );
       return;
     }
     const type = document.getElementById("search-type").value;
-    const limit = document.getElementById("search-limit").value;
 
     const btn = document.getElementById("search-btn");
     btn.disabled = true;
@@ -1749,31 +3878,255 @@
 
     try {
       const res = await fetch(
-        `/api/search?q=${encodeURIComponent(query)}&type=${type}&limit=${limit}`,
+        `/api/search?q=${encodeURIComponent(query)}&type=${type}&limit=${_QOBUZ_SEARCH_MAX}`,
       );
       const data = await res.json();
 
       if (!data.ok) {
-        appendLog("log-output", "[error] " + data.error);
         return;
       }
 
       _searchResults = data.results || [];
       renderResults(_searchResults, query);
-    } catch (e) {
-      appendLog("log-output", "[error] " + e.message);
+    } catch (_) {
+      /* ignore */
     } finally {
       btn.disabled = false;
       btn.classList.remove("searching");
     }
   }
 
+  function _searchResultDisplayLines(r) {
+    let title = (r.display_title || "").trim();
+    let subtitle = (r.display_subtitle || "").trim();
+    const typ = r.type || "";
+    if (title && subtitle) return { title, subtitle };
+    if (title && !subtitle && (typ === "artist" || typ === "playlist")) {
+      return { title, subtitle: "" };
+    }
+    const raw = (r.text || "")
+      .replace(/ \[\w+\]$/, "")
+      .replace(/ - (\d+:)?\d+:\d+$/, "");
+    if (typ === "artist" || typ === "playlist") {
+      return { title: title || raw, subtitle: "" };
+    }
+    const sep = " - ";
+    const ix = raw.indexOf(sep);
+    if (ix === -1) return { title: title || raw, subtitle };
+    return {
+      title: raw.slice(ix + sep.length).trim() || title,
+      subtitle: raw.slice(0, ix).trim() || subtitle,
+    };
+  }
+
+  function _searchResultYearLabel(r) {
+    const y = (r.release_year || "").trim();
+    if (y) return y;
+    const rd = r.release_date;
+    if (rd && typeof rd === "string" && /^\d{4}/.test(rd)) {
+      return rd.slice(0, 4);
+    }
+    return "";
+  }
+
+  function _buildSearchResultRow(r, i) {
+    const tipHires =
+      "Hi-Res lossless on Qobuz | above CD quality; up to 24-bit / 192 kHz.";
+    const tipLossless =
+      "CD-quality lossless on Qobuz | 16-bit / 44.1 kHz FLAC.";
+    const tipMp3 = "Lossy stream (e.g. ~320 kbps), not lossless.";
+    const tipExplicit = "Explicit release on Qobuz.";
+
+    const row = document.createElement("div");
+    row.className = "result-item";
+    row.dataset.index = String(i);
+    if (r.url) row.dataset.queueUrl = r.url;
+    const item = document.createElement("div");
+    item.className = "result-card";
+
+    const img = document.createElement("img");
+    img.className = "result-card-art";
+    const fallback =
+      r.type === "artist"
+        ? "/gui/artist-placeholder.png"
+        : "/gui/placeholder.png";
+
+    img.src = r.cover || fallback;
+    img.onerror = () => {
+      if (!img.src.endsWith(fallback)) {
+        img.src = fallback;
+      }
+    };
+
+    const info = document.createElement("div");
+    info.className = "result-card-info";
+
+    const { title: lineTitle, subtitle: lineArtist } = _searchResultDisplayLines(r);
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "result-card-title";
+    titleEl.textContent = lineTitle;
+
+    info.appendChild(titleEl);
+
+    if (lineArtist) {
+      const artistRow = document.createElement("div");
+      artistRow.className = "result-card-artist-row";
+      const artistSpan = document.createElement("span");
+      artistSpan.className = "result-card-artist";
+      artistSpan.textContent = lineArtist;
+      artistRow.appendChild(artistSpan);
+      info.appendChild(artistRow);
+    }
+
+    let badgeContent = r.badge;
+    let badgeClass = "result-badge";
+
+    if (!badgeContent) {
+      if (r.quality === "HI-RES") {
+        badgeClass += " badge-hires";
+        badgeContent = "HI-RES";
+      } else if (r.quality === "LOSSLESS") {
+        badgeClass += " badge-lossless";
+        badgeContent = "LOSSLESS";
+      } else if (r.type !== "artist" && r.type !== "playlist") {
+        badgeClass += " badge-mp3";
+        badgeContent = "MP3";
+      }
+    }
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "result-card-meta-row result-card-bottom-row";
+
+    if (badgeContent) {
+      const badge = document.createElement("span");
+      badge.className = badgeClass;
+      badge.removeAttribute("title");
+      if (r.badge) {
+        badge.className += " badge-neutral";
+        badge.textContent = badgeContent;
+      } else if (r.quality === "HI-RES") {
+        badge.setAttribute("data-tip", tipHires);
+        const icon = document.createElement("img");
+        icon.src = "/gui/hi-res.jpg";
+        icon.className = "quality-icon";
+        icon.alt = "";
+        badge.appendChild(icon);
+      } else if (r.quality === "LOSSLESS") {
+        badge.setAttribute("data-tip", tipLossless);
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("viewBox", "0 0 32 32");
+        svg.setAttribute("class", "quality-icon");
+        svg.innerHTML = `<path d="M16 22.7368C17.8785 22.7368 19.471 22.0837 20.7773 20.7773C22.0837 19.471 22.7368 17.8785 22.7368 16C22.7368 14.1215 22.0837 12.529 20.7773 11.2227C19.471 9.91635 17.8785 9.26318 16 9.26318C14.1215 9.26318 12.529 9.91635 11.2227 11.2227C9.91635 12.529 9.26318 14.1215 9.26318 16C9.26318 17.8785 9.91635 19.471 11.2227 20.7773C12.529 22.0837 14.1215 22.7368 16 22.7368ZM16 17.6842C15.5228 17.6842 15.1228 17.5228 14.8 17.2C14.4772 16.8772 14.3158 16.4772 14.3158 16C14.3158 15.5228 14.4772 15.1228 14.8 14.8C15.1228 14.4772 15.5228 14.3158 16 14.3158C16.4772 14.3158 16.8772 14.4772 17.2 14.8C17.5228 15.1228 17.6842 15.5228 17.6842 16C17.6842 16.4772 17.5228 16.8772 17.2 17.2C16.8772 17.5228 16.4772 17.6842 16 17.6842ZM16.0028 32C13.7899 32 11.7098 31.5801 9.76264 30.7402C7.81543 29.9003 6.12164 28.7606 4.68128 27.3208C3.24088 25.8811 2.10057 24.188 1.26034 22.2417C0.420114 20.2954 0 18.2158 0 16.0028C0 13.7899 0.419931 11.7098 1.25979 9.76264C2.09965 7.81543 3.23945 6.12165 4.67917 4.68128C6.11892 3.24088 7.81196 2.10057 9.7583 1.26034C11.7046 0.420115 13.7842 0 15.9972 0C18.2101 0 20.2902 0.419933 22.2374 1.25979C24.1846 2.09966 25.8784 3.23945 27.3187 4.67917C28.7591 6.11892 29.8994 7.81197 30.7397 9.7583C31.5799 11.7046 32 13.7842 32 15.9972C32 18.2101 31.5801 20.2902 30.7402 22.2374C29.9003 24.1846 28.7606 25.8784 27.3208 27.3187C25.8811 28.7591 24.188 29.8994 22.2417 30.7397C20.2954 31.5799 18.2158 32 16.0028 32ZM16 29.4737C19.7614 29.4737 22.9474 28.1685 25.5579 25.5579C28.1685 22.9474 29.4737 19.7614 29.4737 16C29.4737 12.2386 28.1685 9.05261 25.5579 6.44208C22.9474 3.83155 19.7614 2.52628 16 2.52628C12.2386 2.52628 9.05261 3.83155 6.44208 6.44208C3.83155 9.05261 2.52628 12.2386 2.52628 16C2.52628 19.7614 3.83155 22.9474 6.44208 25.5579C9.05261 28.1685 12.2386 29.4737 16 29.4737Z" fill="white"></path>`;
+        badge.appendChild(svg);
+      } else {
+        badge.setAttribute("data-tip", tipMp3);
+        badge.textContent = badgeContent;
+      }
+      metaRow.appendChild(badge);
+    }
+
+    if (r.explicit) {
+      const explicitBadge = document.createElement("span");
+      explicitBadge.className = "result-badge badge-explicit explicit-tag-badge";
+      explicitBadge.setAttribute("data-tip", tipExplicit);
+      explicitBadge.removeAttribute("title");
+      const explicitSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      explicitSvg.setAttribute("viewBox", "0 0 24 24");
+      explicitSvg.setAttribute("class", "quality-icon");
+      explicitSvg.innerHTML = `<path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path>`;
+      explicitBadge.appendChild(explicitSvg);
+      metaRow.appendChild(explicitBadge);
+    }
+
+    const metaLine = [];
+    if (r.tracks) {
+      metaLine.push(`${r.tracks} track${r.tracks !== 1 ? "s" : ""}`);
+    }
+    const yearLbl = _searchResultYearLabel(r);
+    if (yearLbl) {
+      metaLine.push(yearLbl);
+    }
+
+    if (metaLine.length > 0) {
+      const metaText = document.createElement("span");
+      metaText.className = "result-meta-text";
+      metaText.textContent = metaLine.join(" • ");
+      metaRow.appendChild(metaText);
+    }
+
+    info.appendChild(metaRow);
+
+    item.appendChild(img);
+    item.appendChild(info);
+
+    const addBtn = document.createElement("button");
+    addBtn.className = "result-add-btn";
+    addBtn.removeAttribute("title");
+    const alreadyQueued = Boolean(
+      r.url && _urlQueue.some((q) => q.url === r.url),
+    );
+    row.classList.toggle("result-item--queued", alreadyQueued);
+    _setSearchResultAddBtnAppearance(addBtn, alreadyQueued);
+
+    addBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!r.url) return;
+      if (_urlQueue.some((q) => q.url === r.url)) return;
+      _addUrlToQueue(r.url);
+    });
+
+    item.appendChild(addBtn);
+
+    row.appendChild(item);
+    return row;
+  }
+
+  function _updateSearchResultsHeader(visible, total, query) {
+    const countEl = document.getElementById("results-count");
+    if (!countEl || !total) return;
+    if (visible < total) {
+      countEl.textContent = `Showing ${visible} of ${total} results for "${query}"`;
+    } else {
+      countEl.textContent = `${total} result${total !== 1 ? "s" : ""} for "${query}"`;
+    }
+  }
+
+  function _appendNextSearchPage(isInitial) {
+    const list = document.getElementById("search-results");
+    if (!list || !_searchResults.length) return;
+    const total = _searchResults.length;
+    const step = isInitial ? _QOBUZ_SEARCH_PAGE_INITIAL : _QOBUZ_SEARCH_PAGE_STEP;
+    const next = Math.min(_searchVisibleCount + step, total);
+    for (let i = _searchVisibleCount; i < next; i++) {
+      list.appendChild(_buildSearchResultRow(_searchResults[i], i));
+    }
+    _searchVisibleCount = next;
+    _updateSearchResultsHeader(_searchVisibleCount, total, _searchLastQuery);
+  }
+
+  function _onSidebarSearchScroll() {
+    if (_sidebarSearchScrollRaf != null) {
+      cancelAnimationFrame(_sidebarSearchScrollRaf);
+    }
+    _sidebarSearchScrollRaf = requestAnimationFrame(() => {
+      _sidebarSearchScrollRaf = null;
+      const scrollEl = document.querySelector(".sidebar-results-scroll");
+      if (!scrollEl || !_searchResults.length) return;
+      if (_searchVisibleCount >= _searchResults.length) return;
+      const { scrollTop, scrollHeight, clientHeight } = scrollEl;
+      if (scrollHeight - scrollTop - clientHeight > 100) return;
+      _appendNextSearchPage(false);
+    });
+  }
+
   function renderResults(results, query) {
     const container = document.getElementById("search-results-container");
     const empty = document.getElementById("search-empty");
     const list = document.getElementById("search-results");
-    const countEl = document.getElementById("results-count");
     list.innerHTML = "";
+    _searchLastQuery = query;
+    _searchVisibleCount = 0;
 
     if (!results.length) {
       container.classList.add("hidden");
@@ -1783,172 +4136,13 @@
 
     empty.classList.add("hidden");
     container.classList.remove("hidden");
-    countEl.textContent = `${results.length} result${results.length !== 1 ? "s" : ""} for "${query}"`;
-
-    results.forEach((r, i) => {
-      const item = document.createElement("div");
-      item.className = "result-item result-card";
-      item.dataset.index = i;
-
-      // Image - use type-specific placeholders
-      const img = document.createElement("img");
-      img.className = "result-card-art";
-      const fallback = r.type === "artist" 
-        ? "/gui/artist-placeholder.png" 
-        : "/gui/placeholder.png";
-      
-      img.src = r.cover || fallback;
-      img.onerror = () => {
-        // Prevent infinite loop if fallback also fails
-        if (!img.src.endsWith(fallback)) {
-          img.src = fallback;
-        }
-      };
-
-      const info = document.createElement("div");
-      info.className = "result-card-info";
-
-      const text = document.createElement("div");
-      text.className = "result-card-text";
-      text.textContent = r.text;
-
-      info.appendChild(text);
-
-      // Quality / Stat badge
-      let badgeContent = r.badge;
-      let badgeClass = "result-badge";
-
-      // The backend text may still have [HI-RES] if it's an old cache, but core.py is now cleaning it.
-      // We clean it here too just in case. Duration can be MM:SS or HH:MM:SS.
-      let cleanText = (r.text || "")
-        .replace(/ \[\w+\]$/, "")              // Remove trailing [QUALITY]
-        .replace(/ - (\d+:)?\d+:\d+$/, "");    // Remove trailing - duration (MM:SS or HH:MM:SS)
-
-      if (!badgeContent) {
-        if (r.quality === "HI-RES") {
-          badgeClass += " badge-hires";
-          badgeContent = "HI-RES";
-        } else if (r.quality === "LOSSLESS") {
-          badgeClass += " badge-lossless";
-          badgeContent = "LOSSLESS";
-        } else if (r.type !== "artist" && r.type !== "playlist") {
-          badgeClass += " badge-mp3";
-          badgeContent = "MP3";
-        }
-      }
-
-      // Metadata line (second line)
-      const metaRow = document.createElement("div");
-      metaRow.className = "result-card-meta-row";
-
-      if (r.explicit) {
-        const explicitBadge = document.createElement("span");
-        explicitBadge.className = "result-badge badge-explicit";
-        const explicitSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-        explicitSvg.setAttribute("viewBox", "0 0 24 24");
-        explicitSvg.setAttribute("class", "quality-icon");
-        explicitSvg.innerHTML = `<path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path>`;
-        explicitBadge.appendChild(explicitSvg);
-        metaRow.appendChild(explicitBadge);
-      }
-
-      if (badgeContent) {
-        const badge = document.createElement("span");
-        badge.className = badgeClass;
-        if (r.badge) {
-          badge.className += " badge-neutral";
-          badge.textContent = badgeContent;
-        } else if (r.quality === "HI-RES") {
-          const icon = document.createElement("img");
-          icon.src = "/gui/hi-res.jpg";
-          icon.className = "quality-icon";
-          badge.appendChild(icon);
-        } else if (r.quality === "LOSSLESS") {
-          const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-          svg.setAttribute("viewBox", "0 0 32 32");
-          svg.setAttribute("class", "quality-icon");
-          svg.innerHTML = `<path d="M16 22.7368C17.8785 22.7368 19.471 22.0837 20.7773 20.7773C22.0837 19.471 22.7368 17.8785 22.7368 16C22.7368 14.1215 22.0837 12.529 20.7773 11.2227C19.471 9.91635 17.8785 9.26318 16 9.26318C14.1215 9.26318 12.529 9.91635 11.2227 11.2227C9.91635 12.529 9.26318 14.1215 9.26318 16C9.26318 17.8785 9.91635 19.471 11.2227 20.7773C12.529 22.0837 14.1215 22.7368 16 22.7368ZM16 17.6842C15.5228 17.6842 15.1228 17.5228 14.8 17.2C14.4772 16.8772 14.3158 16.4772 14.3158 16C14.3158 15.5228 14.4772 15.1228 14.8 14.8C15.1228 14.4772 15.5228 14.3158 16 14.3158C16.4772 14.3158 16.8772 14.4772 17.2 14.8C17.5228 15.1228 17.6842 15.5228 17.6842 16C17.6842 16.4772 17.5228 16.8772 17.2 17.2C16.8772 17.5228 16.4772 17.6842 16 17.6842ZM16.0028 32C13.7899 32 11.7098 31.5801 9.76264 30.7402C7.81543 29.9003 6.12164 28.7606 4.68128 27.3208C3.24088 25.8811 2.10057 24.188 1.26034 22.2417C0.420114 20.2954 0 18.2158 0 16.0028C0 13.7899 0.419931 11.7098 1.25979 9.76264C2.09965 7.81543 3.23945 6.12165 4.67917 4.68128C6.11892 3.24088 7.81196 2.10057 9.7583 1.26034C11.7046 0.420115 13.7842 0 15.9972 0C18.2101 0 20.2902 0.419933 22.2374 1.25979C24.1846 2.09966 25.8784 3.23945 27.3187 4.67917C28.7591 6.11892 29.8994 7.81197 30.7397 9.7583C31.5799 11.7046 32 13.7842 32 15.9972C32 18.2101 31.5801 20.2902 30.7402 22.2374C29.9003 24.1846 28.7606 25.8784 27.3208 27.3187C25.8811 28.7591 24.188 29.8994 22.2417 30.7397C20.2954 31.5799 18.2158 32 16.0028 32ZM16 29.4737C19.7614 29.4737 22.9474 28.1685 25.5579 25.5579C28.1685 22.9474 29.4737 19.7614 29.4737 16C29.4737 12.2386 28.1685 9.05261 25.5579 6.44208C22.9474 3.83155 19.7614 2.52628 16 2.52628C12.2386 2.52628 9.05261 3.83155 6.44208 6.44208C3.83155 9.05261 2.52628 12.2386 2.52628 16C2.52628 19.7614 3.83155 22.9474 6.44208 25.5579C9.05261 28.1685 12.2386 29.4737 16 29.4737Z" fill="white"></path>`;
-          badge.appendChild(svg);
-        } else {
-          badge.textContent = badgeContent;
-        }
-        metaRow.appendChild(badge);
-      }
-
-      // Tracks + Release Date metadata
-      let metaLine = [];
-      if (r.tracks) {
-        metaLine.push(`${r.tracks} track${r.tracks !== 1 ? 's' : ''}`);
-      }
-      if (r.release_date) {
-        const d = new Date(r.release_date + "T00:00:00");
-        const formatted = d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
-        metaLine.push(formatted);
-      }
-
-      if (metaLine.length > 0) {
-        const metaText = document.createElement("span");
-        metaText.className = "result-meta-text";
-        metaText.textContent = metaLine.join(" • ");
-        metaRow.appendChild(metaText);
-      }
-
-      // Update text with clean version
-      text.textContent = cleanText;
-
-      info.appendChild(metaRow);
-
-      item.appendChild(img);
-      item.appendChild(info);
-
-      // Add "Add to Queue" button (Hover icon)
-      const addBtn = document.createElement("button");
-      addBtn.className = "result-add-btn";
-      addBtn.title = "Add to Queue";
-      addBtn.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-            <polyline points="12 5 19 12 12 19"></polyline>
-        </svg>
-      `;
-
-      addBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (r.url) {
-          _addUrlToQueue(r.url);
-          // Visual feedback
-          addBtn.classList.add("added");
-          addBtn.innerHTML = `
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-          `;
-          setTimeout(() => {
-            addBtn.classList.remove("added");
-            addBtn.innerHTML = `
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                    <polyline points="12 5 19 12 12 19"></polyline>
-                </svg>
-            `;
-          }, 1500);
-        }
-      });
-
-      item.appendChild(addBtn);
-
-      list.appendChild(item);
-    });
+    _appendNextSearchPage(true);
   }
 
 
   async function doLucky() {
     const query = document.getElementById("search-query").value.trim();
     if (query.length < 3) {
-      appendLog(
-        "log-output",
-        "[error] Query must be at least 3 characters.",
-      );
       return;
     }
     const type = document.getElementById("search-type").value;
@@ -1965,25 +4159,17 @@
         `/api/search?q=${encodeURIComponent(query)}&type=${type}&limit=${number}`,
       );
       const data = await res.json();
-      if (!data.ok) {
-        appendLog("log-output", "[error] " + data.error);
-      } else {
+      if (data.ok) {
         const results = data.results || [];
         const toAdd = results.slice(0, number);
-        if (toAdd.length === 0) {
-          appendLog("log-output", "[warn] No lucky results found.");
-        } else {
+        if (toAdd.length !== 0) {
           toAdd.forEach((r) => {
             if (r.url) _addUrlToQueue(r.url);
           });
-          appendLog(
-            "log-output",
-            `[info] Queued top ${toAdd.length} result(s) for "${query}".`,
-          );
         }
       }
-    } catch (e) {
-      appendLog("log-output", "[error] " + e.message);
+    } catch (_) {
+      /* ignore */
     } finally {
       btn.disabled = false;
       btn.textContent = "Lucky to Queue";
@@ -2034,6 +4220,8 @@
       setCheck("dl-no-db", cfg.no_database === "true");
       setCheck("dl-smart-discography", cfg.smart_discography === "true");
       setCheck("dl-fix-md5s", cfg.fix_md5s === "true");
+      setCheck("dl-digital-booklet", cfg.no_credits !== "true");
+      setCheck("dl-native-lang", cfg.native_lang === "true");
       setCheck("dl-segmented-fallback", cfg.segmented_fallback !== "false");
       setCheck("dl-multiple-disc-one-dir", cfg.multiple_disc_one_dir !== "true");
       setValue("dl-multiple-disc-prefix", cfg.multiple_disc_prefix || "Disc");
@@ -2340,7 +4528,7 @@
     if (status && (status.ready || status.has_config)) {
       showApp();
       if (!status.ready && status.has_config) {
-        // Config exists but client not init yet — auto-connect
+        // Config exists but client not init yet | auto-connect
         const dot = document.getElementById("status-dot");
         const label = document.getElementById("status-label");
         dot.className = "status-dot connecting";
@@ -2734,6 +4922,15 @@
             return;
           }
         }
+        // Auto-scroll on the download history list must not dismiss the panel.
+        if (
+          e.target &&
+          typeof e.target.closest === "function" &&
+          (e.target.closest("#dl-track-status") ||
+            e.target.closest("#lyric-search-popover"))
+        ) {
+          return;
+        }
         closeAllFormatTips();
       },
       true,
@@ -2844,9 +5041,12 @@
       let tipText = targetEl ? targetEl.getAttribute("data-tip") : null;
 
       if (!targetEl) {
-        // Auto-detect truncation
+        // Auto-detect truncation (native ``title`` is not set on lyric rows | avoids bogus browser tooltips)
         const style = window.getComputedStyle(el);
-        if (style.textOverflow === "ellipsis" && el.offsetWidth < el.scrollWidth) {
+        if (
+          style.textOverflow === "ellipsis" &&
+          el.scrollWidth - el.offsetWidth > 2
+        ) {
           targetEl = el;
           tipText = el.textContent.trim();
         }
@@ -2858,17 +5058,82 @@
 
       if (targetEl && tipText) {
         activeTarget = targetEl;
-        tooltip.textContent = tipText;
+        const iconSrc = targetEl.getAttribute("data-tip-icon");
+        const safeIcon =
+          iconSrc &&
+          typeof iconSrc === "string" &&
+          iconSrc.trim().startsWith("/gui/") &&
+          !iconSrc.includes("..");
+        tooltip.classList.toggle("global-tooltip--with-icon", !!safeIcon);
+        if (safeIcon) {
+          tooltip.replaceChildren();
+          const lines = tipText.split(/\r?\n/);
+          const titleLine = (lines[0] || "").trim();
+          const bodyRest = lines.slice(1).join("\n").trim();
+          if (bodyRest) {
+            const stack = document.createElement("div");
+            stack.className = "global-tooltip-tag-stack";
+            const titleEl = document.createElement("div");
+            titleEl.className = "global-tooltip-tag-title";
+            titleEl.textContent = titleLine;
+            stack.appendChild(titleEl);
+            const row = document.createElement("div");
+            row.className = "global-tooltip-provider-row";
+            const img = document.createElement("img");
+            img.className = "global-tooltip-icon";
+            img.src = iconSrc.trim();
+            img.alt = "";
+            img.decoding = "async";
+            const textEl = document.createElement("div");
+            textEl.className = "global-tooltip-provider-text";
+            textEl.textContent = bodyRest;
+            row.appendChild(img);
+            row.appendChild(textEl);
+            stack.appendChild(row);
+            tooltip.appendChild(stack);
+          } else {
+            const row = document.createElement("div");
+            row.className = "global-tooltip-icon-row";
+            const img = document.createElement("img");
+            img.className = "global-tooltip-icon";
+            img.src = iconSrc.trim();
+            img.alt = "";
+            img.decoding = "async";
+            const textEl = document.createElement("div");
+            textEl.className = "global-tooltip-icon-text";
+            textEl.textContent = titleLine || tipText;
+            row.appendChild(img);
+            row.appendChild(textEl);
+            tooltip.appendChild(row);
+          }
+        } else {
+          tooltip.textContent = tipText;
+        }
         tooltip.classList.add("visible");
 
         const rect = targetEl.getBoundingClientRect();
-        let top = rect.top - tooltip.offsetHeight - 10;
+        const margin = 10;
+        const place = (
+          targetEl.getAttribute("data-tip-placement") || ""
+        ).toLowerCase();
+        let top;
+        if (place === "bottom") {
+          top = rect.bottom + margin;
+          if (top + tooltip.offsetHeight > window.innerHeight - margin) {
+            top = rect.top - tooltip.offsetHeight - margin;
+          }
+        } else if (place === "top") {
+          top = rect.top - tooltip.offsetHeight - margin;
+          if (top < margin) top = rect.bottom + margin;
+        } else {
+          top = rect.top - tooltip.offsetHeight - margin;
+          if (top < margin) top = rect.bottom + margin;
+        }
         let left = rect.left + rect.width / 2 - tooltip.offsetWidth / 2;
 
-        if (top < 10) top = rect.bottom + 10;
-        if (left < 10) left = 10;
-        else if (left + tooltip.offsetWidth > window.innerWidth - 10) {
-          left = window.innerWidth - tooltip.offsetWidth - 10;
+        if (left < margin) left = margin;
+        else if (left + tooltip.offsetWidth > window.innerWidth - margin) {
+          left = window.innerWidth - tooltip.offsetWidth - margin;
         }
 
         tooltip.style.top = top + "px";

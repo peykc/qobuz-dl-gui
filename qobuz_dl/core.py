@@ -70,6 +70,8 @@ class QobuzDL:
         max_workers=1,
         delay_seconds=0,
         segmented_fallback=True,
+        no_credits=False,
+        native_lang=False,
         no_album_artist_tag=False,
         no_album_title_tag=False,
         no_track_artist_tag=False,
@@ -111,6 +113,8 @@ class QobuzDL:
         self.max_workers = max(1, int(max_workers or 1))
         self.delay_seconds = max(0, int(delay_seconds or 0))
         self.segmented_fallback = bool(segmented_fallback)
+        self.no_credits = bool(no_credits)
+        self.native_lang = bool(native_lang)
         self.tag_options = {
             "no_album_artist_tag": bool(no_album_artist_tag),
             "no_album_title_tag": bool(no_album_title_tag),
@@ -135,11 +139,13 @@ class QobuzDL:
 
     def initialize_client(self, email, pwd, app_id, secrets):
         self.client = qopy.Client(email, pwd, app_id, secrets)
+        self.client.set_language_headers(self.native_lang)
         logger.info(f"{YELLOW}Set max quality: {QUALITIES[int(self.quality)]}\n")
 
     def initialize_client_with_token(self, user_id, user_auth_token, app_id, secrets):
         self.client = qopy.Client(None, None, app_id, secrets, skip_auth=True)
         self.client.auth_with_token(user_id, user_auth_token)
+        self.client.set_language_headers(self.native_lang)
         logger.info(f"{YELLOW}Set max quality: {QUALITIES[int(self.quality)]}\n")
 
     def initialize_client_with_oauth(self, code, app_id, secrets, private_key):
@@ -147,6 +153,7 @@ class QobuzDL:
         usr_info = self.client.login_with_oauth_code(code, private_key)
         self.oauth_user_id = usr_info.get("user", {}).get("id")
         self.oauth_user_auth_token = usr_info.get("user_auth_token")
+        self.client.set_language_headers(self.native_lang)
         logger.info(f"{YELLOW}Set max quality: {QUALITIES[int(self.quality)]}\n")
 
     def save_oauth_token_to_config(self, config_file):
@@ -182,6 +189,7 @@ class QobuzDL:
             )
             return
         try:
+            self.client.set_language_headers(self.native_lang)
             dloader = downloader.Download(
                 self.client,
                 item_id,
@@ -204,6 +212,7 @@ class QobuzDL:
                 max_workers=self.max_workers,
                 delay_seconds=self.delay_seconds,
                 segmented_fallback=self.segmented_fallback,
+                no_credits=self.no_credits,
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)
@@ -409,7 +418,7 @@ class QobuzDL:
 
         return results
 
-    def search_by_type(self, query, item_type, limit=10, lucky=False):
+    def search_by_type(self, query, item_type, limit=10, lucky=False, offset=0):
         if len(query) < 3:
             logger.info("{RED}Your search query is too short or invalid")
             return
@@ -447,7 +456,7 @@ class QobuzDL:
 
         try:
             mode_dict = possibles[item_type]
-            results = mode_dict["func"](query, limit)
+            results = mode_dict["func"](query, limit, offset)
             iterable = (results.get(mode_dict["key"]) or {}).get("items") or []
             item_list = []
             for i in iterable:
@@ -489,15 +498,58 @@ class QobuzDL:
                 else: # album
                     cover = (i.get("image") or {}).get("large") or ""
 
+                release_date_val = i.get("release_date_original") or i.get(
+                    "release_date_stream"
+                )
+                release_year = ""
+                if (
+                    release_date_val
+                    and isinstance(release_date_val, str)
+                    and len(release_date_val) >= 4
+                    and release_date_val[:4].isdigit()
+                ):
+                    release_year = release_date_val[:4]
+
+                if item_type == "artist":
+                    display_title = text
+                    display_subtitle = ""
+                elif item_type == "playlist":
+                    display_title = text
+                    display_subtitle = ""
+                elif item_type == "album":
+                    display_title = (i.get("title") or "").strip()
+                    display_subtitle = (
+                        (i.get("artist") or {}).get("name") or ""
+                    ).strip()
+                else:
+                    display_title = (i.get("title") or "").strip()
+                    display_subtitle = (
+                        (i.get("performer") or {}).get("name") or ""
+                    ).strip()
+
+                if item_type in ("album", "track") and (
+                    not display_title or not display_subtitle
+                ) and " - " in text:
+                    left, _, right = text.partition(" - ")
+                    if not display_subtitle:
+                        display_subtitle = left.strip()
+                    if not display_title:
+                        display_title = right.strip()
+                if item_type in ("album", "track") and not display_title:
+                    display_title = text
+
                 item_list.append({
                     "text": text,
+                    "display_title": display_title,
+                    "display_subtitle": display_subtitle,
+                    "release_year": release_year,
                     "url": url,
                     "cover": cover,
                     "type": item_type,
                     "badge": badge_text,
                     "quality": quality,
                     "explicit": bool(i.get("parental_warning") or i.get("parental_advisory") or i.get("explicit")),
-                    "release_date": i.get("release_date_original") or i.get("release_date_stream"),
+                    "release_date": release_date_val,
                     "tracks": i.get("tracks_count")
                 } if not lucky else url)
             return item_list

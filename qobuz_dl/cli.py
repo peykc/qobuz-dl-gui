@@ -71,6 +71,8 @@ def _reset_config(config_file):
     config["DEFAULT"]["max_workers"] = "1"
     config["DEFAULT"]["delay_seconds"] = "0"
     config["DEFAULT"]["segmented_fallback"] = "true"
+    config["DEFAULT"]["no_credits"] = "false"
+    config["DEFAULT"]["native_lang"] = "false"
     for key in (
         "no_album_artist_tag",
         "no_album_title_tag",
@@ -182,6 +184,8 @@ def main():
         segmented_fallback = config.getboolean(
             "DEFAULT", "segmented_fallback", fallback=True
         )
+        no_credits = config.getboolean("DEFAULT", "no_credits", fallback=False)
+        native_lang = config.getboolean("DEFAULT", "native_lang", fallback=False)
         no_album_artist_tag = config.getboolean(
             "DEFAULT", "no_album_artist_tag", fallback=False
         )
@@ -278,6 +282,8 @@ def main():
         max_workers=arguments.max_workers or max_workers,
         delay_seconds=arguments.delay or delay_seconds,
         segmented_fallback=not arguments.no_segmented_fallback and segmented_fallback,
+        no_credits=arguments.no_credits or no_credits,
+        native_lang=arguments.native_lang or native_lang,
         no_album_artist_tag=arguments.no_album_artist_tag or no_album_artist_tag,
         no_album_title_tag=arguments.no_album_title_tag or no_album_title_tag,
         no_track_artist_tag=arguments.no_track_artist_tag or no_track_artist_tag,

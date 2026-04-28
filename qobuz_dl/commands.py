@@ -165,6 +165,16 @@ def add_common_arg(custom_parser, default_folder, default_quality):
         action="store_true",
         help="disable segmented download + remux fallback",
     )
+    custom_parser.add_argument(
+        "--native-lang",
+        action="store_true",
+        help="use account metadata language instead of preferring English",
+    )
+    custom_parser.add_argument(
+        "--no-credits",
+        action="store_true",
+        help="skip Digital Booklet.txt (credits, editorial, tracklist)",
+    )
 
     tag_group = custom_parser.add_argument_group("tag options")
     tag_group.add_argument("--no-album-artist-tag", action="store_true")

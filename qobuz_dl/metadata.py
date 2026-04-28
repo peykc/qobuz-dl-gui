@@ -341,3 +341,35 @@ def tag_mp3(
 
     audio.save(filename, v2_version=3)
     os.rename(filename, final_name)
+
+
+def set_itunes_explicit_from_lyrics_content(audio_path: str, lyrics_text: str) -> bool:
+    """If lyric text matches the explicit-vocabulary heuristic, set ITUNESADVISORY to 1."""
+    from qobuz_dl import lyrics as lyrics_mod
+
+    if not lyrics_mod.lyrics_text_indicates_explicit(lyrics_text or ""):
+        return False
+    return _set_audio_itunes_explicit_one(audio_path)
+
+
+def _set_audio_itunes_explicit_one(audio_path: str) -> bool:
+    ext = os.path.splitext(audio_path)[1].lower()
+    try:
+        if ext == ".flac":
+            audio = FLAC(audio_path)
+            audio["ITUNESADVISORY"] = "1"
+            audio.save()
+            return True
+        if ext == ".mp3":
+            try:
+                audio = id3.ID3(audio_path)
+            except ID3NoHeaderError:
+                logger.warning("No ID3 header; skipping explicit tag update: %s", audio_path)
+                return False
+            audio.delall("TXXX:ITUNESADVISORY")
+            audio.add(id3.TXXX(encoding=3, desc="ITUNESADVISORY", text="1"))
+            audio.save(audio_path, v2_version=3)
+            return True
+    except Exception as e:
+        logger.warning("Could not set ITUNESADVISORY from lyrics: %s", e)
+    return False

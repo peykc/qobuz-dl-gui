@@ -219,17 +219,25 @@ class Client:
     def get_label_meta(self, id):
         return self.multi_meta("label/get", "albums_count", id, None)
 
-    def search_albums(self, query, limit):
-        return self.api_call("album/search", query=query, limit=limit)
+    def search_albums(self, query, limit, offset=0):
+        return self.api_call(
+            "album/search", query=query, limit=limit, offset=offset
+        )
 
-    def search_artists(self, query, limit):
-        return self.api_call("artist/search", query=query, limit=limit)
+    def search_artists(self, query, limit, offset=0):
+        return self.api_call(
+            "artist/search", query=query, limit=limit, offset=offset
+        )
 
-    def search_playlists(self, query, limit):
-        return self.api_call("playlist/search", query=query, limit=limit)
+    def search_playlists(self, query, limit, offset=0):
+        return self.api_call(
+            "playlist/search", query=query, limit=limit, offset=offset
+        )
 
-    def search_tracks(self, query, limit):
-        return self.api_call("track/search", query=query, limit=limit)
+    def search_tracks(self, query, limit, offset=0):
+        return self.api_call(
+            "track/search", query=query, limit=limit, offset=offset
+        )
 
     def get_favorite_albums(self, offset, limit):
         return self.api_call(
@@ -255,6 +263,13 @@ class Client:
             return True
         except InvalidAppSecretError:
             return False
+
+    def set_language_headers(self, native_lang: bool = False):
+        """Prefer English metadata unless native_lang requests account locale."""
+        if native_lang:
+            self.session.headers.pop("Accept-Language", None)
+        else:
+            self.session.headers["Accept-Language"] = "en-US,en;q=0.9"
 
     def cfg_setup(self):
         for secret in self.secrets:

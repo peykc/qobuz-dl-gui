@@ -1,5 +1,5 @@
 /* ============================================================
-   Qobuz-DL GUI — Dark Minimal Theme
+   Qobuz-DL GUI | Dark Minimal Theme
    ============================================================ */
 
 :root {
@@ -193,6 +193,11 @@ textarea,
     color: var(--accent);
 }
 
+.app-logo-mark {
+    flex-shrink: 0;
+    display: block;
+}
+
 .overlay-card h2 {
     font-size: 22px;
     font-weight: 600;
@@ -351,7 +356,7 @@ textarea,
 .logo-wrap {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 0;
 }
 
 .sidebar-logo strong {
@@ -542,8 +547,13 @@ textarea,
    ============================================================ */
 .main-content {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 36px 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    /* Less bottom padding so the download column sits closer to the window edge */
+    padding: 36px 40px 12px;
 }
 
 .tab-panel {
@@ -552,6 +562,27 @@ textarea,
 
 .tab-panel.active {
     display: block;
+}
+
+/* Download tab fills the main column so history can use remaining height. */
+#tab-download.tab-panel.active {
+    display: grid;
+    grid-template-rows: auto auto auto;
+    align-content: start;
+    /* basis 0 so the tab always consumes full main column height, not content height */
+    flex: 1 1 0;
+    min-height: 0;
+    width: 100%;
+}
+
+/* Third row (download history) absorbs all leftover vertical space when expanded */
+#tab-download.tab-panel.active:not(:has(#dl-track-status-container.collapsed)) {
+    grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+#tab-download .dl-options-card,
+#tab-download #url-card {
+    flex-shrink: 0;
 }
 
 /* ============================================================
@@ -609,6 +640,15 @@ textarea,
 
 .sidebar-search .card {
     margin-bottom: 0px;
+}
+
+/* Single-row card: symmetric inset so space above the search row matches space below */
+.sidebar-search .search-bar-card {
+    padding: 15px 20px;
+}
+
+.sidebar-search .search-bar-card .search-row {
+    margin-bottom: 0;
 }
 
 .card-section-title {
@@ -784,7 +824,7 @@ select {
 }
 
 /* ── Format Field Tooltips ───────────────────────────────── */
-/* inline-flex: only the label text + ⓘ are hit targets — not the full row */
+/* inline-flex: only the label text + ⓘ are hit targets | not the full row */
 .format-label {
     display: inline-flex;
     align-items: center;
@@ -847,7 +887,7 @@ select {
     to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Controlled by JS — click ⓘ to open; initFormatTooltips() in app.js */
+/* Controlled by JS | click ⓘ to open; initFormatTooltips() in app.js */
 
 .fmt-tooltip-title {
     font-size: 12px;
@@ -1153,7 +1193,7 @@ td.fmt-example {
 .global-tooltip {
     position: fixed;
     z-index: 100000;
-    max-width: 240px;
+    max-width: 300px;
     background: #111111;
     border: 1px solid var(--border);
     color: var(--text-secondary);
@@ -1172,6 +1212,51 @@ td.fmt-example {
 
 .global-tooltip.visible {
     opacity: 1;
+}
+
+/* Tag + provider: line 1 = tag name; line 2 = icon + provider note */
+.global-tooltip.global-tooltip--with-icon .global-tooltip-tag-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.global-tooltip.global-tooltip--with-icon .global-tooltip-tag-title {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.global-tooltip.global-tooltip--with-icon .global-tooltip-provider-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+
+.global-tooltip.global-tooltip--with-icon .global-tooltip-provider-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    min-width: 0;
+}
+
+.global-tooltip.global-tooltip--with-icon .global-tooltip-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    opacity: 0.95;
+}
+
+.global-tooltip.global-tooltip--with-icon .global-tooltip-icon-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+
+.global-tooltip.global-tooltip--with-icon .global-tooltip-icon-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    min-width: 0;
 }
 
 .toggle-switch {
@@ -1255,11 +1340,17 @@ td.fmt-example {
     margin-top: 2px;
 }
 
+/* Parallel downloads + delay: always one horizontal pair; never stack vertically.
+   Min-width lets the grid break this cell to the next row before the column gets too narrow. */
+.options-grid > .form-group.compact-runtime-row {
+    min-width: min(100%, 22rem);
+}
+
 .compact-runtime-row {
     display: flex;
     flex-direction: row;
-    flex-wrap: wrap;
-    gap: 4px;
+    flex-wrap: nowrap;
+    gap: 12px;
     align-items: flex-end;
 }
 
@@ -1267,6 +1358,7 @@ td.fmt-example {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    flex: 0 0 auto;
 }
 
 .compact-runtime-row .compact-number-field input[type="number"] {
@@ -1293,9 +1385,14 @@ td.fmt-example {
     accent-color: var(--accent);
 }
 
+/* At least 2 columns: when narrow, min track = half row (minus gap) so 2 always fit;
+   when wide, min stays 170px so auto-fit adds 3+ columns. */
 .tag-checkbox-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    grid-template-columns: repeat(
+        auto-fit,
+        minmax(min(170px, calc((100% - 12px) / 2)), 1fr)
+    );
     gap: 8px 12px;
 }
 
@@ -1306,8 +1403,8 @@ td.fmt-example {
     color: var(--text-secondary);
     font-size: 12px;
     user-select: none;
-    justify-self: start;
-    width: fit-content;
+    min-width: 0;
+    width: 100%;
     cursor: pointer;
 }
 
@@ -1399,6 +1496,61 @@ td.fmt-example {
 
 .collapse-body.hidden {
     display: none;
+}
+
+/* Download options: bar at top; expanded body overlays queue (no dimmed backdrop). */
+#tab-download .dl-options-card {
+    position: relative;
+    z-index: 1;
+}
+
+#tab-download .dl-options-card:has(#dl-options-body:not(.hidden)) {
+    z-index: 100;
+    /* Flush horizontal edges so panel borders line up with the card outline; inset handled on children. */
+    padding-left: 0;
+    padding-right: 0;
+    padding-top: 20px;
+    /* Breathing room below the label before the sheet attaches (same fill as header). */
+    padding-bottom: 12px;
+    border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+    /* Let the dropdown extend 1px each side to meet the card border (avoids double-edge / gaps). */
+    overflow: visible;
+}
+
+#tab-download .dl-options-card:has(#dl-options-body:not(.hidden)) .collapse-toggle {
+    width: 100%;
+    box-sizing: border-box;
+    padding-left: 22px;
+    padding-right: 22px;
+}
+
+#tab-download .dl-options-card .collapse-toggle {
+    position: relative;
+    z-index: 1;
+}
+
+#tab-download .dl-options-panel:not(.hidden) {
+    display: block;
+    position: absolute;
+    /* Pull 1px past the inner edge so side borders share one line with the card (no seam / bleed). */
+    left: -1px;
+    right: -1px;
+    top: 100%;
+    margin-top: 0;
+    z-index: 2;
+    max-height: min(82vh, 920px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    /* Match .card horizontal padding (22px) so fields line up with the title row */
+    padding: 14px 22px 18px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+    box-sizing: border-box;
 }
 
 /* ============================================================
@@ -1584,19 +1736,29 @@ td.fmt-example {
 
 /* Tooltips use body + fixed; clip only horizontal overflow from wide in-flow content. */
 #dl-track-status-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
     overflow-x: hidden;
-    overflow-y: visible;
-    margin-bottom: 18px;
+    overflow-y: hidden;
+    /* Main column padding already clears the window edge */
+    margin-bottom: 0;
 }
 
-#dl-log-container {
-    margin-top: 12px;
+#dl-track-status-container:not(.collapsed) {
+    flex: 1 1 0;
+    min-height: 120px;
+}
+
+#dl-track-status-container.collapsed {
+    flex: 0 0 auto;
 }
 
 .log-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-shrink: 0;
     padding: 10px 14px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
@@ -1652,44 +1814,32 @@ td.fmt-example {
     border-bottom: 0;
 }
 
-.log-body .log-line {
-    display: block;
-}
-
-.log-body .log-line.log-ok {
-    color: #4dff91;
-}
-
-.log-body .log-line.log-error {
-    color: #ff6b6b;
-}
-
-.log-body .log-line.log-warn {
-    color: #f7c26e;
-}
-
-.log-body .log-line.log-info {
-    color: var(--accent);
-}
-
 .track-status-card {
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
+    padding: 5px 8px;
+    margin-bottom: 6px;
     min-width: 0;
     box-sizing: border-box;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 52px;
+}
+
+.track-status-card.lyric-search-anchor {
+    background: rgba(110, 231, 247, 0.09);
+    border-color: rgba(110, 231, 247, 0.38);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 247, 0.14);
 }
 
 .track-status-art {
     flex-shrink: 0;
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: var(--radius-sm);
     overflow: hidden;
     background: var(--card);
@@ -1708,11 +1858,31 @@ td.fmt-example {
 }
 
 .track-status-list {
-    padding: 12px;
-    max-height: 280px;
+    /* basis 0 so the list absorbs leftover column height and scrolls inside */
+    flex: 1 1 0;
+    min-height: 0;
+    padding-left: 12px;
+    padding-right: 12px;
+    padding-top: 8px;
+    padding-bottom: 10px;
     overflow-x: hidden;
     overflow-y: auto;
     min-width: 0;
+}
+
+.track-status-virt-inner {
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.track-status-card.track-status-card--virt {
+    position: absolute;
+    left: 0;
+    right: 0;
+    width: auto;
+    margin-bottom: 0;
+    box-sizing: border-box;
 }
 
 .track-status-main {
@@ -1720,22 +1890,36 @@ td.fmt-example {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
 }
 
 .track-status-title {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+.track-status-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
 .track-status-sub {
-    font-size: 10px;
+    font-size: 9px;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+}
+
+.track-content-rating {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
 }
 
 .track-status-tags {
@@ -1745,13 +1929,14 @@ td.fmt-example {
     align-items: center;
     justify-content: flex-end;
     align-self: center;
-    gap: 5px;
+    gap: 4px;
     flex-shrink: 0;
     min-width: 0;
 }
 
 .track-status-tags .track-status-chip,
-.track-status-tags .confidence-chip-wrap {
+.track-status-tags .confidence-chip-wrap,
+.track-status-tags .track-dl-btn {
     flex-shrink: 0;
     white-space: nowrap;
 }
@@ -1760,15 +1945,124 @@ td.fmt-example {
     position: relative;
     display: inline-flex;
     align-items: center;
-    order: 1;
-}
-
-.track-status-chip.lyrics-chip {
     order: 2;
 }
 
-.track-status-chip.download-chip {
+.track-status-chip.lyrics-chip {
+    order: 1;
+}
+
+.track-dl-btn.download-chip {
     order: 3;
+}
+
+/* Per-track download control: square icon + fill from byte progress (see track_download_progress SSE) */
+.track-dl-btn {
+    position: relative;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    border: 1px solid rgba(110, 231, 247, 0.45);
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--accent);
+    cursor: default;
+    overflow: hidden;
+    vertical-align: middle;
+    flex-shrink: 0;
+    transition: border-color 0.15s ease, background 0.2s ease;
+}
+
+.track-dl-btn:disabled {
+    opacity: 1;
+}
+
+.track-dl-btn-fill {
+    position: absolute;
+    inset: 0;
+    transform-origin: bottom center;
+    transform: scaleY(0);
+    background: rgba(110, 231, 247, 0.35);
+    pointer-events: none;
+    transition: transform 0.15s ease-out;
+    z-index: 0;
+}
+
+.track-dl-btn--active .track-dl-btn-fill {
+    background: rgba(110, 231, 247, 0.45);
+}
+
+.track-dl-btn--done {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #0a0a0a;
+}
+
+.track-dl-btn--reveal {
+    cursor: pointer;
+}
+
+.track-dl-btn--done .track-dl-btn-fill {
+    background: var(--accent);
+    transform: scaleY(1);
+}
+
+.track-dl-btn--failed {
+    border-color: rgba(255, 77, 77, 0.55);
+    background: rgba(255, 77, 77, 0.12);
+    color: var(--danger);
+}
+
+.track-dl-btn-ico {
+    position: relative;
+    z-index: 1;
+    display: block;
+    flex-shrink: 0;
+}
+
+.track-dl-btn-ico-stack {
+    position: relative;
+    z-index: 1;
+    width: 11px;
+    height: 11px;
+    flex-shrink: 0;
+    display: block;
+}
+
+.track-dl-btn-ico-layer {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    transition: opacity 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.track-dl-btn--reveal .track-dl-btn-ico--folder {
+    opacity: 0;
+}
+
+.track-dl-btn--reveal:hover .track-dl-btn-ico--dl {
+    opacity: 0;
+}
+
+.track-dl-btn--reveal:hover .track-dl-btn-ico--folder {
+    opacity: 1;
+}
+
+.track-dl-btn--reveal:focus-visible .track-dl-btn-ico--dl {
+    opacity: 0;
+}
+
+.track-dl-btn--reveal:focus-visible .track-dl-btn-ico--folder {
+    opacity: 1;
 }
 
 .track-status-chip.confidence-chip {
@@ -1778,7 +2072,7 @@ td.fmt-example {
     border-width: 1px;
     border-style: solid;
     font-variant-numeric: tabular-nums;
-    min-width: 2.25rem;
+    min-width: 2rem;
 }
 
 .confidence-chip-tooltip {
@@ -1853,11 +2147,23 @@ td.fmt-example {
     outline-offset: 2px;
 }
 
+/* Hover / focus: reads as a control (opens lyric search); !important beats inline % chip colors */
+.confidence-chip-wrap .track-status-chip.confidence-chip {
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.confidence-chip-wrap:hover .track-status-chip.confidence-chip,
+.confidence-chip-wrap:focus-visible .track-status-chip.confidence-chip {
+    background: var(--accent) !important;
+    color: #0a0a0a !important;
+    border-color: var(--accent) !important;
+}
+
 .track-status-chip {
-    font-size: 10px;
+    font-size: 9px;
     line-height: 1;
     border-radius: var(--radius-sm);
-    padding: 3px 6px;
+    padding: 2px 5px;
     border: 1px solid var(--border);
     color: var(--text-secondary);
     background: rgba(255,255,255,0.03);
@@ -1876,28 +2182,35 @@ td.fmt-example {
     background: var(--danger-dim);
 }
 
-a.track-status-chip.purchase-only {
+a.track-dl-btn.purchase-only {
+    width: auto;
+    min-height: 20px;
+    height: auto;
+    padding: 2px 6px;
+    font-size: 9px;
+    font-weight: 700;
     text-decoration: none;
     cursor: pointer;
     color: var(--danger);
     border-color: rgba(255, 77, 77, 0.35);
     background: var(--danger-dim);
+    white-space: nowrap;
 }
 
-a.track-status-chip.purchase-only:hover {
+a.track-dl-btn.purchase-only:hover {
     filter: brightness(1.08);
 }
 
 .track-status-chip.synced {
-    color: var(--success);
-    border-color: rgba(77, 255, 145, 0.35);
-    background: var(--success-dim);
+    color: var(--accent);
+    border-color: rgba(110, 231, 247, 0.35);
+    background: var(--accent-dim);
 }
 
 .track-status-chip.plain {
-    color: #a7d3ff;
-    border-color: rgba(103, 177, 255, 0.35);
-    background: rgba(103, 177, 255, 0.12);
+    color: var(--success);
+    border-color: rgba(77, 255, 145, 0.35);
+    background: rgba(77, 255, 145, 0.12);
 }
 
 .track-status-chip.instrumental {
@@ -2094,6 +2407,13 @@ a.track-status-chip.purchase-only:hover {
     gap: 8px;
 }
 
+/* Row wrapper: hit area stays put (no transform) so hover on bottom edge does not jiggle. */
+.result-item {
+    display: block;
+    min-width: 0;
+    width: 100%;
+}
+
 .result-card {
     display: flex;
     align-items: center;
@@ -2113,10 +2433,32 @@ a.track-status-chip.purchase-only:hover {
     overflow: hidden;
 }
 
-.result-card:hover {
+.result-item:hover .result-card {
     background: var(--card-hover);
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.result-item--queued .result-card {
+    border-color: rgba(110, 231, 247, 0.5);
+    background: rgba(110, 231, 247, 0.07);
+    box-shadow:
+        inset 0 0 0 1px rgba(110, 231, 247, 0.12),
+        0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.result-item--queued:hover .result-card {
+    border-color: rgba(110, 231, 247, 0.65);
+    background: rgba(110, 231, 247, 0.1);
+}
+
+.result-item--queued .result-add-btn {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+}
+
+.result-item--queued .result-card-info {
+    padding-right: 40px;
 }
 
 .result-add-btn {
@@ -2143,7 +2485,7 @@ a.track-status-chip.purchase-only:hover {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.result-card:hover .result-add-btn {
+.result-item:hover .result-add-btn {
     opacity: 1;
     transform: translateY(-50%) translateX(0);
 }
@@ -2157,7 +2499,8 @@ a.track-status-chip.purchase-only:hover {
     transform: translateY(-50%) scale(0.95) !important;
 }
 
-.result-add-btn.added {
+.result-add-btn.added,
+.result-add-btn--queued {
     background: var(--success);
     color: #000;
 }
@@ -2198,6 +2541,15 @@ a.track-status-chip.purchase-only:hover {
     gap: 4px;
     min-width: 0;
     justify-content: center;
+    padding-right: 0;
+    box-sizing: border-box;
+    transition: padding-right var(--transition, 0.2s ease);
+}
+
+/* .result-add-btn is 30px wide, position:absolute; reserve space on hover so title ellipsis clears it */
+.result-item:hover .result-card-info,
+.result-item:focus-within .result-card-info {
+    padding-right: 40px;
 }
 
 .result-card-meta-row {
@@ -2207,19 +2559,82 @@ a.track-status-chip.purchase-only:hover {
     flex-wrap: wrap;
 }
 
+/* Search result copy: match download queue (title / artist / quality row) */
+.result-card-title {
+    font-weight: 600;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+    min-width: 0;
+}
+
+.result-card-artist-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    align-self: flex-start;
+    width: fit-content;
+    max-width: 100%;
+}
+
+.result-card-artist {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 0 1 auto;
+    max-width: 100%;
+}
+
+.result-card-meta-row.result-card-bottom-row {
+    flex-wrap: nowrap;
+}
+
+/* Shared “E” explicit mark (icon only, no pill): queue, search, download history, lyric search */
+.explicit-tag-badge,
+.queue-card-explicit,
+.result-badge.badge-explicit,
+.track-explicit-badge,
+.lyric-search-rating.explicit-tag-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    line-height: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    border-radius: 0;
+    color: #fecdd3;
+}
+
+.explicit-tag-badge .explicit-badge-icon,
+.queue-card-explicit .queue-explicit-icon,
+.result-badge.badge-explicit .quality-icon,
+.lyric-search-rating.explicit-tag-badge .explicit-badge-icon {
+    display: block;
+    width: 15px;
+    height: 15px;
+}
+
+.track-explicit-badge .explicit-badge-icon {
+    width: 14px;
+    height: 14px;
+}
+
 .result-meta-text {
     font-size: 11px;
     color: var(--text-muted);
     font-weight: 500;
-}
-
-.result-card-text {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text);
-    white-space: nowrap;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .result-badge {
@@ -2233,6 +2648,14 @@ a.track-status-chip.purchase-only:hover {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+.result-badge.badge-explicit {
+    padding: 0;
+    letter-spacing: normal;
+    text-transform: none;
+    background: none;
+    border: none;
 }
 
 .quality-icon {
@@ -2267,19 +2690,6 @@ a.track-status-chip.purchase-only:hover {
     background: rgba(255, 255, 255, 0.05);
     color: var(--text-muted);
     border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.badge-explicit {
-    background: transparent;
-    color: #888; /* Muted grey for the E icon */
-    padding: 0;
-    border: none;
-    line-height: 0;
-}
-
-.badge-explicit .quality-icon {
-    width: 18px;
-    height: 18px;
 }
 
 .badge-neutral {
@@ -2444,7 +2854,7 @@ a.track-status-chip.purchase-only:hover {
 /* ── Download queue (card view) ──────────────────── */
 .dl-queue {
     min-height: 100px;
-    max-height: 250px;
+    max-height: 215px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -2605,27 +3015,34 @@ a.track-status-chip.purchase-only:hover {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
+}
+
+/* Bit depth / sample rate | colors set inline (green → teal by bitrate) */
+.queue-card-quality {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(110, 231, 247, 0.5);
+    background: rgba(110, 231, 247, 0.14);
+    color: var(--accent);
+    white-space: nowrap;
+    line-height: 1.2;
+    border-style: solid;
 }
 
 .queue-card-bottom-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: nowrap;
     min-width: 0;
-}
-
-.queue-card-explicit {
-    display: flex;
-    align-items: center;
-    color: var(--text-muted);
-    flex-shrink: 0;
-    line-height: 0;
-}
-
-.queue-explicit-icon {
-    width: 14px;
-    height: 14px;
 }
 
 .queue-card-badge {
@@ -2703,7 +3120,7 @@ a.track-status-chip.purchase-only:hover {
 }
 
 /* ============================================================
-   DOWNLOAD QUEUE — per-card state classes
+   DOWNLOAD QUEUE | per-card state classes
    ============================================================ */
 
 /* All cards dimmed while waiting their turn */
@@ -2712,7 +3129,7 @@ a.track-status-chip.purchase-only:hover {
     transition: opacity 0.3s ease;
 }
 
-/* Card currently being downloaded — subtle cyan pulse */
+/* Card currently being downloaded | subtle cyan pulse */
 .queue-card.dl-active {
     opacity: 1;
     border-color: var(--accent);
@@ -2732,7 +3149,7 @@ a.track-status-chip.purchase-only:hover {
     }
 }
 
-/* Completed card — green flash before auto-removal */
+/* Completed card | green flash before auto-removal */
 .queue-card.dl-done {
     opacity: 1;
     border-color: var(--success);
@@ -2755,7 +3172,7 @@ a.track-status-chip.purchase-only:hover {
     }
 }
 
-/* Failed card — red tint, stays in list */
+/* Failed card | red tint, stays in list */
 .queue-card.dl-error {
     opacity: 1;
     border-color: var(--danger);
@@ -2822,7 +3239,7 @@ a.track-status-chip.purchase-only:hover {
 }
 
 /* ============================================================
-   DOWNLOAD BUTTON — track count badge
+   DOWNLOAD BUTTON | track count badge
    ============================================================ */
 .dl-btn-badge {
     display: inline-flex;
@@ -2854,7 +3271,14 @@ a.track-status-chip.purchase-only:hover {
     z-index: 110;
 }
 
-.settings-gear-btn {
+.sidebar-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Clover + settings: shared chrome */
+.sidebar-icon-btn {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -2865,19 +3289,27 @@ a.track-status-chip.purchase-only:hover {
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
     transition:
         color var(--transition),
         background var(--transition),
         border-color var(--transition);
 }
 
-.settings-gear-btn:hover {
+.sidebar-icon-btn:hover {
     color: var(--text);
     background: var(--card);
     border-color: #3a3a3a;
 }
 
-.settings-gear-btn.active {
+.sidebar-icon-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.settings-gear-btn.active,
+.lucky-toggle-btn[aria-expanded="true"] {
     color: var(--accent);
     border-color: var(--accent);
     background: var(--accent-dim);
@@ -3055,4 +3487,634 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
     100% {
         content: " ( -7 filtered )";
     }
+}
+
+/* ============================================================
+   LYRIC SEARCH (LRCLIB) | popover + docked preview below
+   ============================================================ */
+.lyric-search-popover {
+    position: fixed;
+    z-index: 10025;
+    width: min(720px, calc(100vw - 24px));
+    /* Never taller than the window; inner areas scroll instead of this shell */
+    max-height: min(720px, calc(100vh - 20px));
+    max-height: min(720px, calc(100dvh - 20px));
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.65);
+    animation: popoverFadeIn 0.15s ease-out;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    overscroll-behavior: contain;
+}
+
+.lyric-search-popover.hidden {
+    display: none !important;
+}
+
+.lyric-search-popover-inner {
+    padding: 14px 16px 16px;
+    overflow: hidden;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-height: 0;
+}
+
+.lyric-search-body {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 14px;
+    min-height: 0;
+    flex: 1;
+}
+
+.lyric-search-col--form {
+    flex: 0 0 228px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.lyric-search-col--results {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.lyric-search-preview-panel {
+    /* Content-sized (not flex-grow): flex 1 1 0 collapsed to zero height with auto-sized popover */
+    flex: 0 1 auto;
+    min-height: 0;
+    padding: 0 16px 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.lyric-search-preview-panel.hidden {
+    display: none !important;
+}
+
+.lyric-search-preview-heading {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.3;
+    flex-shrink: 0;
+}
+
+.lyric-search-preview-panel .lyric-search-head.lyric-search-preview-head-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    margin-top: 0;
+    padding-top: 12px;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
+}
+
+.lyric-search-preview-player {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+.lyric-search-preview-play {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition:
+        background var(--transition),
+        border-color var(--transition),
+        color var(--transition);
+}
+
+.lyric-search-preview-play:hover:not(:disabled) {
+    background: var(--card-hover);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.lyric-search-preview-play:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.lyric-search-preview-time {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    min-width: 2.75em;
+    text-align: center;
+}
+
+.lyric-search-preview-seek {
+    flex: 1 1 auto;
+    min-width: 48px;
+    height: 4px;
+    min-height: 18px;
+    padding: 7px 0;
+    box-sizing: content-box;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.lyric-search-preview-seek:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.lyric-search-preview-panel .lyric-search-preview-head-row .lyric-search-close {
+    flex-shrink: 0;
+}
+
+.lyric-search-preview-body--synced .lyric-preview-line {
+    cursor: pointer;
+    border-radius: 4px;
+    margin: 0 -6px;
+    padding: 2px 6px;
+}
+
+.lyric-search-preview-body--synced .lyric-preview-line:hover {
+    background: var(--card-hover);
+}
+
+.lyric-preview-line {
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+    padding: 2px 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.lyric-preview-line.is-active {
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.lyric-preview-ts {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.72;
+    min-width: 5.5em;
+}
+
+.lyric-preview-line.is-active .lyric-preview-ts {
+    opacity: 1;
+    color: var(--accent);
+}
+
+.lyric-preview-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-width: 0;
+}
+
+.lyric-search-preview-body.lyric-search-preview-body--synced {
+    white-space: normal;
+}
+
+.lyric-search-preview-panel .lyric-search-preview {
+    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 1;
+    min-height: 0;
+}
+
+.lyric-search-preview-panel .lyric-search-preview-flag {
+    flex-shrink: 0;
+}
+
+.lyric-search-preview-panel .lyric-search-preview-body {
+    flex-shrink: 1;
+    margin: 0;
+    padding: 10px 12px;
+    box-sizing: border-box;
+    min-height: 7.5rem;
+    /* Visible preview (~200px target) but never taller than remaining viewport */
+    max-height: min(220px, max(7.5rem, calc(100vh - 360px)));
+    max-height: min(220px, max(7.5rem, calc(100dvh - 360px)));
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.lyric-search-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+}
+
+.lyric-search-head h2 {
+    margin-bottom: 0;
+}
+
+.lyric-search-close {
+    font-size: 22px;
+    line-height: 1;
+    padding: 2px 10px;
+    min-width: auto;
+}
+
+.lyric-search-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+#lyric-search-title.lyric-search-input-invalid,
+#lyric-search-artist.lyric-search-input-invalid {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 1px var(--danger);
+}
+
+.lyric-search-col--form .lyric-search-status {
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+
+.lyric-search-status {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+/* Fixed height so layout does not jump when results load */
+.lyric-search-results {
+    box-sizing: border-box;
+    height: 260px;
+    min-height: 260px;
+    max-height: 260px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}
+
+.lyric-search-empty {
+    padding: 16px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.lyric-search-loading {
+    box-sizing: border-box;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.lyric-search-skeleton-row {
+    box-sizing: border-box;
+    height: 86px;
+    min-height: 86px;
+    max-height: 86px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 4px;
+    min-width: 0;
+}
+
+.lyric-search-skeleton-row:last-child {
+    border-bottom: none;
+}
+
+.lyric-search-skeleton-line {
+    border-radius: 4px;
+    min-height: 10px;
+    flex-shrink: 0;
+    background: linear-gradient(90deg,
+            var(--border) 25%,
+            var(--card-hover) 50%,
+            var(--border) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s infinite;
+}
+
+.lyric-search-skeleton-line--a {
+    width: 72%;
+}
+
+.lyric-search-skeleton-line--b {
+    width: 58%;
+}
+
+.lyric-search-skeleton-line--c {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 18px;
+    background: none;
+    animation: none;
+}
+
+.lyric-search-skeleton-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 10px;
+    border-radius: 4px;
+    background: linear-gradient(90deg,
+            var(--border) 25%,
+            var(--card-hover) 50%,
+            var(--border) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s infinite;
+}
+
+.lyric-search-skeleton-pill {
+    flex-shrink: 0;
+    width: 56px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(90deg,
+            var(--border) 25%,
+            var(--card-hover) 50%,
+            var(--border) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.2s infinite;
+}
+
+.lyric-search-row {
+    box-sizing: border-box;
+    height: 86px;
+    min-height: 86px;
+    max-height: 86px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 2px;
+    min-width: 0;
+}
+
+.lyric-search-row:last-child {
+    border-bottom: none;
+}
+
+.lyric-search-row--attached {
+    background: var(--accent-dim);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 247, 0.35);
+}
+
+.lyric-search-row-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex-shrink: 0;
+    line-height: 1.2;
+}
+
+.lyric-search-row-line--title {
+    flex-wrap: nowrap;
+}
+
+.lyric-search-row-line--album .lyric-search-album {
+    flex: 1 1 auto;
+    width: 100%;
+}
+
+.lyric-search-row-line--footer {
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.lyric-search-track {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 13px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lyric-search-album,
+.lyric-search-artist {
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lyric-search-artist {
+    flex: 1 1 auto;
+    padding-right: 6px;
+}
+
+.lyric-search-attached-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    min-width: 64px;
+    height: 27px;
+    min-height: 27px;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+    border: 1px solid rgba(110, 231, 247, 0.45);
+    color: var(--accent);
+    flex-shrink: 0;
+    line-height: 0;
+}
+
+.lyric-search-attached-slot .lyric-search-attached-ico {
+    display: block;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+}
+
+.lyric-search-kind {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+    color: var(--accent);
+    border: 1px solid rgba(110, 231, 247, 0.35);
+    flex-shrink: 0;
+}
+
+.lyric-search-kind--plain {
+    background: rgba(77, 255, 145, 0.15);
+    color: var(--success);
+    border: 1px solid rgba(77, 255, 145, 0.35);
+}
+
+.lyric-search-kind--instrumental {
+    background: rgba(179, 128, 255, 0.13);
+    color: #dfb3ff;
+    border: 1px solid rgba(179, 128, 255, 0.35);
+}
+
+.lyric-search-kind.lyric-search-kind--pct-swap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    min-width: 6.75rem;
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+}
+
+.lyric-search-delta {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--danger);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.lyric-search-rating {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.lyric-search-rating--explicit {
+    line-height: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    border-radius: 0;
+    flex-shrink: 0;
+}
+
+.lyric-search-rating--clean {
+    background: rgba(160, 160, 170, 0.12);
+    color: var(--text-secondary);
+}
+
+.lyric-search-preview-flag {
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+}
+
+.lyric-search-preview-flag--explicit {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    color: #fecdd3;
+}
+
+.lyric-search-preview-flag--explicit .explicit-badge-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: #fecdd3;
+}
+
+.lyric-search-preview-flag-text {
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.35;
+}
+
+.lyric-search-preview-flag--clean {
+    background: rgba(120, 200, 150, 0.1);
+    color: rgb(160, 220, 175);
+}
+
+.lyric-search-row-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.lyric-search-preview {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    overflow: hidden;
+}
+
+.lyric-search-preview-head {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.lyric-search-preview-body {
+    margin: 0;
+    padding: 10px 12px;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-secondary);
+}
+
+.confidence-chip-wrap,
+.track-status-chip.lyrics-chip {
+    cursor: pointer;
+}
+
+.track-status-chip.lyrics-chip:not(.loading) {
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.track-status-chip.lyrics-chip:not(.loading):hover {
+    background: var(--accent) !important;
+    color: #0a0a0a !important;
+    border-color: var(--accent) !important;
 }

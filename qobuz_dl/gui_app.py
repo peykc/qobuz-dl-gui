@@ -1,5 +1,9 @@
 import sys
 import os
+import platform
+import subprocess
+
+from pathlib import Path
 
 import configparser
 import hashlib
@@ -12,7 +16,9 @@ import time
 import socket
 import webbrowser
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from typing import Optional
+
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 # ---------------------------------------------------------------------------
 # Paths (mirrors cli.py)
@@ -66,23 +72,35 @@ class _QueueHandler(logging.Handler):
         # Strip ANSI colour codes for processing
         clean = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
 
-        # Intercept [TRACK_START] markers — emit a structured SSE event AND
+        # Intercept [TRACK_START] markers | emit a structured SSE event AND
         # replace the raw marker with a human-readable log line.
         if clean.startswith("[TRACK_START] "):
             payload = clean[len("[TRACK_START] ") :]
             if "|" in payload:
-                parts = payload.split("|", 2)
+                parts = payload.split("|")
                 track_no = parts[0].strip()
                 title = parts[1].strip() if len(parts) > 1 else ""
                 cover_url = parts[2].strip() if len(parts) > 2 else ""
-                _emit_event(
-                    {
-                        "type": "track_start",
-                        "track_no": track_no,
-                        "title": title,
-                        "cover_url": cover_url,
-                    }
-                )
+                ev_data = {
+                    "type": "track_start",
+                    "track_no": track_no,
+                    "title": title,
+                    "cover_url": cover_url,
+                }
+                if len(parts) >= 6:
+                    ev_data["lyric_artist"] = parts[3].strip()
+                    ev_data["lyric_album"] = parts[4].strip()
+                    try:
+                        ev_data["duration_sec"] = int(parts[5].strip() or 0)
+                    except ValueError:
+                        ev_data["duration_sec"] = 0
+                    if len(parts) >= 7:
+                        ev_data["track_explicit"] = parts[6].strip() in (
+                            "1",
+                            "true",
+                            "True",
+                        )
+                _emit_event(ev_data)
                 display = f"  \u2193 {track_no}. {title}".strip()
             else:
                 _emit_event({"type": "track_start", "title": payload})
@@ -105,7 +123,18 @@ class _QueueHandler(logging.Handler):
                     parts[2],
                     parts[3],
                 )
-                queue_url = parts[4] if len(parts) >= 5 else ""
+                queue_url = ""
+                audio_path = ""
+                lyric_album = ""
+                if len(parts) >= 7:
+                    queue_url = parts[4]
+                    audio_path = parts[5]
+                    lyric_album = parts[6].strip()
+                elif len(parts) >= 6:
+                    queue_url = parts[4]
+                    audio_path = parts[5]
+                elif len(parts) >= 5:
+                    queue_url = parts[4]
                 # Do not _ctx_mark_error() for purchase_only: it is a per-track outcome
                 # (queue card shows purchase count); URL-level url_error should reflect
                 # album/connection failures (e.g. Not streamable), not purchasable tracks.
@@ -118,12 +147,16 @@ class _QueueHandler(logging.Handler):
                 }
                 if queue_url:
                     ev["source_url"] = queue_url
+                if audio_path:
+                    ev["audio_path"] = audio_path
+                if lyric_album:
+                    ev["lyric_album"] = lyric_album
                 _emit_event(ev)
             return
 
         if clean.startswith("[TRACK_LYRICS] "):
             payload = clean[len("[TRACK_LYRICS] ") :]
-            parts = payload.split("|", 4)
+            parts = payload.split("|")
             if len(parts) >= 4:
                 track_no, title, lyric_type, provider = (
                     parts[0],
@@ -131,17 +164,19 @@ class _QueueHandler(logging.Handler):
                     parts[2],
                     parts[3],
                 )
-                confidence = parts[4] if len(parts) == 5 else ""
-                _emit_event(
-                    {
-                        "type": "track_lyrics",
-                        "track_no": track_no,
-                        "title": title,
-                        "lyric_type": lyric_type,
-                        "provider": provider,
-                        "confidence": confidence,
-                    }
-                )
+                confidence = parts[4] if len(parts) >= 5 else ""
+                audio_path_lyrics = parts[5].strip() if len(parts) >= 6 else ""
+                ev_ly = {
+                    "type": "track_lyrics",
+                    "track_no": track_no,
+                    "title": title,
+                    "lyric_type": lyric_type,
+                    "provider": provider,
+                    "confidence": confidence,
+                }
+                if audio_path_lyrics:
+                    ev_ly["audio_path"] = audio_path_lyrics
+                _emit_event(ev_ly)
             return
 
         with _log_lock:
@@ -314,6 +349,14 @@ def _build_qobuz_from_config(cfg, overrides=None):
         o.get("segmented_fallback"),
         cfg.getboolean("DEFAULT", "segmented_fallback", fallback=True),
     )
+    no_credits = _as_bool(
+        o.get("no_credits"),
+        cfg.getboolean("DEFAULT", "no_credits", fallback=False),
+    )
+    native_lang = _as_bool(
+        o.get("native_lang"),
+        cfg.getboolean("DEFAULT", "native_lang", fallback=False),
+    )
 
     qobuz = QobuzDL(
         directory=directory,
@@ -336,6 +379,8 @@ def _build_qobuz_from_config(cfg, overrides=None):
         max_workers=max_workers,
         delay_seconds=delay_seconds,
         segmented_fallback=segmented_fallback,
+        no_credits=no_credits,
+        native_lang=native_lang,
         no_album_artist_tag=_as_bool(
             o.get("no_album_artist_tag"),
             cfg.getboolean("DEFAULT", "no_album_artist_tag", fallback=False),
@@ -464,6 +509,8 @@ def api_status():
                 "segmented_fallback": cfg["DEFAULT"].get(
                     "segmented_fallback", "true"
                 ),
+                "no_credits": cfg["DEFAULT"].get("no_credits", "false"),
+                "native_lang": cfg["DEFAULT"].get("native_lang", "false"),
                 "folder_format": cfg["DEFAULT"].get(
                     "folder_format",
                     "{artist}/{album}",
@@ -622,6 +669,8 @@ def api_setup():
         cfg["DEFAULT"]["max_workers"] = "1"
         cfg["DEFAULT"]["delay_seconds"] = "0"
         cfg["DEFAULT"]["segmented_fallback"] = "true"
+        cfg["DEFAULT"]["no_credits"] = "false"
+        cfg["DEFAULT"]["native_lang"] = "false"
         for key in (
             "no_album_artist_tag",
             "no_album_title_tag",
@@ -734,10 +783,12 @@ def api_oauth_start():
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             port = s.getsockname()[1]
 
+        # Use 127.0.0.1 (not localhost) so the browser hits the IPv4 listener on Windows
+        # where localhost may resolve to ::1 first.
         oauth_url = (
             f"https://www.qobuz.com/signin/oauth"
             f"?ext_app_id={app_id}"
-            f"&redirect_url=http://localhost:{port}"
+            f"&redirect_url=http://127.0.0.1:{port}"
         )
 
         # Store state for the callback thread to use
@@ -832,6 +883,8 @@ def api_oauth_start():
                     "max_workers",
                     "delay_seconds",
                     "segmented_fallback",
+                    "no_credits",
+                    "native_lang",
                     "no_album_artist_tag",
                     "no_album_title_tag",
                     "no_track_artist_tag",
@@ -873,6 +926,8 @@ def api_oauth_start():
                             "max_workers": "1",
                             "delay_seconds": "0",
                             "segmented_fallback": "true",
+                            "no_credits": "false",
+                            "native_lang": "false",
                             "no_album_artist_tag": "false",
                             "no_album_title_tag": "false",
                             "no_track_artist_tag": "false",
@@ -970,6 +1025,8 @@ def api_token_login():
         cfg["DEFAULT"]["max_workers"] = "1"
         cfg["DEFAULT"]["delay_seconds"] = "0"
         cfg["DEFAULT"]["segmented_fallback"] = "true"
+        cfg["DEFAULT"]["no_credits"] = "false"
+        cfg["DEFAULT"]["native_lang"] = "false"
         for key in (
             "no_album_artist_tag",
             "no_album_title_tag",
@@ -1117,6 +1174,8 @@ def api_resolve():
                 "cover": album.get("image", {}).get("large", ""),
                 "album": album.get("title", ""),
                 "year": (album.get("release_date_original") or "")[:4],
+                "bit_depth": album.get("maximum_bit_depth"),
+                "sample_rate": album.get("maximum_sampling_rate"),
                 "quality": f"{album.get('maximum_bit_depth', '?')}bit / {album.get('maximum_sampling_rate', '?')}kHz",
                 "url": url,
             }
@@ -1286,6 +1345,8 @@ def api_download():
         "max_workers": data.get("max_workers"),
         "delay_seconds": data.get("delay_seconds"),
         "segmented_fallback": data.get("segmented_fallback", True),
+        "no_credits": data.get("no_credits", False),
+        "native_lang": data.get("native_lang", False),
         "no_album_artist_tag": data.get("no_album_artist_tag", False),
         "no_album_title_tag": data.get("no_album_title_tag", False),
         "no_track_artist_tag": data.get("no_track_artist_tag", False),
@@ -1315,6 +1376,7 @@ def api_download():
             tmp = _build_qobuz_from_config(cfg, overrides)
             with _client_lock:
                 tmp.client = qobuz.client
+            tmp.client.set_language_headers(tmp.native_lang)
             print(f"DEBUG: Worker thread starting. cancel_event id={id(_cancel_download)}")
             tmp.cancel_event = _cancel_download
             logging.info(f"Starting download of {len(urls)} URL(s)…")
@@ -1330,8 +1392,8 @@ def api_download():
                     logging.error(f"Error downloading {url}: {e}")
                     _ctx_mark_error()
                 had_error = _ctx_finish_url()
-                # If the user cancelled mid-item, don't mark it done or errored —
-                # leave the card in its current state; dl_complete will clean up.
+                # If the user cancelled mid-item, don't mark it done or errored | leave the
+                # card in its current state; dl_complete will clean up.
                 if _cancel_download.is_set():
                     break
                 if had_error:
@@ -1360,7 +1422,7 @@ def api_cancel():
         print(f"DEBUG: api_cancel hit. setting id={id(_cancel_download)}")
         sys.stdout.flush()
         _cancel_download.set()
-        logging.info("Cancelling — current item will finish then stop…")
+        logging.info("Cancelling | current item will finish then stop…")
         
         def purge():
             with _log_lock:
@@ -1386,6 +1448,317 @@ def api_cancel():
     return jsonify({"ok": True})
 
 
+def _config_download_root_resolved() -> Path:
+    folder = "Qobuz Downloads"
+    if os.path.isfile(CONFIG_FILE):
+        cfg = configparser.ConfigParser()
+        cfg.read(CONFIG_FILE)
+        folder = cfg["DEFAULT"].get("default_folder", folder) or folder
+    folder = (folder or "Qobuz Downloads").strip() or "Qobuz Downloads"
+    return Path(folder).expanduser().resolve()
+
+
+def _lyrics_explicit_tag_enabled_from_config() -> bool:
+    """Mirror download tagging: when ``no_explicit_tag`` is false, allow ITUNESADVISORY updates."""
+    if not os.path.isfile(CONFIG_FILE):
+        return True
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_FILE)
+    return not cfg.getboolean("DEFAULT", "no_explicit_tag", fallback=False)
+
+
+def _audio_path_allowed_for_lyrics_attach(audio_path: str) -> bool:
+    try:
+        p = Path(audio_path).expanduser().resolve()
+    except OSError:
+        return False
+    if not p.is_file():
+        return False
+    root = _config_download_root_resolved()
+    try:
+        p.relative_to(root)
+    except ValueError:
+        return False
+    if p.suffix.lower() not in (
+        ".flac",
+        ".mp3",
+        ".m4a",
+        ".ogg",
+        ".opus",
+        ".wav",
+        ".aiff",
+        ".aif",
+    ):
+        return False
+    return True
+
+
+def _reveal_file_in_os(file_path: Path) -> None:
+    """Open the system file manager and reveal ``file_path`` (Windows / macOS / Linux)."""
+    p = file_path.expanduser().resolve()
+    system = platform.system()
+    if system == "Darwin":
+        subprocess.Popen(["open", "-R", str(p)])
+    elif system == "Windows":
+        subprocess.Popen(["explorer", "/select,", str(p)])
+    else:
+        if shutil.which("nautilus"):
+            subprocess.Popen(["nautilus", "--select", str(p)])
+        elif shutil.which("dolphin"):
+            subprocess.Popen(["dolphin", "--select", str(p)])
+        elif shutil.which("nemo"):
+            subprocess.Popen(["nemo", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p.parent)])
+
+
+@app.route("/api/reveal-in-folder", methods=["POST"])
+def api_reveal_in_folder():
+    """Reveal a downloaded track in the OS file manager (path must be under library root)."""
+    data = request.get_json(silent=True) or {}
+    audio_path = (data.get("audio_path") or data.get("path") or "").strip()
+    if not audio_path:
+        return jsonify({"ok": False, "error": "audio_path required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed path"}), 400
+    try:
+        _reveal_file_in_os(Path(audio_path))
+    except Exception as e:
+        logging.error("reveal-in-folder: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API: download history (SQLite; survives restarts for files still on disk)
+# ---------------------------------------------------------------------------
+@app.route("/api/download-history", methods=["GET"])
+def api_download_history():
+    from qobuz_dl import db as _qdb
+
+    items = _qdb.list_gui_download_history()
+    safe = [
+        it
+        for it in items
+        if _audio_path_allowed_for_lyrics_attach(it.get("audio_path") or "")
+    ]
+    return jsonify({"ok": True, "items": safe})
+
+
+@app.route("/api/download-history/upsert", methods=["POST"])
+def api_download_history_upsert():
+    from qobuz_dl import db as _qdb
+
+    data = request.get_json(silent=True) or {}
+    audio_path = (data.get("audio_path") or "").strip()
+    if not audio_path:
+        return jsonify({"ok": False, "error": "audio_path required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
+    te = data.get("track_explicit", None)
+    if te is None or te == "":
+        track_explicit = None
+    elif isinstance(te, bool):
+        track_explicit = 1 if te else 0
+    elif isinstance(te, (int, float)):
+        track_explicit = 1 if int(te) else 0
+    else:
+        s = str(te).strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            track_explicit = 1
+        elif s in ("0", "false", "no", "off"):
+            track_explicit = 0
+        else:
+            track_explicit = None
+    try:
+        duration_sec = int(data.get("duration_sec") or 0)
+    except (TypeError, ValueError):
+        duration_sec = 0
+    _qdb.upsert_gui_download_history(
+        audio_path,
+        track_no=str(data.get("track_no") or ""),
+        title=str(data.get("title") or ""),
+        cover_url=str(data.get("cover_url") or ""),
+        lyric_artist=str(data.get("lyric_artist") or ""),
+        lyric_album=str(data.get("lyric_album") or ""),
+        duration_sec=duration_sec,
+        track_explicit=track_explicit,
+        download_status=str(data.get("download_status") or "downloaded"),
+        download_detail=str(data.get("download_detail") or ""),
+        lyric_type=str(data.get("lyric_type") or ""),
+        lyric_provider=str(data.get("lyric_provider") or ""),
+        lyric_confidence=str(data.get("lyric_confidence") or ""),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/download-history/lyrics", methods=["POST"])
+def api_download_history_lyrics():
+    from qobuz_dl import db as _qdb
+
+    data = request.get_json(silent=True) or {}
+    audio_path = (data.get("audio_path") or "").strip()
+    if not audio_path:
+        return jsonify({"ok": False, "error": "audio_path required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
+    lyric_type = (data.get("lyric_type") or "").strip()
+    if not lyric_type:
+        return jsonify({"ok": False, "error": "lyric_type required"}), 400
+    _qdb.update_gui_download_history_lyrics(
+        audio_path,
+        lyric_type=lyric_type,
+        lyric_provider=str(data.get("lyric_provider") or ""),
+        lyric_confidence=str(data.get("lyric_confidence") or ""),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/download-history/clear", methods=["POST"])
+def api_download_history_clear():
+    from qobuz_dl import db as _qdb
+
+    _qdb.clear_gui_download_history()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API: lyrics (LRCLIB browse / attach)
+# ---------------------------------------------------------------------------
+@app.route("/api/lyrics/search", methods=["POST"])
+def api_lyrics_search():
+    from qobuz_dl import lyrics as lyrics_mod
+
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    artist = (data.get("artist") or "").strip()
+    album = (data.get("album") or "").strip()
+    try:
+        duration_sec = int(data.get("duration_sec") or 0)
+    except (TypeError, ValueError):
+        duration_sec = 0
+    if not title or not artist:
+        return jsonify({"ok": False, "error": "title and artist are required"}), 400
+    te = data.get("track_explicit", None)
+    track_explicit: Optional[bool]
+    if te is None or te == "":
+        track_explicit = None
+    elif isinstance(te, bool):
+        track_explicit = te
+    else:
+        s = str(te).strip().lower()
+        track_explicit = s in ("1", "true", "yes", "on")
+    filter_mismatched = data.get("filter_mismatched", True)
+    if isinstance(filter_mismatched, str):
+        filter_mismatched = filter_mismatched.lower() in ("1", "true", "yes", "on")
+    else:
+        filter_mismatched = bool(filter_mismatched)
+    try:
+        rows = lyrics_mod.lrclib_search_candidates_for_ui(
+            title,
+            artist,
+            album,
+            duration_sec,
+            timeout_sec=18.0,
+            track_explicit=track_explicit,
+            filter_mismatched=filter_mismatched,
+        )
+    except Exception as e:
+        logging.error("LRCLIB search error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify(
+        {"ok": True, "results": rows, "reference_duration_sec": duration_sec}
+    )
+
+
+@app.route("/api/lyrics/fetch", methods=["GET"])
+def api_lyrics_fetch():
+    from qobuz_dl import lyrics as lyrics_mod
+
+    try:
+        rid = int(request.args.get("id", ""))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid id"}), 400
+    rec = lyrics_mod.lrclib_get_by_id(rid, timeout_sec=18.0)
+    if not rec:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    synced = (rec.get("syncedLyrics") or "").strip()
+    plain = (rec.get("plainLyrics") or "").strip()
+    scan = f"{synced}\n{plain}".strip()
+    lyrics_explicit = (
+        lyrics_mod.lyrics_text_indicates_explicit(scan) if scan else False
+    )
+    return jsonify(
+        {"ok": True, "record": rec, "lyrics_explicit": lyrics_explicit}
+    )
+
+
+@app.route("/api/lyrics/attach", methods=["POST"])
+def api_lyrics_attach():
+    from qobuz_dl import lyrics as lyrics_mod
+
+    data = request.get_json(silent=True) or {}
+    audio_path = (data.get("audio_path") or "").strip()
+    try:
+        lrclib_id = int(data.get("lrclib_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "lrclib_id required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
+    try:
+        out, lyrics_explicit, tag_applied = lyrics_mod.attach_lrclib_id_to_audio(
+            audio_path,
+            lrclib_id,
+            overwrite=True,
+            timeout_sec=18.0,
+            update_explicit_tag=_lyrics_explicit_tag_enabled_from_config(),
+        )
+    except Exception as e:
+        logging.error("Lyrics attach error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    if not out:
+        return jsonify({"ok": False, "error": "no lyrics to write"}), 400
+    return jsonify(
+        {
+            "ok": True,
+            "lrc_path": out,
+            "lyrics_explicit": lyrics_explicit,
+            "explicit_tag_updated": tag_applied,
+        }
+    )
+
+
+@app.route("/api/lyrics/attached-id", methods=["GET"])
+def api_lyrics_attached_id():
+    """LRCLIB id stored beside the track when lyrics were attached or auto-saved."""
+    from qobuz_dl import lyrics as lyrics_mod
+
+    audio_path = (request.args.get("audio_path") or "").strip()
+    if not audio_path:
+        return jsonify({"ok": False, "error": "audio_path required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
+    rid = lyrics_mod.read_lrclib_id_sidecar(audio_path)
+    return jsonify({"ok": True, "attached_lrclib_id": rid})
+
+
+@app.route("/api/lyrics/stream-audio", methods=["GET"])
+def api_lyrics_stream_audio():
+    """Stream a local track for lyric preview (same path rules as attach)."""
+    audio_path = (request.args.get("path") or "").strip()
+    if not audio_path:
+        return jsonify({"ok": False, "error": "path required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed path"}), 403
+    p = Path(audio_path).expanduser().resolve()
+    if not p.is_file():
+        return jsonify({"ok": False, "error": "not found"}), 404
+    try:
+        return send_file(p, conditional=True, download_name=p.name)
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": "not found"}), 404
+
+
 # ---------------------------------------------------------------------------
 # API: search
 # ---------------------------------------------------------------------------
@@ -1397,7 +1770,11 @@ def api_search():
 
     query = request.args.get("q", "").strip()
     item_type = request.args.get("type", "album")
-    limit = int(request.args.get("limit", 10))
+    try:
+        limit = int(request.args.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
 
     if len(query) < 3:
         return jsonify({"ok": False, "error": "Query too short (min 3 chars)"}), 400
@@ -1511,6 +1888,35 @@ def _pick_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+_DEV_GUI_PORT_VITE = 8765
+
+
+def _listen_port() -> int:
+    """Listen port: ``QOBUZ_DL_GUI_PORT``, else unpackaged default 8765 (Vite proxy), else random."""
+    raw = os.environ.get("QOBUZ_DL_GUI_PORT", "").strip()
+    if raw.isdigit():
+        p = int(raw)
+        if 1 <= p <= 65535:
+            return p
+    if getattr(sys, "frozen", False):
+        return _pick_free_port()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", _DEV_GUI_PORT_VITE))
+    except OSError:
+        logging.warning(
+            "Port %s is in use; using a random GUI port. For Vite, free that port or set "
+            "QOBUZ_DL_GUI_PORT to the same value for Python and npm.",
+            _DEV_GUI_PORT_VITE,
+        )
+        return _pick_free_port()
+    logging.info(
+        "GUI server on port %s (unpackaged default; Vite proxies here).",
+        _DEV_GUI_PORT_VITE,
+    )
+    return _DEV_GUI_PORT_VITE
+
+
 def _wait_for_port(host: str, port: int, timeout: float = 20.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -1531,6 +1937,23 @@ def main():
         from qobuz_dl import updater
 
         updater.cleanup_stale_exe_backup()
+    except Exception:
+        pass
+    try:
+        from qobuz_dl import db as _qdb
+
+        _n = _qdb.prune_lrclib_by_audio_orphans()
+        if _n:
+            logging.info(
+                "Removed %d stale LRCLIB link(s) (audio files no longer on disk).",
+                _n,
+            )
+        _h = _qdb.prune_gui_download_history_orphans()
+        if _h:
+            logging.info(
+                "Removed %d stale GUI download history row(s) (audio files no longer on disk).",
+                _h,
+            )
     except Exception:
         pass
     logging.info("Qobuz-DL GUI starting…")
@@ -1563,7 +1986,7 @@ def main():
                 logging.info("Auto-connected from saved email/password config.")
             else:
                 logging.info(
-                    "Config found but no credentials — connect via the GUI."
+                    "Config found but no credentials | connect via the GUI."
                 )
                 qobuz = None
 
@@ -1572,8 +1995,10 @@ def main():
         except Exception as e:
             logging.info("Could not auto-connect: %s", e)
 
-    port = _pick_free_port()
+    port = _listen_port()
     url = f"http://127.0.0.1:{port}/"
+    if os.environ.get("QOBUZ_DL_GUI_PORT", "").strip():
+        logging.info("GUI server port (QOBUZ_DL_GUI_PORT): %s", port)
 
     def run_flask():
         app.run(
@@ -1614,12 +2039,14 @@ def main():
     threading.Thread(target=run_flask, daemon=True).start()
     _wait_for_port("127.0.0.1", port)
 
+    # Open at minimum width; min height is slightly taller than before for usability.
+    _win_min_w, _win_min_h = 880, 650
     webview.create_window(
         "Qobuz-DL",
         url,
-        width=1280,
-        height=800,
-        min_size=(880, 600),
+        width=1030,
+        height=684,
+        min_size=(_win_min_w, _win_min_h),
         text_select=True,
     )
     webview.start(debug=False)

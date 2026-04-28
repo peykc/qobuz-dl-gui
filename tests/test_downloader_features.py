@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from qobuz_dl.downloader import Download
+from qobuz_dl.downloader import Download, _track_dict_for_lrclib
 from qobuz_dl.utils import flac_fix_md5s, make_m3u
 
 
@@ -76,6 +76,22 @@ class DownloaderFeatureTests(unittest.TestCase):
         self.assertEqual(attrs["disc_number"], "02")
         self.assertEqual(attrs["album_url"], "https://play.qobuz.com/album/999")
         self.assertEqual(attrs["barcode"], "123456789012")
+
+    def test_track_dict_for_lrclib_fills_missing_nested_album(self):
+        track = {
+            "title": "Song",
+            "track_number": 1,
+            "performer": {"name": "Artist"},
+            "duration": 200,
+        }
+        release = {
+            "title": "Album Name",
+            "explicit": True,
+            "parental_warning": True,
+        }
+        out = _track_dict_for_lrclib(track, release)
+        self.assertEqual(out["album"]["title"], "Album Name")
+        self.assertTrue(out["album"].get("explicit"))
 
 
 if __name__ == "__main__":
