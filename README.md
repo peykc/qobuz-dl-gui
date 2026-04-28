@@ -2,13 +2,15 @@
 
 **Version 1.1** · Desktop app for lossless and Hi-Res downloads from Qobuz — rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
 
+GIFs below load via GitHub’s `raw.githubusercontent.com` URL pattern so they render reliably on the web UI (`assets/*.gif` are the same files in-repo). If something still shows as a broken image **after you’ve pushed**, check that the GIF is committed on **`master`** (URLs assume that branch). Very large GIFs (often **~8MB+**) can fail GitHub’s image proxy — shorten the recording, reduce resolution/fps, or re-encode with something like `gifsicle`/`ffmpeg` before committing.
+
 ---
 
 ## Main — search and download in the app
 
 Use the sidebar search to find albums and tracks, inspect quality and metadata, add releases to the queue, and run downloads while watching progress and download history inside the app.
 
-![Search, queue, and download in Qobuz-DL-GUI](assets/main.gif)
+![Search, queue, and download in Qobuz-DL-GUI](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/main.gif)
 
 ---
 
@@ -16,7 +18,7 @@ Use the sidebar search to find albums and tracks, inspect quality and metadata, 
 
 Drag album or track URLs from the Qobuz web player (or tabs) into the app to mass-queue links without copy-paste — ideal when you are browsing and want to batch everything into one session.
 
-![Drag URLs from the browser into the app for mass queueing](assets/drag.gif)
+![Drag URLs from the browser into the app for mass queueing](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/drag.gif)
 
 ---
 
@@ -24,7 +26,7 @@ Drag album or track URLs from the Qobuz web player (or tabs) into the app to mas
 
 Open settings to walk quality tiers, folder/track naming templates, duplicate checks, synced lyrics options, and other behavior so your library layout and tags stay consistent release after release.
 
-![Tour of settings and configuration](assets/settings.gif)
+![Tour of settings and configuration](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/settings.gif)
 
 ---
 
@@ -32,7 +34,7 @@ Open settings to walk quality tiers, folder/track naming templates, duplicate ch
 
 After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc` sidecars next to your files, and preview synced playback so you know what hits your folder before you leave the app.
 
-![From download through lyric search and lyric playback](assets/lyric.gif)
+![From download through lyric search and lyric playback](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/lyric.gif)
 
 ---
 
@@ -115,6 +117,3 @@ The original terminal workflow is still shipped for scripting and automation.
 **CLI upstream (PayPal)**  
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VZWSWVGZGJRMU&source=url)
 
----
-
-*Earlier README text (pre–v1.1 GIF layout) is preserved in [README-v1.0.md](README-v1.0.md) for comparison.*
