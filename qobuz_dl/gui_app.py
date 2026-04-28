@@ -59,6 +59,12 @@ app = Flask(__name__, static_folder=GUI_DIR)
 _log_queues: list[queue.Queue] = []
 _log_lock = threading.Lock()
 
+# Last resolved download root (matches QobuzDL.directory for the active UI folder).
+# Lyrics/stream endpoints allow paths under this OR under config default_folder, so
+# features work when directory override differs from saved config (e.g. before autosave).
+_session_download_root_lock = threading.Lock()
+_session_download_root_resolved: Optional[Path] = None
+
 
 class _QueueHandler(logging.Handler):
     """Puts every log record into every registered SSE queue."""
@@ -1138,6 +1144,7 @@ def api_config():
         cfg.remove_option("DEFAULT", "genius_token")
     with open(CONFIG_FILE, "w") as f:
         cfg.write(f)
+    _update_session_download_root(cfg)
     return jsonify({"ok": True})
 
 
@@ -1388,6 +1395,7 @@ def api_download():
         cfg = configparser.ConfigParser()
         cfg.read(CONFIG_FILE)
         try:
+            _update_session_download_root(cfg, overrides)
             tmp = _build_qobuz_from_config(cfg, overrides)
             with _client_lock:
                 tmp.client = qobuz.client
@@ -1473,6 +1481,44 @@ def _config_download_root_resolved() -> Path:
     return Path(folder).expanduser().resolve()
 
 
+def _update_session_download_root(
+    cfg: configparser.ConfigParser,
+    overrides: Optional[dict] = None,
+) -> None:
+    """Remember the resolved download directory (same rule as _build_qobuz_from_config)."""
+    global _session_download_root_resolved
+    o = overrides or {}
+    folder = o.get("directory") or cfg.get(
+        "DEFAULT", "default_folder", fallback="Qobuz Downloads"
+    )
+    folder = (folder or "Qobuz Downloads").strip() or "Qobuz Downloads"
+    try:
+        resolved = Path(folder).expanduser().resolve()
+    except OSError:
+        return
+    with _session_download_root_lock:
+        _session_download_root_resolved = resolved
+
+
+def _download_roots_for_lyrics_allow() -> list[Path]:
+    """Paths under any of these may stream / attach lyrics (sandbox)."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p: Path) -> None:
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            roots.append(p)
+
+    add(_config_download_root_resolved())
+    with _session_download_root_lock:
+        sr = _session_download_root_resolved
+    if sr is not None:
+        add(sr)
+    return roots
+
+
 def _lyrics_explicit_tag_enabled_from_config() -> bool:
     """Mirror download tagging: when ``no_explicit_tag`` is false, allow ITUNESADVISORY updates."""
     if not os.path.isfile(CONFIG_FILE):
@@ -1489,10 +1535,15 @@ def _audio_path_allowed_for_lyrics_attach(audio_path: str) -> bool:
         return False
     if not p.is_file():
         return False
-    root = _config_download_root_resolved()
-    try:
-        p.relative_to(root)
-    except ValueError:
+    allowed = False
+    for root in _download_roots_for_lyrics_allow():
+        try:
+            p.relative_to(root)
+            allowed = True
+            break
+        except ValueError:
+            continue
+    if not allowed:
         return False
     if p.suffix.lower() not in (
         ".flac",
