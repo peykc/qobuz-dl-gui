@@ -1,12 +1,10 @@
-# Qobuz-DL-GUI — modern search, queue, and download
+# Qobuz-DL-GUI: modern search, queue, and download
 
-**Version 1.1** · Desktop app for lossless and Hi-Res downloads from Qobuz — rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
-
-GIFs below load via GitHub’s `raw.githubusercontent.com` URL pattern so they render reliably on the web UI (`assets/*.gif` are the same files in-repo). If something still shows as a broken image **after you’ve pushed**, check that the GIF is committed on **`master`** (URLs assume that branch). Very large GIFs (often **~8MB+**) can fail GitHub’s image proxy — shorten the recording, reduce resolution/fps, or re-encode with something like `gifsicle`/`ffmpeg` before committing.
+**Version 1.1** · Desktop app for lossless and Hi-Res downloads from Qobuz: rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
 
 ---
 
-## Main — search and download in the app
+## Main: search and download in the app
 
 Use the sidebar search to find albums and tracks, inspect quality and metadata, add releases to the queue, and run downloads while watching progress and download history inside the app.
 
@@ -14,15 +12,15 @@ Use the sidebar search to find albums and tracks, inspect quality and metadata, 
 
 ---
 
-## Drag — queue from the browser
+## Drag: queue from the browser
 
-Drag album or track URLs from the Qobuz web player (or tabs) into the app to mass-queue links without copy-paste — ideal when you are browsing and want to batch everything into one session.
+Drag album or track URLs from the Qobuz web player (or tabs) into the app to mass-queue links without copy-paste, ideal when you are browsing and want to batch everything into one session.
 
 ![Drag URLs from the browser into the app for mass queueing](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/drag.gif)
 
 ---
 
-## Settings — configuration tour
+## Settings: configuration tour
 
 Open settings to walk quality tiers, folder/track naming templates, duplicate checks, synced lyrics options, and other behavior so your library layout and tags stay consistent release after release.
 
@@ -30,7 +28,7 @@ Open settings to walk quality tiers, folder/track naming templates, duplicate ch
 
 ---
 
-## Lyrics — download → match → preview
+## Lyrics: download → match → preview
 
 After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc` sidecars next to your files, and preview synced playback so you know what hits your folder before you leave the app.
 
@@ -40,13 +38,13 @@ After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc`
 
 ## Highlights
 
-- **High-density visuals** — Album art, explicit tags, Hi-Res cues, and technical detail from the Qobuz API on results and queue rows.
-- **Unified queue** — Multiple URLs and releases with live status (bit depth, sample rate, tracks, year).
-- **OAuth** — Sign in through the official Qobuz site; no manual token hunting.
-- **Naming templates** — Folder and track patterns with variables such as `{artist}`, `{album}`, `{year}`, `{bit_depth}`.
-- **Library database** — Optional duplicate awareness so you do not re-grab the same rips blindly.
-- **Synced lyrics** — Optional `.lrc` via the public [LRCLIB](https://lrclib.net) API (`/api/get`, `/api/search`).
-- **Lucky queue** — Pick how many releases to add at random from search, then start when you are ready (no separate GIF; use it from the search panel).
+- **High-density visuals:** Album art, explicit tags, Hi-Res cues, and technical detail from the Qobuz API on results and queue rows.
+- **Unified queue:** Multiple URLs and releases with live status (bit depth, sample rate, tracks, year).
+- **OAuth:** Sign in through the official Qobuz site; no manual token hunting.
+- **Naming templates:** Folder and track patterns with variables such as `{artist}`, `{album}`, `{year}`, `{bit_depth}`.
+- **Library database:** Optional duplicate awareness so you do not re-grab the same rips blindly.
+- **Synced lyrics:** Optional `.lrc` via the public [LRCLIB](https://lrclib.net) API (`/api/get`, `/api/search`).
+- **Lucky queue:** Pick how many releases to add at random from search, then start when you are ready (no separate GIF; use it from the search panel).
 
 ---
 
