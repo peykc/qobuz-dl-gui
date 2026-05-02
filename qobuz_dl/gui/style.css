@@ -567,7 +567,7 @@ textarea,
 /* Download tab fills the main column so history can use remaining height. */
 #tab-download.tab-panel.active {
     display: grid;
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
     align-content: start;
     /* basis 0 so the tab always consumes full main column height, not content height */
     flex: 1 1 0;
@@ -575,14 +575,12 @@ textarea,
     width: 100%;
 }
 
-/* Third row (download history) absorbs all leftover vertical space when expanded */
-#tab-download.tab-panel.active:not(:has(#dl-track-status-container.collapsed)) {
-    grid-template-rows: auto auto minmax(0, 1fr);
-}
-
 #tab-download .dl-options-card,
 #tab-download #url-card {
     flex-shrink: 0;
+    /* Allow queue text to shrink so long titles don’t force horizontal scroll */
+    min-width: 0;
+    max-width: 100%;
 }
 
 /* ============================================================
@@ -1589,6 +1587,13 @@ td.fmt-example {
     margin-bottom: 0;
 }
 
+.dl-download-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
 /* ============================================================
    BUTTONS
    ============================================================ */
@@ -1702,6 +1707,11 @@ td.fmt-example {
     background: rgba(255, 77, 77, 0.2);
 }
 
+.btn-danger.btn-sm {
+    font-size: 12px;
+    padding: 5px 12px;
+}
+
 /* ============================================================
    SPINNER
    ============================================================ */
@@ -1739,20 +1749,11 @@ td.fmt-example {
 #dl-track-status-container {
     display: flex;
     flex-direction: column;
+    flex: 1 1 0;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: hidden;
-    /* Main column padding already clears the window edge */
     margin-bottom: 0;
-}
-
-#dl-track-status-container:not(.collapsed) {
-    flex: 1 1 0;
-    min-height: 120px;
-}
-
-#dl-track-status-container.collapsed {
-    flex: 0 0 auto;
 }
 
 .log-header {
@@ -1768,6 +1769,116 @@ td.fmt-example {
     text-transform: uppercase;
     letter-spacing: 0.07em;
     color: var(--text-muted);
+}
+
+.dl-history-header {
+    gap: 12px;
+}
+
+.dl-clear-history-shell {
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* Fixed so it isn't clipped by .log-container overflow; position set in JS */
+.dl-clear-history-confirm {
+    position: fixed;
+    z-index: 10100;
+    /* Inherited from .log-header (popover is still nested there in the DOM). */
+    text-transform: none;
+    padding: 12px 14px;
+    max-width: min(280px, calc(100vw - 24px));
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+    animation: popoverFadeIn 0.15s ease-out;
+}
+
+.dl-clear-history-confirm.hidden {
+    display: none !important;
+}
+
+.dl-clear-history-confirm-heading {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--text);
+    letter-spacing: -0.02em;
+}
+
+.dl-clear-history-confirm-detail {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.dl-clear-history-confirm-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.dl-history-segment {
+    display: inline-flex;
+    align-items: stretch;
+    flex-shrink: 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.dl-history-segment-btn {
+    appearance: none;
+    border: 0;
+    margin: 0;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 8px 16px;
+    background: transparent;
+    transition:
+        background var(--transition),
+        color var(--transition);
+}
+
+.dl-history-segment-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.dl-history-segment-btn--all {
+    color: var(--text);
+}
+
+.dl-history-segment-btn--all:hover:not(.is-active) {
+    background: var(--accent-dim);
+}
+
+.dl-history-segment-btn--all.is-active {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.dl-history-segment-btn--errors {
+    color: var(--danger);
+}
+
+.dl-history-segment-btn--errors:hover:not(.is-active) {
+    background: var(--danger-dim);
+}
+
+.dl-history-segment-btn--errors.is-active {
+    background: var(--danger);
+    color: #ffffff;
 }
 
 .log-header-toggle {
@@ -1926,11 +2037,12 @@ td.fmt-example {
 .track-status-tags {
     display: flex;
     flex-direction: row;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     align-self: center;
     gap: 4px;
+    row-gap: 6px;
     flex-shrink: 0;
     min-width: 0;
 }
@@ -1954,7 +2066,58 @@ td.fmt-example {
 }
 
 .track-dl-btn.download-chip {
+    order: 4;
+}
+
+.track-substitute-search-btn {
     order: 3;
+    cursor: pointer;
+}
+
+.track-substitute-search-btn:hover:not(:disabled) {
+    background: var(--accent);
+    color: #0a0a0a;
+    border-color: var(--accent);
+}
+
+.track-status-tags .track-substitute-search-btn {
+    flex-shrink: 0;
+}
+
+.attach-track-hint {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.attach-track-match-pct {
+    margin-left: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+.attach-track-inline-dur {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.lyric-search-row-line--album .attach-track-quality-badge {
+    flex-shrink: 0;
+}
+
+.lyric-search-row-line--album .attach-track-quality-badge .quality-icon {
+    width: 15px;
+    height: 15px;
+}
+
+.lyric-search-row-line--album .attach-track-quality-badge.badge-mp3 {
+    padding: 1px 6px;
+    font-size: 10px;
+    line-height: 1.2;
 }
 
 /* Per-track download control: square icon + fill from byte progress (see track_download_progress SSE) */
@@ -2183,6 +2346,10 @@ td.fmt-example {
     background: var(--danger-dim);
 }
 
+.track-status-tags .track-dl-btn.download-chip:not(.purchase-only) {
+    flex-shrink: 0;
+}
+
 a.track-dl-btn.purchase-only {
     width: auto;
     min-height: 20px;
@@ -2196,6 +2363,11 @@ a.track-dl-btn.purchase-only {
     border-color: rgba(255, 77, 77, 0.35);
     background: var(--danger-dim);
     white-space: nowrap;
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: min(132px, 36vw);
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 a.track-dl-btn.purchase-only:hover {
@@ -2491,7 +2663,7 @@ a.track-dl-btn.purchase-only:hover {
     transform: translateY(-50%) translateX(0);
 }
 
-.result-add-btn:hover {
+.result-add-btn:hover:not(.result-add-btn--queued) {
     background: #fff;
     transform: translateY(-50%) scale(1.1) !important;
 }
@@ -2504,6 +2676,46 @@ a.track-dl-btn.purchase-only:hover {
 .result-add-btn--queued {
     background: var(--success);
     color: #000;
+}
+
+/* Queued: checkmark swaps to X on hover/focus (click removes from queue) */
+.result-add-btn-ico-stack {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    display: block;
+}
+
+.result-add-btn-ico {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity var(--transition);
+}
+
+.result-add-btn--queued .result-add-btn-ico--remove {
+    opacity: 0;
+}
+
+.result-add-btn--queued:hover .result-add-btn-ico--check,
+.result-add-btn--queued:focus-visible .result-add-btn-ico--check {
+    opacity: 0;
+}
+
+.result-add-btn--queued:hover .result-add-btn-ico--remove,
+.result-add-btn--queued:focus-visible .result-add-btn-ico--remove {
+    opacity: 1;
+}
+
+.result-add-btn--queued:hover,
+.result-add-btn--queued:focus-visible {
+    background: var(--danger-dim);
+    color: var(--danger);
 }
 
 .result-card-art {
@@ -2856,7 +3068,9 @@ a.track-dl-btn.purchase-only:hover {
 .dl-queue {
     min-height: 100px;
     max-height: 215px;
+    overflow-x: hidden;
     overflow-y: auto;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -2892,22 +3106,55 @@ a.track-dl-btn.purchase-only:hover {
     background: var(--accent-glow);
 }
 
+/* Hard clamp + scroll inside the dashed box (#tab-download raises specificity vs stray overrides) */
+#tab-download #dl-queue {
+    max-height: 215px;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+/* Rows keep natural height — avoid flex-default shrink compressing cards in a max-height column */
+.dl-queue > .queue-card {
+    flex-shrink: 0;
+}
+
+/* Empty queue: same outer height as one row (dl-queue border + padding + typical full card) */
+.dl-queue:not(:has(.queue-card)) {
+    /* 2px + 2px dashed border, 10px + 10px padding (match populated .dl-queue), ~80px card block */
+    min-height: calc(4px + 20px + 80px);
+    padding: 10px;
+}
+
 .dl-queue-empty {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 18px;
+    gap: 4px;
+    padding: 10px 14px;
     color: var(--text-muted);
     font-size: 13px;
+    line-height: 1.35;
     user-select: none;
 }
 
-/* plain-text textarea (hidden by default) */
+.dl-queue-empty svg {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+}
+
+/* plain-text textarea — match card-mode queue strip height (~104px outer on #dl-queue) */
 .dl-urls-text {
-    min-height: 100px;
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    min-height: 104px;
+    height: 104px;
     resize: vertical;
+    max-height: min(420px, 55vh);
+    overflow-y: auto;
+    line-height: 1.4;
 }
 
 .dl-urls-text.hidden {
@@ -2928,6 +3175,10 @@ a.track-dl-btn.purchase-only:hover {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    box-sizing: border-box;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -2970,9 +3221,12 @@ a.track-dl-btn.purchase-only:hover {
 .queue-card-info {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 2px;
+    /* Keep text clear of the corner remove control */
+    padding-right: 28px;
 }
 
 .queue-card-title {
@@ -2981,6 +3235,8 @@ a.track-dl-btn.purchase-only:hover {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
+    max-width: 100%;
     color: var(--text);
 }
 
@@ -2989,9 +3245,7 @@ a.track-dl-btn.purchase-only:hover {
     align-items: center;
     gap: 8px;
     min-width: 0;
-    /* Sit next to the artist text, not stretched across the card */
-    align-self: flex-start;
-    width: fit-content;
+    width: 100%;
     max-width: 100%;
 }
 
@@ -3002,7 +3256,7 @@ a.track-dl-btn.purchase-only:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
-    flex: 0 1 auto;
+    flex: 1 1 0;
     max-width: 100%;
 }
 
@@ -3017,6 +3271,8 @@ a.track-dl-btn.purchase-only:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
+    flex: 1 1 0;
+    max-width: 100%;
 }
 
 /* Bit depth / sample rate | colors set inline (green → teal by bitrate) */
@@ -3044,6 +3300,13 @@ a.track-dl-btn.purchase-only:hover {
     gap: 8px;
     flex-wrap: nowrap;
     min-width: 0;
+    width: 100%;
+    overflow: hidden;
+}
+
+/* Reserve the same vertical space as a typical quality chip + meta row (avoids height jump on resolve) */
+.queue-card.loading .queue-card-bottom-row--loading {
+    min-height: calc(11px * 1.2 + 6px + 2px);
 }
 
 .queue-card-badge {
@@ -3240,24 +3503,45 @@ a.track-dl-btn.purchase-only:hover {
 }
 
 /* ============================================================
-   DOWNLOAD BUTTON | track count badge
+   DOWNLOAD BUTTON | split layout + track count strip
    ============================================================ */
-.dl-btn-badge {
+.btn-primary.dl-btn-split {
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+.btn-primary.dl-btn-split .dl-btn-body {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 18px;
+}
+
+.btn-primary.dl-btn-split .dl-btn-badge.hidden {
+    display: none;
+}
+
+/* Adjoining strip: vertical rule only — no capsule behind the count */
+.btn-primary.dl-btn-split .dl-btn-badge:not(.hidden) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.2);
-    color: #0d0d0d;
-    font-size: 11px;
+    align-self: stretch;
+    margin: 0;
+    padding: 0 12px;
+    min-width: 2.25em;
+    border-radius: 0;
+    border: none;
+    border-left: 1px solid rgba(13, 13, 13, 0.22);
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
     font-weight: 700;
-    min-width: 20px;
-    height: 18px;
-    padding: 0 6px;
-    border-radius: 999px;
-    margin-left: 4px;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
-    letter-spacing: 0;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--transition);
 }
 
 .dl-btn-badge.hidden {

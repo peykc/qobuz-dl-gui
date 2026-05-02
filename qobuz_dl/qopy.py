@@ -50,7 +50,7 @@ class Client:
                 "app_id": self.id,
             }
         elif epoint == "track/get":
-            params = {"track_id": kwargs["id"]}
+            params = {"track_id": kwargs["id"], "app_id": self.id}
         elif epoint == "album/get":
             params = {"album_id": kwargs["id"]}
         elif epoint == "playlist/get":

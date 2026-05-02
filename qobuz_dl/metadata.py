@@ -107,17 +107,18 @@ def _embed_flac_img(root_dir, audio: FLAC):
     )
     if os.path.isfile(emb_image):
         cover_image = emb_image
-    else:
+    elif os.path.isfile(multi_emb_image):
         cover_image = multi_emb_image
+    else:
+        return
 
     try:
-        # rest of the metadata still gets embedded
-        # when the image size is too big
         if os.path.getsize(cover_image) > FLAC_MAX_BLOCKSIZE:
-            raise Exception(
+            logger.warning(
                 "downloaded cover size too large to embed. "
                 "turn off `og_cover` to avoid error"
             )
+            return
 
         image = Picture()
         image.type = 3
@@ -127,7 +128,7 @@ def _embed_flac_img(root_dir, audio: FLAC):
             image.data = img.read()
         audio.add_picture(image)
     except Exception as e:
-        logger.error(f"Error embedding image: {e}", exc_info=True)
+        logger.debug("Skipping FLAC cover embed: %s", e)
 
 
 def _embed_id3_img(root_dir, audio: id3.ID3):
@@ -137,11 +138,16 @@ def _embed_id3_img(root_dir, audio: id3.ID3):
     )
     if os.path.isfile(emb_image):
         cover_image = emb_image
-    else:
+    elif os.path.isfile(multi_emb_image):
         cover_image = multi_emb_image
+    else:
+        return
 
-    with open(cover_image, "rb") as cover:
-        audio.add(id3.APIC(3, "image/jpeg", 3, "", cover.read()))
+    try:
+        with open(cover_image, "rb") as cover:
+            audio.add(id3.APIC(3, "image/jpeg", 3, "", cover.read()))
+    except OSError as e:
+        logger.debug("Skipping MP3 cover embed: %s", e)
 
 
 # Use KeyError catching instead of dict.get to avoid empty tags
@@ -154,6 +160,9 @@ def tag_flac(
     istrack=True,
     em_image=False,
     tag_options=None,
+    *,
+    tag_display_title=None,
+    tag_display_album=None,
 ):
     """
     Tag a FLAC file
@@ -174,7 +183,8 @@ def tag_flac(
     release_date = qobuz_album.get("release_date_original", "")
 
     if not options["no_track_title_tag"]:
-        audio["TITLE"] = _get_title(qobuz_item)
+        tit = (tag_display_title or "").strip()
+        audio["TITLE"] = tit if tit else _get_title(qobuz_item)
     if not options["no_track_number_tag"]:
         audio["TRACKNUMBER"] = str(qobuz_item.get("track_number", 1))
     if not options["no_track_total_tag"]:
@@ -199,7 +209,8 @@ def tag_flac(
         if album_artist:
             audio["ALBUMARTIST"] = album_artist
     if not options["no_album_title_tag"]:
-        audio["ALBUM"] = qobuz_album.get("title", "")
+        alb_t = (tag_display_album or "").strip()
+        audio["ALBUM"] = alb_t if alb_t else qobuz_album.get("title", "")
     if not options["no_release_date_tag"] and release_date:
         audio["DATE"] = release_date
     if not options["no_copyright_tag"]:
@@ -251,6 +262,9 @@ def tag_mp3(
     istrack=True,
     em_image=False,
     tag_options=None,
+    *,
+    tag_display_title=None,
+    tag_display_album=None,
 ):
     """
     Tag an mp3 file
@@ -275,9 +289,11 @@ def tag_mp3(
 
     tags = dict()
     if not options["no_track_title_tag"]:
-        tags["title"] = _get_title(qobuz_item)
+        tit = (tag_display_title or "").strip()
+        tags["title"] = tit if tit else _get_title(qobuz_item)
     if not options["no_album_title_tag"]:
-        tags["album"] = qobuz_album.get("title", "")
+        alb_t = (tag_display_album or "").strip()
+        tags["album"] = alb_t if alb_t else qobuz_album.get("title", "")
     if not options["no_track_artist_tag"]:
         artist_ = qobuz_item.get("performer", {}).get("name")
         tags["artist"] = artist_ or qobuz_album.get("artist", {}).get("name", "")

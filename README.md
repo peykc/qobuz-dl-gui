@@ -1,6 +1,6 @@
 # Qobuz-DL-GUI: modern search, queue, and download
 
-**Version 1.1.3** · Desktop app for lossless and Hi-Res downloads from Qobuz: rich metadata, OAuth login, synced lyrics, and a dense UI built for real libraries.
+**Version 1.2.0** · Desktop app for lossless and Hi-Res downloads from Qobuz: rich metadata, OAuth login, synced lyrics, queue track replacement, and a dense UI built for real libraries.
 
 ---
 
@@ -36,6 +36,14 @@ After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc`
 
 ---
 
+## Replace: swap a queued track from search
+
+When a release in your queue has a purchase-only or wrong edition slot, pick a substitute track from sidebar search and attach it so the download uses streamable audio while keeping album layout and tags consistent.
+
+![Replace a queued track using search](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/replace.gif)
+
+---
+
 ## Highlights
 
 - **High-density visuals:** Album art, explicit tags, Hi-Res cues, and technical detail from the Qobuz API on results and queue rows.
@@ -44,6 +52,7 @@ After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc`
 - **Naming templates:** Folder and track patterns with variables such as `{artist}`, `{album}`, `{year}`, `{bit_depth}`.
 - **Library database:** Optional duplicate awareness so you do not re-grab the same rips blindly.
 - **Synced lyrics:** Optional `.lrc` via the public [LRCLIB](https://lrclib.net) API (`/api/get`, `/api/search`).
+- **Track replacement:** Attach a streamable track from search to a queue slot (e.g. purchase-only rows) without rebuilding the whole queue.
 - **Lucky queue:** Pick how many releases to add at random from search, then start when you are ready (no separate GIF; use it from the search panel).
 
 ---

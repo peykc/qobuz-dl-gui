@@ -1,0 +1,13 @@
+major additions
+replace failed track with track search similar to lyric search 
+download pause and queue persistance
+
+minor additions/fixes
+fixed truncation
+added file/foldername formats to metadata title name over qobuz default (added features to track title base)
+mark instrumental tracks with a proper .lrc rather than skipping over
+auto ignore cover art on tracks with no cover art to bypass url errors
+auto update attempt #3
+error track filter
+
+

@@ -93,6 +93,8 @@ def _reset_config(config_file):
         "no_isrc_tag",
     ):
         config["DEFAULT"][key] = "false"
+    config["DEFAULT"]["tag_title_from_track_format"] = "true"
+    config["DEFAULT"]["tag_album_from_folder_format"] = "true"
     with open(config_file, "w") as configfile:
         config.write(configfile)
     logging.info(
@@ -229,6 +231,12 @@ def main():
         no_label_tag = config.getboolean("DEFAULT", "no_label_tag", fallback=False)
         no_upc_tag = config.getboolean("DEFAULT", "no_upc_tag", fallback=False)
         no_isrc_tag = config.getboolean("DEFAULT", "no_isrc_tag", fallback=False)
+        tag_title_from_track_format = config.getboolean(
+            "DEFAULT", "tag_title_from_track_format", fallback=True
+        )
+        tag_album_from_folder_format = config.getboolean(
+            "DEFAULT", "tag_album_from_folder_format", fallback=True
+        )
 
         secrets = [
             secret for secret in config["DEFAULT"]["secrets"].split(",") if secret
@@ -301,6 +309,8 @@ def main():
         no_label_tag=arguments.no_label_tag or no_label_tag,
         no_upc_tag=arguments.no_upc_tag or no_upc_tag,
         no_isrc_tag=arguments.no_isrc_tag or no_isrc_tag,
+        tag_title_from_track_format=tag_title_from_track_format,
+        tag_album_from_folder_format=tag_album_from_folder_format,
     )
     qobuz.initialize_client(email, password, app_id, secrets)
 

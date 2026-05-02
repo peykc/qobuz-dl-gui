@@ -3,8 +3,10 @@
 Server behaviour matches the open-source LRCLIB project (see ``lrclib-main/`` in this
 repo for reference). We do not bundle third-party scraper providers.
 """
+import logging
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
@@ -34,7 +36,20 @@ _SOUNDTRACK_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 
-LRCLIB_UA = {"User-Agent": "Qobuz-DL-GUI/1.1 (https://github.com/peykc/qobuz-dl-gui)"}
+LRCLIB_UA = {"User-Agent": "Qobuz-DL-GUI/1.2 (https://github.com/peykc/qobuz-dl-gui)"}
+
+logger = logging.getLogger(__name__)
+
+
+def _lrc_tmark(label: str, detail: str = "") -> None:
+    suffix = f" | {detail}" if detail else ""
+    logger.info("[LRC_TIMING] %s%s", label, suffix)
+
+
+def _lrc_telapsed(t0: float, label: str, detail: str = "") -> None:
+    ms = int((time.monotonic() - t0) * 1000)
+    suffix = f" | {detail}" if detail else ""
+    logger.info("[LRC_TIMING] +%dms %s%s", ms, label, suffix)
 
 # Heuristic word/phrase list for “explicit lyric text” (UI + optional ITUNESADVISORY).
 # Uses word-like boundaries; not exhaustive and may miss obfuscated spellings.
@@ -446,6 +461,7 @@ def _lrclib_get(track: Dict, timeout_sec: float) -> Optional[Tuple[Dict, float]]
         "album_name": album,
         "duration": duration,
     }
+    t_http = time.monotonic()
     try:
         r = requests.get(
             "https://lrclib.net/api/get",
@@ -454,10 +470,13 @@ def _lrclib_get(track: Dict, timeout_sec: float) -> Optional[Tuple[Dict, float]]
             timeout=(3.0, timeout_sec),
         )
         if r.status_code != 200:
+            _lrc_telapsed(t_http, "HTTP GET /api/get", f"status={r.status_code}")
             return None
         data = r.json() or {}
     except Exception:
+        _lrc_telapsed(t_http, "HTTP GET /api/get", "exc")
         return None
+    _lrc_telapsed(t_http, "HTTP GET /api/get", "status=200")
     # LRCLIB sometimes marks instrumental=true while still returning lyric text,
     # or returns a duration-matched wrong row | never trust instrumental alone.
     lyrics_early = (data.get("syncedLyrics") or data.get("plainLyrics") or "").strip()
@@ -555,6 +574,8 @@ def _lrclib_search_single(
     params: Dict[str, str], timeout_sec: float
 ) -> List[dict]:
     """One LRCLIB ``/api/search`` call; returns JSON rows or []."""
+    keys = ",".join(sorted(params.keys()))
+    t0 = time.monotonic()
     try:
         r = requests.get(
             "https://lrclib.net/api/search",
@@ -563,12 +584,17 @@ def _lrclib_search_single(
             timeout=(3.0, timeout_sec),
         )
         if r.status_code != 200:
+            _lrc_telapsed(t0, "HTTP GET /api/search", f"keys={keys} status={r.status_code} rows=0")
             return []
         items = r.json()
         if not isinstance(items, list):
+            _lrc_telapsed(t0, "HTTP GET /api/search", f"keys={keys} bad_json rows=0")
             return []
-        return [rec for rec in items if isinstance(rec, dict)]
+        out = [rec for rec in items if isinstance(rec, dict)]
+        _lrc_telapsed(t0, "HTTP GET /api/search", f"keys={keys} status=200 rows={len(out)}")
+        return out
     except Exception:
+        _lrc_telapsed(t0, "HTTP GET /api/search", f"keys={keys} exc rows=0")
         return []
 
 
@@ -584,6 +610,11 @@ def _lrclib_search_raw(
         attempts.append(
             {"track_name": title, "artist_name": artist, "album_name": album}
         )
+    _lrc_tmark(
+        "_lrclib_search_raw START",
+        f"n_attempts={len(attempts)} artist={artist[:48]!r} title={title[:48]!r}",
+    )
+    t_merge = time.monotonic()
     if len(attempts) == 1:
         batch_lists = [_lrclib_search_single(attempts[0], timeout_sec)]
     else:
@@ -608,6 +639,7 @@ def _lrclib_search_raw(
                 continue
             seen_ids.add(key)
             merged.append(rec)
+    _lrc_telapsed(t_merge, "_lrclib_search_raw DONE", f"merged_rows={len(merged)}")
     return merged
 
 
@@ -737,6 +769,7 @@ def _lrclib_search_best(
     timeout_sec: float,
     items: Optional[List[dict]] = None,
 ) -> Optional[Dict[str, object]]:
+    t_sb = time.monotonic()
     artist = _normalize_piece(
         track.get("performer", {}).get("name")
         or track.get("album", {}).get("artist", {}).get("name")
@@ -746,10 +779,12 @@ def _lrclib_search_best(
     album = _normalize_piece(track.get("album", {}).get("title", ""))
     duration = int(track.get("duration") or 0)
     if not artist or not title:
+        _lrc_telapsed(t_sb, "_lrclib_search_best", "skip_empty_meta")
         return None
     if items is None:
         items = _lrclib_search_raw(artist, title, album, timeout_sec)
     if not items:
+        _lrc_telapsed(t_sb, "_lrclib_search_best", "no_search_items")
         return None
     items = _lrclib_search_order_exact_album_first(items, album)
 
@@ -874,7 +909,11 @@ def _lrclib_search_best(
                     -float(t[1]),
                 )
             )
+        _lrc_telapsed(
+            t_sb, "_lrclib_search_best", f"HIT merge={merge} kind={scored[0][0].get('lyrics_type')!s}"
+        )
         return scored[0][0]
+    _lrc_telapsed(t_sb, "_lrclib_search_best", "MISS")
     return None
 
 
@@ -882,6 +921,7 @@ def _fetch_lrclib(track: Dict, timeout_sec: float = 6.0) -> Optional[Dict[str, o
     """Hit ``/api/get`` and ``/api/search`` in parallel so a miss finishes in ~one round
     trip instead of summing per-request timeouts (previously up to ~24s worst case).
     """
+    t_all = time.monotonic()
     t = min(timeout_sec, 8.0)
     deadline = t + 6.0
     artist = _normalize_piece(
@@ -891,12 +931,19 @@ def _fetch_lrclib(track: Dict, timeout_sec: float = 6.0) -> Optional[Dict[str, o
     )
     title = _normalize_piece(track.get("title", ""))
     album = _normalize_piece(track.get("album", {}).get("title", ""))
+    _lrc_tmark(
+        "_fetch_lrclib START",
+        f"title={title[:56]!r} t_cap={t}s parallel_deadline={deadline}s",
+    )
+    t_rows = time.monotonic()
     search_rows = _lrclib_search_order_exact_album_first(
         _lrclib_search_raw(artist, title, album, t),
         album,
     )
+    _lrc_telapsed(t_rows, "_fetch_lrclib ordered_search_rows", f"n={len(search_rows)}")
     got: Optional[Tuple[Dict, float]] = None
     search_out: Optional[Dict[str, object]] = None
+    t_par = time.monotonic()
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_get = ex.submit(_lrclib_get, track, t)
         fut_search = ex.submit(_lrclib_search_best, track, t, search_rows)
@@ -908,6 +955,11 @@ def _fetch_lrclib(track: Dict, timeout_sec: float = 6.0) -> Optional[Dict[str, o
             search_out = fut_search.result(timeout=deadline)
         except Exception:
             search_out = None
+    _lrc_telapsed(
+        t_par,
+        "_fetch_lrclib parallel done",
+        f"get_tuple={got is not None} search_best={search_out is not None}",
+    )
 
     def _pick_non_empty(res: Optional[Dict[str, object]]) -> bool:
         if not res or not isinstance(res, dict):
@@ -940,21 +992,28 @@ def _fetch_lrclib(track: Dict, timeout_sec: float = 6.0) -> Optional[Dict[str, o
             rg = _lyrics_kind_rank(str(got_result.get("lyrics_type") or ""))
             rs = _lyrics_kind_rank(str(search_out.get("lyrics_type") or ""))
             if rs < rg:
+                _lrc_telapsed(t_all, "_fetch_lrclib END", "pick search_out (better_kind)")
                 return search_out
             if rg < rs:
+                _lrc_telapsed(t_all, "_fetch_lrclib END", "pick get_result (better_kind)")
                 return got_result
             try:
                 gc = float(got_result.get("confidence") or 0.0)
                 sc = float(search_out.get("confidence") or 0.0)
             except (TypeError, ValueError):
+                _lrc_telapsed(t_all, "_fetch_lrclib END", "pick get_result (tie_conf_exc)")
                 return got_result
             if sc > gc + 1e-9:
+                _lrc_telapsed(t_all, "_fetch_lrclib END", "pick search_out (higher_conf)")
                 return search_out
+        _lrc_telapsed(t_all, "_fetch_lrclib END", "pick get_result")
         return got_result
     if search_out:
+        _lrc_telapsed(t_all, "_fetch_lrclib END", "pick search_out_only")
         return _reconcile_pack_result_confidence_with_search_rows(
             track, search_out, search_rows
         )
+    _lrc_telapsed(t_all, "_fetch_lrclib END", "miss")
     return None
 
 
@@ -987,11 +1046,33 @@ def fetch_synced_lyrics_with_search_fallback(
     tries ``GET /api/get/{id}`` for the best rows by confidence. This keeps the
     strict path first but avoids dropping obviously strong matches from the modal.
     """
+    artist_fb = _normalize_piece(
+        track.get("performer", {}).get("name")
+        or track.get("album", {}).get("artist", {}).get("name")
+        or ""
+    )
+    title_fb = _normalize_piece(track.get("title", ""))
+    _lrc_tmark(
+        "fallback_pipeline START",
+        f"{artist_fb[:44]!r} — {title_fb[:52]!r}",
+    )
+    t_pipe = time.monotonic()
+
+    t_phase1 = time.monotonic()
     out = fetch_synced_lyrics(track, prefer_explicit=prefer_explicit, timeout_sec=timeout_sec)
     if out:
+        prov = str(out.get("provider") or "")
+        _lrc_telapsed(t_phase1, "phase1 fetch_synced_lyrics (_fetch_lrclib)", "HIT")
+        _lrc_telapsed(
+            t_pipe,
+            "fallback_pipeline END",
+            f"path=strict provider={prov}",
+        )
         return out
+    _lrc_telapsed(t_phase1, "phase1 fetch_synced_lyrics (_fetch_lrclib)", "MISS")
 
     if int(max_fallback_candidates or 0) <= 0:
+        _lrc_telapsed(t_pipe, "fallback_pipeline END", "miss_max_fallback_0")
         return None
 
     title = _normalize_piece(track.get("title", ""))
@@ -1003,9 +1084,11 @@ def fetch_synced_lyrics_with_search_fallback(
     album = _normalize_piece(track.get("album", {}).get("title", ""))
     duration = int(track.get("duration") or 0)
     if not title or not artist:
+        _lrc_telapsed(t_pipe, "fallback_pipeline END", "miss_empty_title_artist")
         return None
 
     want_explicit = qobuz_track_is_explicit(track)
+    t_cand = time.monotonic()
     rows = lrclib_search_candidates_for_ui(
         title,
         artist,
@@ -1015,7 +1098,9 @@ def fetch_synced_lyrics_with_search_fallback(
         track_explicit=want_explicit,
         filter_mismatched=True,
     )
+    _lrc_telapsed(t_cand, "lrclib_search_candidates_for_ui", f"n_rows={len(rows)}")
     if not rows:
+        _lrc_telapsed(t_pipe, "fallback_pipeline END", "miss_empty_candidates")
         return None
 
     def _row_conf(r: Dict[str, object]) -> float:
@@ -1044,12 +1129,13 @@ def fetch_synced_lyrics_with_search_fallback(
             int(r.get("id") or 0),
         ),
     )
-    for row in ranked[: int(max_fallback_candidates)]:
+    for try_idx, row in enumerate(ranked[: int(max_fallback_candidates)], start=1):
         rid = row.get("id")
         try:
             ik = int(rid)
         except (TypeError, ValueError):
             continue
+        _lrc_tmark("fallback TRY_ROW", f"try={try_idx} id={ik}")
         data = lrclib_get_by_id(ik, timeout_sec=min(max(6.0, timeout_sec), 18.0))
         if not data:
             continue
@@ -1073,8 +1159,22 @@ def fetch_synced_lyrics_with_search_fallback(
             lrclib_id=ik,
         )
         out["search_fallback_used"] = True
+        _lrc_telapsed(
+            t_pipe,
+            "fallback_pipeline END",
+            f"path=fallback_try={try_idx} id={ik} kind={out.get('lyrics_type')!s}",
+        )
         return out
+    _lrc_telapsed(t_pipe, "fallback_pipeline END", "miss_after_fallback_tries")
     return None
+
+
+def instrumental_placeholder_lrc() -> str:
+    """Minimal synced LRC when LRCLIB marks instrumental but returns no lyric lines.
+
+    Mirrors typical LRCLIB rows so players still get a valid ``.lrc`` sidecar.
+    """
+    return "[00:00.00](instrumental)"
 
 
 def write_lrc_sidecar(audio_path: str, lyrics_text: str, overwrite: bool = False) -> Optional[str]:
@@ -1256,6 +1356,7 @@ def lrclib_get_by_id(record_id: int, *, timeout_sec: float = 15.0) -> Optional[D
         rid = int(record_id)
     except (TypeError, ValueError):
         return None
+    t0 = time.monotonic()
     try:
         r = requests.get(
             f"https://lrclib.net/api/get/{rid}",
@@ -1263,11 +1364,15 @@ def lrclib_get_by_id(record_id: int, *, timeout_sec: float = 15.0) -> Optional[D
             timeout=(3.0, timeout_sec),
         )
         if r.status_code != 200:
+            _lrc_telapsed(t0, "HTTP GET /api/get/{id}", f"id={rid} status={r.status_code}")
             return None
         data = r.json()
     except Exception:
+        _lrc_telapsed(t0, "HTTP GET /api/get/{id}", f"id={rid} exc")
         return None
-    return data if isinstance(data, dict) else None
+    ok = isinstance(data, dict)
+    _lrc_telapsed(t0, "HTTP GET /api/get/{id}", f"id={rid} status=200 dict={ok}")
+    return data if ok else None
 
 
 def attach_lrclib_id_to_audio(
@@ -1291,7 +1396,10 @@ def attach_lrclib_id_to_audio(
     plain = (data.get("plainLyrics") or "").strip()
     body = synced or plain
     if not body:
-        return None, False, False
+        if bool(data.get("instrumental")):
+            body = instrumental_placeholder_lrc()
+        else:
+            return None, False, False
     if _lyrics_looks_like_garbage(body):
         return None, False, False
     explicit = lyrics_text_indicates_explicit(body)

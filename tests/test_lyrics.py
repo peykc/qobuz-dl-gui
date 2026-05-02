@@ -96,6 +96,11 @@ class LyricsTests(unittest.TestCase):
         self.assertTrue(lyrics._is_instrumentalish_lyrics(lrc))
         self.assertEqual(lyrics._lyrics_type(lrc), "instrumental")
 
+    def test_instrumental_placeholder_lrc(self):
+        s = lyrics.instrumental_placeholder_lrc()
+        self.assertTrue(lyrics._is_synced_lrc(s))
+        self.assertEqual(lyrics._lyrics_type(s), "instrumental")
+
     def test_lrclib_compact_row_duration_delta_ui_threshold(self):
         rec = {
             "id": 42,

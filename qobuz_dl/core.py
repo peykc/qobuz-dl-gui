@@ -89,6 +89,8 @@ class QobuzDL:
         no_label_tag=False,
         no_upc_tag=False,
         no_isrc_tag=False,
+        tag_title_from_track_format=True,
+        tag_album_from_folder_format=True,
     ):
         self.directory = create_and_return_dir(directory)
         self.quality = quality
@@ -115,6 +117,8 @@ class QobuzDL:
         self.segmented_fallback = bool(segmented_fallback)
         self.no_credits = bool(no_credits)
         self.native_lang = bool(native_lang)
+        self.tag_title_from_track_format = bool(tag_title_from_track_format)
+        self.tag_album_from_folder_format = bool(tag_album_from_folder_format)
         self.tag_options = {
             "no_album_artist_tag": bool(no_album_artist_tag),
             "no_album_title_tag": bool(no_album_title_tag),
@@ -204,6 +208,7 @@ class QobuzDL:
                 self.folder_format,
                 self.track_format,
                 cancel_event=self.cancel_event,
+                abort_stream_event=getattr(self, "abort_stream_event", None),
                 source_queue_url=getattr(self, "source_qobuz_url", "") or "",
                 tag_options=self.tag_options,
                 multiple_disc_prefix=self.multiple_disc_prefix,
@@ -213,6 +218,8 @@ class QobuzDL:
                 delay_seconds=self.delay_seconds,
                 segmented_fallback=self.segmented_fallback,
                 no_credits=self.no_credits,
+                tag_title_from_track_format=self.tag_title_from_track_format,
+                tag_album_from_folder_format=self.tag_album_from_folder_format,
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)

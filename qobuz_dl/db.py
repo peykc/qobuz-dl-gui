@@ -176,6 +176,13 @@ def get_lrclib_id_for_audio_path(audio_path: str) -> Optional[int]:
 # GUI download history (per local audio file; survives app restarts)
 # ---------------------------------------------------------------------------
 
+GUI_PENDING_TRACK_PREFIX = "__GUI_PENDING__:slot:"
+
+
+def is_gui_pending_track_key(audio_path: Optional[str]) -> bool:
+    """Synthetic DB keys for purchase-only / failed slots with no local file yet."""
+    return isinstance(audio_path, str) and audio_path.startswith(GUI_PENDING_TRACK_PREFIX)
+
 
 def _ensure_gui_download_history_table(conn: sqlite3.Connection) -> None:
     conn.execute(
@@ -195,6 +202,20 @@ def _ensure_gui_download_history_table(conn: sqlite3.Connection) -> None:
         "lyric_confidence TEXT,"
         "updated_at REAL NOT NULL)"
     )
+    cur = conn.execute("PRAGMA table_info(gui_download_history)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "slot_track_id" not in cols:
+        conn.execute(
+            "ALTER TABLE gui_download_history ADD COLUMN slot_track_id TEXT"
+        )
+    if "release_album_id" not in cols:
+        conn.execute(
+            "ALTER TABLE gui_download_history ADD COLUMN release_album_id TEXT"
+        )
+    if "attach_search_eligible" not in cols:
+        conn.execute(
+            "ALTER TABLE gui_download_history ADD COLUMN attach_search_eligible INTEGER DEFAULT 0"
+        )
 
 
 def upsert_gui_download_history(
@@ -212,16 +233,40 @@ def upsert_gui_download_history(
     lyric_type: str = "",
     lyric_provider: str = "",
     lyric_confidence: str = "",
+    slot_track_id: str = "",
+    release_album_id: str = "",
+    pending_slot_cleanup_id: str = "",
+    attach_search_eligible: Optional[int] = None,
 ) -> None:
-    """Insert or replace one history row (full row for this file)."""
+    """Insert or replace one history row (full row for this file).
+
+    ``GUI_PENDING_TRACK_PREFIX`` rows persist purchase-only / failed slots until a real
+    file is saved (caller passes ``pending_slot_cleanup_id`` to remove the pending row).
+    """
     import time
 
-    p = _normalize_audio_path_key(audio_path)
-    if not p or not os.path.isfile(p):
-        return
+    raw_in = (audio_path or "").strip()
+    if is_gui_pending_track_key(raw_in):
+        p = raw_in
+        sid_tail = raw_in[len(GUI_PENDING_TRACK_PREFIX) :].strip()
+        if not sid_tail.isdigit():
+            return
+    else:
+        p = _normalize_audio_path_key(audio_path)
+        if not p or not os.path.isfile(p):
+            return
     dbp = get_qobuz_db_path()
     os.makedirs(os.path.dirname(dbp), exist_ok=True)
     now = time.time()
+    sid_col = (slot_track_id or "").strip()
+    rid_col = (release_album_id or "").strip()
+    if not sid_col and is_gui_pending_track_key(p):
+        sid_col = p[len(GUI_PENDING_TRACK_PREFIX) :].strip()
+    cleanup = (pending_slot_cleanup_id or "").strip()
+    if attach_search_eligible is None:
+        attach_eligible_int = 1 if is_gui_pending_track_key(p) else 0
+    else:
+        attach_eligible_int = 1 if int(attach_search_eligible) else 0
     try:
         with sqlite3.connect(dbp) as conn:
             _ensure_gui_download_history_table(conn)
@@ -229,15 +274,19 @@ def upsert_gui_download_history(
                 "INSERT INTO gui_download_history ("
                 "audio_path, track_no, title, cover_url, lyric_artist, lyric_album, "
                 "duration_sec, track_explicit, download_status, download_detail, "
-                "lyric_type, lyric_provider, lyric_confidence, updated_at"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "lyric_type, lyric_provider, lyric_confidence, updated_at, "
+                "slot_track_id, release_album_id, attach_search_eligible"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(audio_path) DO UPDATE SET "
                 "track_no=excluded.track_no, title=excluded.title, cover_url=excluded.cover_url, "
                 "lyric_artist=excluded.lyric_artist, lyric_album=excluded.lyric_album, "
                 "duration_sec=excluded.duration_sec, track_explicit=excluded.track_explicit, "
                 "download_status=excluded.download_status, download_detail=excluded.download_detail, "
                 "lyric_type=excluded.lyric_type, lyric_provider=excluded.lyric_provider, "
-                "lyric_confidence=excluded.lyric_confidence, updated_at=excluded.updated_at",
+                "lyric_confidence=excluded.lyric_confidence, updated_at=excluded.updated_at, "
+                "slot_track_id=excluded.slot_track_id, "
+                "release_album_id=excluded.release_album_id, "
+                "attach_search_eligible=excluded.attach_search_eligible",
                 (
                     p,
                     track_no,
@@ -253,8 +302,17 @@ def upsert_gui_download_history(
                     lyric_provider,
                     lyric_confidence,
                     now,
+                    sid_col or None,
+                    rid_col or None,
+                    attach_eligible_int,
                 ),
             )
+            if cleanup:
+                pend = f"{GUI_PENDING_TRACK_PREFIX}{cleanup}"
+                conn.execute(
+                    "DELETE FROM gui_download_history WHERE audio_path=?",
+                    (pend,),
+                )
             conn.commit()
     except sqlite3.Error as e:
         logger.error(f"{RED}download history upsert: {e}")
@@ -307,12 +365,44 @@ def list_gui_download_history() -> list:
             rows = conn.execute(
                 "SELECT audio_path, track_no, title, cover_url, lyric_artist, lyric_album, "
                 "duration_sec, track_explicit, download_status, download_detail, "
-                "lyric_type, lyric_provider, lyric_confidence, updated_at "
+                "lyric_type, lyric_provider, lyric_confidence, updated_at, "
+                "slot_track_id, release_album_id, attach_search_eligible "
                 "FROM gui_download_history ORDER BY updated_at ASC"
             ).fetchall()
             removed = 0
             for r in rows:
                 ap = r[0]
+                if ap and is_gui_pending_track_key(ap):
+                    tex = r[7]
+                    sid_db = (r[14] or "").strip() if len(r) > 14 else ""
+                    rid_db = (r[15] or "").strip() if len(r) > 15 else ""
+                    attach_eligible = bool(int(r[16] or 0)) if len(r) > 16 else False
+                    if not sid_db:
+                        sid_db = ap[len(GUI_PENDING_TRACK_PREFIX) :].strip()
+                    out.append(
+                        {
+                            "audio_path": ap,
+                            "track_no": r[1] or "",
+                            "title": r[2] or "",
+                            "cover_url": r[3] or "",
+                            "lyric_artist": r[4] or "",
+                            "lyric_album": r[5] or "",
+                            "duration_sec": int(r[6] or 0),
+                            "track_explicit": bool(tex)
+                            if tex is not None
+                            else None,
+                            "download_status": r[8] or "downloaded",
+                            "download_detail": r[9] or "",
+                            "lyric_type": r[10] or "",
+                            "lyric_provider": r[11] or "",
+                            "lyric_confidence": r[12] or "",
+                            "updated_at": r[13],
+                            "slot_track_id": sid_db,
+                            "release_album_id": rid_db,
+                            "attach_search_eligible": attach_eligible,
+                        }
+                    )
+                    continue
                 if not ap or not os.path.isfile(ap):
                     conn.execute(
                         "DELETE FROM gui_download_history WHERE audio_path=?",
@@ -321,6 +411,9 @@ def list_gui_download_history() -> list:
                     removed += 1
                     continue
                 tex = r[7]
+                sid_db = (r[14] or "").strip() if len(r) > 14 else ""
+                rid_db = (r[15] or "").strip() if len(r) > 15 else ""
+                attach_eligible = bool(int(r[16] or 0)) if len(r) > 16 else False
                 out.append(
                     {
                         "audio_path": ap,
@@ -339,6 +432,9 @@ def list_gui_download_history() -> list:
                         "lyric_provider": r[11] or "",
                         "lyric_confidence": r[12] or "",
                         "updated_at": r[13],
+                        "slot_track_id": sid_db,
+                        "release_album_id": rid_db,
+                        "attach_search_eligible": attach_eligible,
                     }
                 )
             if removed:
@@ -375,6 +471,8 @@ def prune_gui_download_history_orphans() -> int:
             ).fetchall()
             n = 0
             for (ap,) in rows:
+                if ap and is_gui_pending_track_key(ap):
+                    continue
                 if ap and os.path.isfile(ap):
                     continue
                 conn.execute(

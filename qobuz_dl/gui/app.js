@@ -5,7 +5,8 @@
 (function () {
   "use strict";
 
-  // ── SSE (shared log stream) ────────────────────────────────
+  /** Matches ``qobuz_dl.db.GUI_PENDING_TRACK_PREFIX`` — pending DB rows have no local file. */
+  const _GUI_PENDING_AUDIO_PREFIX = "__GUI_PENDING__:slot:";
   let _sse = null;
   let _trackStatusMap = new Map();
 
@@ -18,14 +19,20 @@
   let _tsVirtScrollHandlerBound = null;
   let _tsVirtScrollRaf = 0;
   let _tsVirtResizeObs = null;
-  /** Display order of row keys (oldest → newest, same as DB `updated_at ASC`). */
+  /** Visible row keys (filtered for virtualized list); mirrors `_tsOrderAll` when not virtual or when showing all. */
   let _tsOrder = [];
+  /** Full row keys oldest → newest (unfiltered). */
+  let _tsOrderAll = [];
   let _tsKeyToIndex = new Map();
   /** Serialized row for mounting/evicting virtual items (API shape + session results). */
   let _tsDbItemByKey = new Map();
   let _tsActiveDlKeys = new Set();
   /** audio_path → lyric_album (avoids scanning hundreds of DOM nodes). */
   let _tsAudioPathAlbum = new Map();
+  /** `"all"` | `"errors"` — error view shows purchase-only, failed, pending slots, lyric errors. */
+  let _tsHistoryFilterMode = "all";
+  /** Skip redundant filter passes while bulk-loading history from DB. */
+  let _tsSkipHistoryFilterApply = false;
 
   function startSSE() {
     if (_sse) return;
@@ -156,6 +163,91 @@
     for (let i = 0; i < _tsOrder.length; i++) {
       _tsKeyToIndex.set(_tsOrder[i], i);
     }
+  }
+
+  function _tsDbItemIsError(it) {
+    if (!it) return false;
+    const st = String(it.download_status || "").toLowerCase();
+    if (st === "purchase_only" || st === "failed") return true;
+    const ap = String(it.audio_path || "").trim();
+    if (ap.startsWith(_GUI_PENDING_AUDIO_PREFIX)) return true;
+    const lt = String(it.lyric_type || "").toLowerCase();
+    return lt === "error";
+  }
+
+  function _tsCardLooksLikeError(card) {
+    if (!card) return false;
+    if (card.querySelector("a.download-chip.purchase-only")) return true;
+    if (card.querySelector("button.download-chip.track-dl-btn--failed"))
+      return true;
+    if (card.querySelector(".lyrics-chip.error")) return true;
+    return false;
+  }
+
+  function _tsKeyIsErrorInCurrentSession(key) {
+    if (_tsDbItemIsError(_tsDbItemByKey.get(key))) return true;
+    return _tsCardLooksLikeError(_trackStatusMap.get(key));
+  }
+
+  function _tsApplyHistoryFilter() {
+    if (_tsSkipHistoryFilterApply) return;
+    const list = document.getElementById("dl-track-status");
+    if (_tsVirtActive && _tsVirtInnerEl && list) {
+      if (_tsHistoryFilterMode === "errors") {
+        _tsOrder = _tsOrderAll.filter((k) => _tsKeyIsErrorInCurrentSession(k));
+      } else {
+        _tsOrder = _tsOrderAll.slice();
+      }
+      _tsRebuildKeyIndex();
+      const allowed = new Set(_tsOrder);
+      for (const [k, card] of [..._trackStatusMap]) {
+        if (!allowed.has(k)) {
+          card.remove();
+          _trackStatusMap.delete(k);
+        }
+      }
+      _tsUpdateVirtInnerHeight();
+      requestAnimationFrame(() => {
+        _tsVirtMeasureRowH();
+        _tsVirtOnScroll();
+      });
+    } else {
+      _tsOrder = _tsOrderAll.slice();
+      _tsRebuildKeyIndex();
+      if (list && _trackStatusMap.size > 0) {
+        for (let i = 0; i < _tsOrderAll.length; i++) {
+          const k = _tsOrderAll[i];
+          const card = _trackStatusMap.get(k);
+          if (!card) continue;
+          const show =
+            _tsHistoryFilterMode !== "errors" ||
+            _tsKeyIsErrorInCurrentSession(k);
+          card.classList.toggle("hidden", !show);
+          card.setAttribute("aria-hidden", show ? "false" : "true");
+        }
+      }
+    }
+  }
+
+  function _initDownloadHistorySegment() {
+    const allBtn = document.getElementById("dl-history-tab-all");
+    const errBtn = document.getElementById("dl-history-tab-errors");
+    const list = document.getElementById("dl-track-status");
+    if (!allBtn || !errBtn) return;
+    const applyMode = (mode) => {
+      _tsHistoryFilterMode = mode;
+      const allOn = mode === "all";
+      allBtn.classList.toggle("is-active", allOn);
+      errBtn.classList.toggle("is-active", !allOn);
+      allBtn.setAttribute("aria-selected", allOn ? "true" : "false");
+      errBtn.setAttribute("aria-selected", allOn ? "false" : "true");
+      allBtn.tabIndex = allOn ? 0 : -1;
+      errBtn.tabIndex = allOn ? -1 : 0;
+      _tsApplyHistoryFilter();
+      if (list) list.scrollTop = 0;
+    };
+    allBtn.addEventListener("click", () => applyMode("all"));
+    errBtn.addEventListener("click", () => applyMode("errors"));
   }
 
   function _tsAppendParent(list) {
@@ -305,12 +397,26 @@
       card.dataset.durationSec = String(parseInt(it.duration_sec, 10) || 0);
     }
     if (it.audio_path) {
-      card.dataset.audioPath = String(it.audio_path);
-      _tsRegisterAudioPathAlbum(String(it.audio_path), alb);
+      const rawAp = String(it.audio_path || "").trim();
+      if (rawAp && !rawAp.startsWith(_GUI_PENDING_AUDIO_PREFIX)) {
+        card.dataset.audioPath = rawAp;
+        _tsRegisterAudioPathAlbum(rawAp, alb);
+      }
     }
     if (it.track_explicit === true || it.track_explicit === false) {
       card.dataset.trackExplicit = it.track_explicit ? "1" : "0";
       _setTrackContentRatingBadge(card, it.track_explicit);
+    }
+    if ((it.slot_track_id || "").trim()) {
+      card.dataset.slotTrackId = String(it.slot_track_id).trim();
+    }
+    if ((it.release_album_id || "").trim()) {
+      card.dataset.releaseAlbumId = String(it.release_album_id).trim();
+    }
+    if (it.attach_search_eligible === true || it.attach_search_eligible === 1) {
+      card.dataset.attachSearchEligible = "1";
+    } else {
+      delete card.dataset.attachSearchEligible;
     }
     const st = String(it.download_status || "downloaded").toLowerCase();
     const detail = String(it.download_detail || "").trim();
@@ -326,6 +432,8 @@
           href: detail,
           titleAttr:
             "Open album on Qobuz to purchase (full album required for these tracks)",
+          slotTrackId: String(it.slot_track_id || "").trim(),
+          releaseAlbumId: String(it.release_album_id || "").trim(),
         },
         alb,
       );
@@ -404,9 +512,12 @@
             : null,
       download_status: isPurchase ? "purchase_only" : isFailed ? "failed" : "downloaded",
       download_detail: detail,
+      slot_track_id: String(ev.slot_track_id || "").trim(),
+      release_album_id: String(ev.release_album_id || "").trim(),
       lyric_type: "",
       lyric_provider: "",
       lyric_confidence: "",
+      attach_search_eligible: card.dataset.attachSearchEligible === "1",
     };
     const chip = card.querySelector(".lyrics-chip");
     if (chip) {
@@ -417,8 +528,10 @@
       if (lt) it.lyric_type = lt;
     }
     _tsDbItemByKey.set(tk, it);
-    const ap = (it.audio_path || "").trim();
-    if (ap) _tsRegisterAudioPathAlbum(ap, (it.lyric_album || "").trim());
+    const apStore = (card.dataset.audioPath || "").trim();
+    if (apStore && !apStore.startsWith(_GUI_PENDING_AUDIO_PREFIX)) {
+      _tsRegisterAudioPathAlbum(apStore, (it.lyric_album || "").trim());
+    }
   }
 
   function _lyricAlbumForTrackEv(ev) {
@@ -463,7 +576,7 @@
     img.decoding = "async";
     img.loading = "lazy";
     img.onerror = () => {
-      img.removeAttribute("src");
+      img.remove();
       art.classList.add("track-status-art--empty");
     };
     img.src = url;
@@ -528,10 +641,12 @@
     const parent = _tsAppendParent(list);
     parent.appendChild(card);
     if (key) {
-      const isNewKey = !_tsKeyToIndex.has(key);
-      if (isNewKey) {
-        _tsOrder.push(key);
-        _tsRebuildKeyIndex();
+      const isNewRow = !_trackStatusMap.has(key);
+      if (isNewRow && !_tsOrderAll.includes(key)) {
+        _tsOrderAll.push(key);
+      }
+      if (!_tsSkipHistoryFilterApply && isNewRow) {
+        _tsApplyHistoryFilter();
       }
       _trackStatusMap.set(key, card);
       if (_tsVirtActive && _tsVirtInnerEl) {
@@ -565,12 +680,493 @@
   }
 
   const _TRACK_DL_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 12 12 17 17 12"/><path d="M5 21h14"/></svg>`;
+  const _TRACK_SEARCH_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>`;
   const _TRACK_FOLDER_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>`;
   /** Shown after explicit/clean in lyric search when this LRCLIB id matches the saved sidecar. */
   const _LYRIC_SEARCH_ATTACHED_SVG = `<svg class="lyric-search-attached-ico lucide-folder-check" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m9 13 2 2 4-4"/></svg>`;
   const _TRACK_DL_FAIL_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
   /** Qobuz / lyric explicit badge | same E icon as queue cards and search. */
   const _EXPLICIT_BADGE_SVG = `<svg viewBox="0 0 24 24" class="explicit-badge-icon" aria-hidden="true"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg>`;
+
+  let _attachTrackAnchorCard = null;
+
+  function _formatAttachDur(sec) {
+    const s = Number(sec) || 0;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}:${String(r).padStart(2, "0")}`;
+  }
+
+  function _attachNormTokens(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]+/gi, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  function _attachDurationDeltaLabel(anchorSec, candSec) {
+    const ref = parseInt(String(anchorSec || 0), 10);
+    const dur = parseInt(String(candSec || 0), 10);
+    if (
+      !Number.isFinite(ref) ||
+      !Number.isFinite(dur) ||
+      ref <= 0 ||
+      dur <= 0
+    ) {
+      return "";
+    }
+    const delta = dur - ref;
+    if (delta === 0) return "";
+    return _formatLyricDeltaSec(delta);
+  }
+
+  function _attachQualitySpecsTooltip(t) {
+    const bd = parseInt(String(t.maximum_bit_depth || ""), 10);
+    const sr = parseInt(String(t.maximum_sampling_rate || ""), 10);
+    if (!Number.isFinite(bd) || !Number.isFinite(sr) || bd <= 0 || sr <= 0) {
+      return "";
+    }
+    const khz = sr / 1000;
+    const kStr = Number.isInteger(khz) ? String(khz) : khz.toFixed(1);
+    return `${bd}-bit / ${kStr} kHz`;
+  }
+
+  function _createAttachQualityBadge(t) {
+    const tier = String(t.quality_tier || "LOSSLESS").toUpperCase();
+    const specs = _attachQualitySpecsTooltip(t);
+    const tipHires =
+      "Hi-Res lossless on Qobuz | above CD quality; up to 24-bit / 192 kHz.";
+    const tipLossless =
+      "CD-quality lossless on Qobuz | 16-bit / 44.1 kHz FLAC.";
+    const tipMp3 = "Lossy stream (e.g. ~320 kbps), not lossless.";
+    const tipSuffix = specs ? `\n${specs} (catalog max)` : "";
+
+    const badge = document.createElement("span");
+    badge.className = "result-badge attach-track-quality-badge";
+    badge.removeAttribute("title");
+
+    if (tier === "HI-RES") {
+      badge.classList.add("badge-hires");
+      badge.setAttribute("data-tip", tipHires + tipSuffix);
+      const icon = document.createElement("img");
+      icon.src = "/gui/hi-res.jpg";
+      icon.className = "quality-icon";
+      icon.alt = "";
+      badge.appendChild(icon);
+      return badge;
+    }
+    if (tier === "MP3") {
+      badge.classList.add("badge-mp3");
+      badge.textContent = "MP3";
+      badge.setAttribute("data-tip", tipMp3 + tipSuffix);
+      return badge;
+    }
+    badge.classList.add("badge-lossless");
+    badge.setAttribute("data-tip", tipLossless + tipSuffix);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 32 32");
+    svg.setAttribute("class", "quality-icon");
+    svg.innerHTML =
+      `<path d="M16 22.7368C17.8785 22.7368 19.471 22.0837 20.7773 20.7773C22.0837 19.471 22.7368 17.8785 22.7368 16C22.7368 14.1215 22.0837 12.529 20.7773 11.2227C19.471 9.91635 17.8785 9.26318 16 9.26318C14.1215 9.26318 12.529 9.91635 11.2227 11.2227C9.91635 12.529 9.26318 14.1215 9.26318 16C9.26318 17.8785 9.91635 19.471 11.2227 20.7773C12.529 22.0837 14.1215 22.7368 16 22.7368ZM16 17.6842C15.5228 17.6842 15.1228 17.5228 14.8 17.2C14.4772 16.8772 14.3158 16.4772 14.3158 16C14.3158 15.5228 14.4772 15.1228 14.8 14.8C15.1228 14.4772 15.5228 14.3158 16 14.3158C16.4772 14.3158 16.8772 14.4772 17.2 14.8C17.5228 15.1228 17.6842 15.5228 17.6842 16C17.6842 16.4772 17.5228 16.8772 17.2 17.2C16.8772 17.5228 16.4772 17.6842 16 17.6842ZM16.0028 32C13.7899 32 11.7098 31.5801 9.76264 30.7402C7.81543 29.9003 6.12164 28.7606 4.68128 27.3208C3.24088 25.8811 2.10057 24.188 1.26034 22.2417C0.420114 20.2954 0 18.2158 0 16.0028C0 13.7899 0.419931 11.7098 1.25979 9.76264C2.09965 7.81543 3.23945 6.12165 4.67917 4.68128C6.11892 3.24088 7.81196 2.10057 9.7583 1.26034C11.7046 0.420115 13.7842 0 15.9972 0C18.2101 0 20.2902 0.419933 22.2374 1.25979C24.1846 2.09966 25.8784 3.23945 27.3187 4.67917C28.7591 6.11892 29.8994 7.81197 30.7397 9.7583C31.5799 11.7046 32 13.7842 32 15.9972C32 18.2101 31.5801 20.2902 30.7402 22.2374C29.9003 24.1846 28.7606 25.8784 27.3208 27.3187C25.8811 28.7591 24.188 29.8994 22.2417 30.7397C20.2954 31.5799 18.2158 32 16.0028 32ZM16 29.4737C19.7614 29.4737 22.9474 28.1685 25.5579 25.5579C28.1685 22.9474 29.4737 19.7614 29.4737 16C29.4737 12.2386 28.1685 9.05261 25.5579 6.44208C22.9474 3.83155 19.7614 2.52628 16 2.52628C12.2386 2.52628 9.05261 3.83155 6.44208 6.44208C3.83155 9.05261 2.52628 12.2386 2.52628 16C2.52628 19.7614 3.83155 22.9474 6.44208 25.5579C9.05261 28.1685 12.2386 29.4737 16 29.4737Z" fill="white"></path>`;
+    badge.appendChild(svg);
+    return badge;
+  }
+
+  function _attachTrackMatchPct(anchorTitle, anchorArtist, candTitle, candArtist) {
+    const a = new Set([
+      ..._attachNormTokens(anchorTitle),
+      ..._attachNormTokens(anchorArtist),
+    ]);
+    const b = new Set([
+      ..._attachNormTokens(candTitle),
+      ..._attachNormTokens(candArtist),
+    ]);
+    if (!a.size || !b.size) return 0;
+    let inter = 0;
+    for (const x of b) {
+      if (a.has(x)) inter += 1;
+    }
+    return Math.round((100 * (2 * inter)) / (a.size + b.size));
+  }
+
+  function _createAttachTrackSearchRow(t, matchPct, anchorDurSec, onAttach) {
+    const div = document.createElement("div");
+    div.className = "lyric-search-row";
+    div.setAttribute("role", "option");
+
+    const line1 = document.createElement("div");
+    line1.className =
+      "lyric-search-row-line lyric-search-row-line--title";
+
+    const tSpan = document.createElement("span");
+    tSpan.className = "lyric-search-track";
+    tSpan.textContent = String(t.title || "");
+
+    line1.appendChild(tSpan);
+
+    if (Number.isFinite(matchPct) && matchPct > 0) {
+      const mp = document.createElement("span");
+      mp.className = "attach-track-match-pct";
+      mp.textContent = `${matchPct}%`;
+      mp.setAttribute(
+        "aria-label",
+        `Approximate title and artist overlap: ${matchPct} percent`,
+      );
+      line1.appendChild(mp);
+    }
+
+    if (t.explicit) {
+      const ex = document.createElement("span");
+      ex.className =
+        "lyric-search-rating lyric-search-rating--explicit explicit-tag-badge";
+      ex.innerHTML = _EXPLICIT_BADGE_SVG;
+      line1.appendChild(ex);
+    } else {
+      const cl = document.createElement("span");
+      cl.className = "lyric-search-rating lyric-search-rating--clean";
+      cl.textContent = "clean";
+      line1.appendChild(cl);
+    }
+
+    const deltaStr = _attachDurationDeltaLabel(anchorDurSec, t.duration_sec);
+    if (deltaStr) {
+      const d = document.createElement("span");
+      d.className = "lyric-search-delta";
+      d.textContent = deltaStr;
+      d.setAttribute(
+        "aria-label",
+        "Candidate duration vs album slot track: " + deltaStr + " (mm:ss)",
+      );
+      line1.appendChild(d);
+    }
+
+    const line2 = document.createElement("div");
+    line2.className =
+      "lyric-search-row-line lyric-search-row-line--album";
+    const albumEl = document.createElement("span");
+    albumEl.className = "lyric-search-album";
+    albumEl.textContent =
+      String(t.album_title || "").trim() || "\u2014";
+    line2.appendChild(albumEl);
+    const qBadge = _createAttachQualityBadge(t);
+    if (qBadge) {
+      line2.appendChild(document.createTextNode(" · "));
+      line2.appendChild(qBadge);
+    }
+    const durStr = t.duration_sec ? _formatAttachDur(t.duration_sec) : "";
+    if (durStr) {
+      line2.appendChild(document.createTextNode(" · "));
+      const du = document.createElement("span");
+      du.className = "attach-track-inline-dur";
+      du.textContent = durStr;
+      line2.appendChild(du);
+    }
+
+    const line3 = document.createElement("div");
+    line3.className =
+      "lyric-search-row-line lyric-search-row-line--footer";
+
+    const artistSpan = document.createElement("span");
+    artistSpan.className = "lyric-search-artist";
+    artistSpan.textContent =
+      String(t.artist || "").trim() || "\u2014";
+
+    const actions = document.createElement("div");
+    actions.className = "lyric-search-row-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btn-primary btn-sm";
+    saveBtn.textContent = "Attach";
+    saveBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (saveBtn.disabled) return;
+      void onAttach(saveBtn);
+    });
+
+    line3.appendChild(artistSpan);
+    line3.appendChild(actions);
+    actions.appendChild(saveBtn);
+
+    div.appendChild(line1);
+    div.appendChild(line2);
+    div.appendChild(line3);
+    return div;
+  }
+
+  function _closeAttachTrackPopover() {
+    _attachTrackAnchorCard = null;
+    const pop = document.getElementById("attach-track-popover");
+    if (!pop) return;
+    pop.classList.add("hidden");
+    pop.setAttribute("aria-hidden", "true");
+  }
+
+  function _openAttachTrackPopover(card) {
+    const sid = ((card && card.dataset && card.dataset.slotTrackId) || "").trim();
+    if (!sid || !card) return;
+    _closeLyricSearchModal();
+    _attachTrackAnchorCard = card;
+    const pop = document.getElementById("attach-track-popover");
+    const ti = document.getElementById("attach-track-title");
+    const ar = document.getElementById("attach-track-artist");
+    const statusEl = document.getElementById("attach-track-status");
+    const resultsEl = document.getElementById("attach-track-results");
+    if (!pop || !ti || !ar || !resultsEl) return;
+    if (statusEl) {
+      statusEl.textContent = "";
+      statusEl.classList.add("hidden");
+    }
+    resultsEl.replaceChildren();
+    const tEl = card.querySelector(".track-status-title");
+    const displayTitle = ((tEl && tEl.textContent) || "").trim();
+    ti.value = _lyricSearchTitleFromDisplay(displayTitle);
+    ar.value = (card.dataset.lyricArtist || "").trim();
+    pop.classList.remove("hidden");
+    pop.setAttribute("aria-hidden", "false");
+    requestAnimationFrame(() => _positionAttachTrackPopover());
+    void _runAttachTrackSearch(false);
+  }
+
+  async function _runAttachTrackSearch(forceShowErrors) {
+    const card = _attachTrackAnchorCard;
+    const ti = document.getElementById("attach-track-title");
+    const ar = document.getElementById("attach-track-artist");
+    const statusEl = document.getElementById("attach-track-status");
+    const resultsEl = document.getElementById("attach-track-results");
+    if (!card || !ti || !ar || !resultsEl) return;
+    const titleQ = ti.value.trim();
+    const artistQ = ar.value.trim();
+    const query = [titleQ, artistQ].filter(Boolean).join(" ").trim();
+    if (query.length < 2) {
+      if (forceShowErrors && statusEl) {
+        statusEl.textContent = "Enter at least 2 characters (title and/or artist).";
+        statusEl.classList.remove("hidden");
+      }
+      return;
+    }
+    let anchor_explicit = null;
+    const te = card.dataset.trackExplicit;
+    if (te === "1") anchor_explicit = true;
+    else if (te === "0") anchor_explicit = false;
+    const body = { query };
+    if (anchor_explicit !== null) body.anchor_explicit = anchor_explicit;
+    if (statusEl) {
+      statusEl.textContent = "Searching…";
+      statusEl.classList.remove("hidden");
+    }
+    _showLyricSearchResultsLoading(resultsEl, "Searching Qobuz");
+    try {
+      const res = await fetch("/api/search_tracks_attach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        resultsEl.replaceChildren();
+        if (statusEl) {
+          statusEl.textContent = data.error || "Search failed.";
+          statusEl.classList.remove("hidden");
+        }
+        return;
+      }
+      const tracks = data.tracks || [];
+      const sidSlot = ((card.dataset.slotTrackId) || "").trim();
+      const tElA = card.querySelector(".track-status-title");
+      const displayAnchor = ((tElA && tElA.textContent) || "").trim();
+      const anchorTitle = _lyricSearchTitleFromDisplay(displayAnchor);
+      const anchorArtist = (card.dataset.lyricArtist || "").trim();
+      const anchorDur =
+        parseInt(String(card.dataset.durationSec || "0"), 10) || 0;
+      const scored = [];
+      for (let i = 0; i < tracks.length; i++) {
+        const t = tracks[i];
+        if (sidSlot && String(t.id || "") === sidSlot) continue;
+        const mp = _attachTrackMatchPct(
+          anchorTitle,
+          anchorArtist,
+          String(t.title || ""),
+          String(t.artist || ""),
+        );
+        scored.push({ t, mp });
+      }
+      scored.sort((a, b) => b.mp - a.mp);
+
+      resultsEl.replaceChildren();
+      if (statusEl) {
+        if (!scored.length) {
+          statusEl.textContent =
+            anchor_explicit === null
+              ? "No matches."
+              : "No matches with the same explicit/clean flag.";
+          statusEl.classList.remove("hidden");
+        } else {
+          statusEl.textContent = `${scored.length} result(s)`;
+          statusEl.classList.remove("hidden");
+        }
+      }
+      if (!scored.length) {
+        const empty = document.createElement("div");
+        empty.className = "lyric-search-empty";
+        empty.textContent =
+          anchor_explicit === null
+            ? "No matches."
+            : "No matches with the same explicit/clean flag.";
+        resultsEl.appendChild(empty);
+      } else {
+        for (let j = 0; j < scored.length; j++) {
+          const { t, mp } = scored[j];
+          resultsEl.appendChild(
+            _createAttachTrackSearchRow(t, mp, anchorDur, async (btn) => {
+              btn.disabled = true;
+              await _submitAttachSubstitute(String(t.id || ""));
+              btn.disabled = false;
+            }),
+          );
+        }
+      }
+    } catch (_) {
+      resultsEl.replaceChildren();
+      if (statusEl) {
+        statusEl.textContent = "Network error.";
+        statusEl.classList.remove("hidden");
+      }
+    } finally {
+      const ap = document.getElementById("attach-track-popover");
+      if (ap && !ap.classList.contains("hidden") && _attachTrackAnchorCard) {
+        requestAnimationFrame(() => _positionAttachTrackPopover());
+      }
+    }
+  }
+
+  async function _submitAttachSubstitute(subId) {
+    const card = _attachTrackAnchorCard;
+    const sid = ((card && card.dataset.slotTrackId) || "").trim();
+    const albumId = ((card && card.dataset.releaseAlbumId) || "").trim();
+    if (!sid || !subId) return;
+    try {
+      const payload = {
+        slot_track_id: sid,
+        substitute_track_id: subId,
+      };
+      if (albumId) payload.album_id = albumId;
+      let qs = (card.dataset.queueSourceUrl || "").trim();
+      if (
+        !qs &&
+        typeof window._qUrlForPurchaseSlot === "function"
+      ) {
+        qs = window._qUrlForPurchaseSlot(sid) || "";
+      }
+      if (qs) payload.queue_source_url = qs;
+      const res = await fetch("/api/download_attach_track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        console.warn(data.error || "Attach failed");
+        return;
+      }
+      _closeAttachTrackPopover();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function _initAttachTrackSearchPopover() {
+    const closeBtn = document.getElementById("attach-track-close");
+    const submitBtn = document.getElementById("attach-track-submit");
+    const pop = document.getElementById("attach-track-popover");
+    const ti = document.getElementById("attach-track-title");
+    const ar = document.getElementById("attach-track-artist");
+    let attachTrackMousedownTarget = null;
+    document.addEventListener(
+      "mousedown",
+      (e) => {
+        if (!pop || pop.classList.contains("hidden")) {
+          attachTrackMousedownTarget = null;
+          return;
+        }
+        attachTrackMousedownTarget = e.target;
+      },
+      true,
+    );
+    document.addEventListener("click", (e) => {
+      if (!pop || pop.classList.contains("hidden")) return;
+      const target = attachTrackMousedownTarget || e.target;
+      if (pop.contains(target)) return;
+      if (e.target.closest && e.target.closest("#dl-track-status")) return;
+      _closeAttachTrackPopover();
+    });
+    if (closeBtn) {
+      closeBtn.addEventListener("click", () => _closeAttachTrackPopover());
+    }
+    if (submitBtn && ti && ar) {
+      submitBtn.addEventListener("click", () => void _runAttachTrackSearch(true));
+      const onEnter = (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          void _runAttachTrackSearch(true);
+        }
+      };
+      ti.addEventListener("keydown", onEnter);
+      ar.addEventListener("keydown", onEnter);
+    }
+    if (pop) {
+      pop.addEventListener("click", (ev) => {
+        if (ev.target === pop) _closeAttachTrackPopover();
+      });
+      window.addEventListener("resize", () => {
+        if (pop.classList.contains("hidden") || !_attachTrackAnchorCard) {
+          return;
+        }
+        _positionAttachTrackPopover();
+      });
+      let _attachPopWinScrollRaf = null;
+      window.addEventListener(
+        "scroll",
+        () => {
+          if (
+            pop.classList.contains("hidden") ||
+            !_attachTrackAnchorCard
+          ) {
+            return;
+          }
+          if (_attachPopWinScrollRaf != null) {
+            cancelAnimationFrame(_attachPopWinScrollRaf);
+          }
+          _attachPopWinScrollRaf = requestAnimationFrame(() => {
+            _attachPopWinScrollRaf = null;
+            _positionAttachTrackPopover();
+          });
+        },
+        true,
+      );
+    }
+  }
+
+  function _finalizeSubstituteSearchBtn(tags, card) {
+    if (!tags || !card) return;
+    const sid = (card.dataset.slotTrackId || "").trim();
+    const rid = (card.dataset.releaseAlbumId || "").trim();
+    if (!sid || !rid) return;
+    const sb = document.createElement("button");
+    sb.type = "button";
+    sb.className = "track-dl-btn track-substitute-search-btn";
+    sb.setAttribute("data-tip", "Search to replace track with similar");
+    sb.setAttribute("aria-label", "Find track replacement");
+    sb.innerHTML = _TRACK_SEARCH_ICON_SVG;
+    sb.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      _openAttachTrackPopover(card);
+    });
+    tags.appendChild(sb);
+  }
 
   function _setTrackDownloadChip(
     trackNo,
@@ -583,11 +1179,22 @@
     const card = _ensureTrackStatusCard(trackNo, title, false, undefined, lyricAlbum);
     if (!card) return;
     const tags = card.querySelector(".track-status-tags");
+    if (!tags) return;
+    tags.querySelectorAll(".track-substitute-search-btn").forEach((n) => n.remove());
     const old = card.querySelector(".download-chip");
     if (old) old.remove();
 
     const href = linkOpts && String(linkOpts.href || "").trim();
+    const sid = linkOpts && String(linkOpts.slotTrackId || "").trim();
     if (href) {
+      if (sid && card) {
+        card.dataset.slotTrackId = sid;
+      }
+      const rid =
+        linkOpts && String(linkOpts.releaseAlbumId || "").trim();
+      if (rid && card) {
+        card.dataset.releaseAlbumId = rid;
+      }
       const el = document.createElement("a");
       el.className = "track-dl-btn download-chip purchase-only";
       el.href = href;
@@ -603,6 +1210,7 @@
       }
       el.textContent = statusText || "Purchase";
       tags.appendChild(el);
+      _finalizeSubstituteSearchBtn(tags, card);
       return;
     }
 
@@ -640,6 +1248,11 @@
       el.setAttribute("aria-label", "Downloading");
     }
     tags.appendChild(el);
+    if (cls === "failed") {
+      _finalizeSubstituteSearchBtn(tags, card);
+    } else if (cls === "done" && card.dataset.attachSearchEligible === "1") {
+      _finalizeSubstituteSearchBtn(tags, card);
+    }
   }
 
   function _trackStatusCardForProgress(trackNo, title, lyricAlbum) {
@@ -1276,11 +1889,10 @@
   }
 
   /**
-   * Place the lyric search popover above the download history block, centered on it,
-   * so the history list stays visible below the panel.
+   * Place fixed popovers above the download history block, horizontally centered,
+   * so the history list stays visible below (shared by lyric search + attach-track).
    */
-  function _positionLyricSearchPopover() {
-    const pop = document.getElementById("lyric-search-popover");
+  function _positionPopoverAboveDownloadHistory(pop) {
     if (!pop || pop.classList.contains("hidden")) return;
     const hist = document.getElementById("dl-track-status-container");
     const margin = 10;
@@ -1309,6 +1921,18 @@
     pop.style.top = `${Math.round(top)}px`;
   }
 
+  function _positionLyricSearchPopover() {
+    _positionPopoverAboveDownloadHistory(
+      document.getElementById("lyric-search-popover"),
+    );
+  }
+
+  function _positionAttachTrackPopover() {
+    _positionPopoverAboveDownloadHistory(
+      document.getElementById("attach-track-popover"),
+    );
+  }
+
   function _lyricSearchKindClass(kind) {
     const k = String(kind || "").toLowerCase();
     if (k === "plain") return "lyric-search-kind lyric-search-kind--plain";
@@ -1334,14 +1958,14 @@
     }
   }
 
-  function _showLyricSearchResultsLoading(container) {
+  function _showLyricSearchResultsLoading(container, ariaBusyLabel) {
     if (!container) return;
     container.replaceChildren();
     const root = document.createElement("div");
     root.className = "lyric-search-loading";
     root.setAttribute("role", "status");
     root.setAttribute("aria-busy", "true");
-    root.setAttribute("aria-label", "Searching lyrics");
+    root.setAttribute("aria-label", ariaBusyLabel || "Searching lyrics");
     for (let i = 0; i < 3; i++) {
       const row = document.createElement("div");
       row.className = "lyric-search-skeleton-row";
@@ -1912,6 +2536,7 @@
   async function _openLyricSearchModal(card) {
     const pop = document.getElementById("lyric-search-popover");
     if (!pop || !card) return;
+    _closeAttachTrackPopover();
     _abortLyricSearchFetches();
     _closeLyricPreviewOverlay();
     const openSession = ++_lyricOpenSession;
@@ -2145,6 +2770,14 @@
       lyric_provider: "",
       lyric_confidence: "",
     };
+    const sidEv = String(ev.slot_track_id || "").trim();
+    const ridEv = String(ev.release_album_id || "").trim();
+    if (sidEv) {
+      payload.slot_track_id = sidEv;
+      payload.pending_slot_cleanup_id = sidEv;
+    }
+    if (ridEv) payload.release_album_id = ridEv;
+    payload.attach_search_eligible = card.dataset.attachSearchEligible === "1";
     const chip = card.querySelector(".lyrics-chip");
     if (chip) {
       const parts = (chip.className || "").split(/\s+/);
@@ -2154,6 +2787,62 @@
       if (lt) payload.lyric_type = lt;
     }
     _tsRegisterAudioPathAlbum(ap, (payload.lyric_album || "").trim());
+    void fetch("/api/download-history/upsert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  }
+
+  function _persistPendingSlotDownloadHistory(ev, preCard, resAlb) {
+    const sid = String(ev.slot_track_id || "").trim();
+    const rid = String(ev.release_album_id || "").trim();
+    const st = String(ev.status || "").toLowerCase();
+    if (
+      !preCard ||
+      !sid ||
+      !rid ||
+      (st !== "purchase_only" && st !== "failed")
+    ) {
+      return;
+    }
+    const tEl = preCard.querySelector(".track-status-title");
+    const img = preCard.querySelector(".track-status-art-img");
+    let coverUrl = "";
+    if (img && img.getAttribute("src")) {
+      coverUrl = img.getAttribute("src") || "";
+    }
+    const payload = {
+      audio_path: _GUI_PENDING_AUDIO_PREFIX + sid,
+      track_no: preCard.dataset.trackNo || String(ev.track_no || ""),
+      title: (tEl && tEl.textContent) || String(ev.title || ""),
+      cover_url: coverUrl,
+      lyric_artist: preCard.dataset.lyricArtist || "",
+      lyric_album: (preCard.dataset.lyricAlbum || resAlb || "").trim(),
+      duration_sec: parseInt(preCard.dataset.durationSec || "0", 10) || 0,
+      track_explicit:
+        preCard.dataset.trackExplicit === "1"
+          ? true
+          : preCard.dataset.trackExplicit === "0"
+            ? false
+            : null,
+      download_status: st,
+      download_detail: String(ev.detail || ""),
+      lyric_type: "",
+      lyric_provider: "",
+      lyric_confidence: "",
+      slot_track_id: sid,
+      release_album_id: rid,
+      attach_search_eligible: true,
+    };
+    const chip = preCard.querySelector(".lyrics-chip");
+    if (chip) {
+      const parts = (chip.className || "").split(/\s+/);
+      const lt = parts.find((c) =>
+        ["synced", "plain", "none", "error", "instrumental"].includes(c),
+      );
+      if (lt) payload.lyric_type = lt;
+    }
     void fetch("/api/download-history/upsert", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2171,41 +2860,55 @@
       const items = data.items;
       const stick = _scrollContainerAtBottom(list);
 
-      _tsTeardownVirtScroller();
-      _trackStatusMap.clear();
-      _tsOrder = [];
-      _tsKeyToIndex.clear();
-      _tsDbItemByKey.clear();
-      _tsAudioPathAlbum.clear();
-      _tsActiveDlKeys.clear();
-      list.innerHTML = "";
+      _tsSkipHistoryFilterApply = true;
+      try {
+        _tsTeardownVirtScroller();
+        _trackStatusMap.clear();
+        _tsOrderAll = [];
+        _tsOrder = [];
+        _tsKeyToIndex.clear();
+        _tsDbItemByKey.clear();
+        _tsAudioPathAlbum.clear();
+        _tsActiveDlKeys.clear();
+        list.innerHTML = "";
 
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        const alb = (it.lyric_album || "").trim();
-        const parsed = _parseTrackRef(it.track_no || "", it.title || "");
-        const key = _trackKey(parsed.trackNo, parsed.title, alb);
-        _tsOrder.push(key);
-        _tsDbItemByKey.set(key, it);
-        const ap = (it.audio_path || "").trim();
-        if (ap) _tsRegisterAudioPathAlbum(ap, alb);
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          const alb = (it.lyric_album || "").trim();
+          const parsed = _parseTrackRef(it.track_no || "", it.title || "");
+          const key = _trackKey(parsed.trackNo, parsed.title, alb);
+          _tsOrderAll.push(key);
+          _tsDbItemByKey.set(key, it);
+          const ap = (it.audio_path || "").trim();
+          if (ap && !ap.startsWith(_GUI_PENDING_AUDIO_PREFIX)) {
+            _tsRegisterAudioPathAlbum(ap, alb);
+          }
+        }
+
+        if (items.length >= _TS_VIRT_THRESHOLD) {
+          _tsVirtActive = true;
+          _tsEnsureVirtInner(list);
+          _tsVirtScrollHandlerBound = () => _tsVirtOnScroll();
+          list.addEventListener("scroll", _tsVirtScrollHandlerBound, {
+            passive: true,
+          });
+          window.addEventListener("resize", _tsVirtScrollHandlerBound, {
+            passive: true,
+          });
+          if (window.ResizeObserver) {
+            _tsVirtResizeObs = new ResizeObserver(() => _tsVirtOnScroll());
+            _tsVirtResizeObs.observe(list);
+          }
+        } else {
+          _tsVirtActive = false;
+        }
+      } finally {
+        _tsSkipHistoryFilterApply = false;
       }
-      _tsRebuildKeyIndex();
+
+      _tsApplyHistoryFilter();
 
       if (items.length >= _TS_VIRT_THRESHOLD) {
-        _tsVirtActive = true;
-        _tsEnsureVirtInner(list);
-        _tsVirtScrollHandlerBound = () => _tsVirtOnScroll();
-        list.addEventListener("scroll", _tsVirtScrollHandlerBound, {
-          passive: true,
-        });
-        window.addEventListener("resize", _tsVirtScrollHandlerBound, {
-          passive: true,
-        });
-        if (window.ResizeObserver) {
-          _tsVirtResizeObs = new ResizeObserver(() => _tsVirtOnScroll());
-          _tsVirtResizeObs.observe(list);
-        }
         _tsUpdateVirtInnerHeight();
         requestAnimationFrame(() => {
           _tsVirtRender();
@@ -2214,13 +2917,19 @@
           if (stick) list.scrollTop = list.scrollHeight;
         });
       } else {
-        for (let i = 0; i < items.length; i++) {
-          _tsApplyHistoryDbItemToNewCard(items[i]);
+        _tsSkipHistoryFilterApply = true;
+        try {
+          for (let i = 0; i < items.length; i++) {
+            _tsApplyHistoryDbItemToNewCard(items[i]);
+          }
+        } finally {
+          _tsSkipHistoryFilterApply = false;
         }
+        _tsApplyHistoryFilter();
         if (stick) list.scrollTop = list.scrollHeight;
       }
     } catch (_) {
-      /* ignore */
+      _tsSkipHistoryFilterApply = false;
     }
   }
 
@@ -2234,6 +2943,7 @@
     const list = document.getElementById("dl-track-status");
     if (!list) return;
     _tsTeardownVirtScroller();
+    _tsOrderAll = [];
     _tsOrder = [];
     _tsKeyToIndex.clear();
     _tsDbItemByKey.clear();
@@ -2241,19 +2951,66 @@
     _tsActiveDlKeys.clear();
     list.innerHTML = "";
     _trackStatusMap.clear();
+    _refreshAlbumQueueCardMetas();
   }
 
-  function _initCollapsibleContainer(containerId, toggleId) {
-    const container = document.getElementById(containerId);
-    const toggle = document.getElementById(toggleId);
-    if (!container || !toggle) return;
-    toggle.addEventListener("click", () => {
-      const collapsed = container.classList.toggle("collapsed");
-      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  function _positionClearHistoryConfirm() {
+    const btn = document.getElementById("dl-clear-track-status");
+    const pop = document.getElementById("dl-clear-history-confirm");
+    if (!btn || !pop || pop.classList.contains("hidden")) return;
+    const pad = 8;
+    const r = btn.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const mw = Math.min(280, vw - pad * 2);
+    pop.style.top = `${Math.round(r.bottom + 6)}px`;
+    let left = r.right - mw;
+    left = Math.max(pad, Math.min(left, vw - pad - mw));
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.right = "auto";
+  }
+
+  function _clearHistoryBackdrop(e) {
+    const pop = document.getElementById("dl-clear-history-confirm");
+    const btn = document.getElementById("dl-clear-track-status");
+    if (!pop || pop.classList.contains("hidden")) return;
+    if ((btn && btn.contains(e.target)) || pop.contains(e.target)) return;
+    _closeClearHistoryConfirm();
+  }
+
+  function _clearHistoryEsc(e) {
+    if (e.key === "Escape") _closeClearHistoryConfirm();
+  }
+
+  function _closeClearHistoryConfirm() {
+    const pop = document.getElementById("dl-clear-history-confirm");
+    const btn = document.getElementById("dl-clear-track-status");
+    if (!pop || pop.classList.contains("hidden")) return;
+    pop.classList.add("hidden");
+    document.removeEventListener("mousedown", _clearHistoryBackdrop);
+    window.removeEventListener("resize", _positionClearHistoryConfirm);
+    document.removeEventListener("keydown", _clearHistoryEsc);
+    if (btn) {
+      btn.setAttribute("aria-expanded", "false");
+      btn.focus();
+    }
+  }
+
+  function _openClearHistoryConfirm() {
+    const pop = document.getElementById("dl-clear-history-confirm");
+    const btn = document.getElementById("dl-clear-track-status");
+    if (!pop || !btn) return;
+    pop.classList.remove("hidden");
+    btn.setAttribute("aria-expanded", "true");
+    _positionClearHistoryConfirm();
+    requestAnimationFrame(() => {
+      document.getElementById("dl-clear-history-cancel")?.focus();
     });
+    setTimeout(() => {
+      document.addEventListener("mousedown", _clearHistoryBackdrop);
+      window.addEventListener("resize", _positionClearHistoryConfirm);
+      document.addEventListener("keydown", _clearHistoryEsc);
+    }, 0);
   }
-
-
 
   // ── Status polling ────────────────────────────────────────
   function updateStatus(ready) {
@@ -2490,6 +3247,238 @@
   const _urlQueue = []; // [{url, resolved: {title, artist, cover, type, ...}}]
   let _textMode = false;
 
+  function _qobuzUrlTypeAndId(url) {
+    const s = String(url || "").trim();
+    const m = s.match(
+      /(?:https?:\/\/(?:www|open|play)\.qobuz\.com)?(?:\/[a-z]{2}-[a-z]{2})?\/(album|artist|track|playlist|label)(?:\/[-\w\d]+)?\/([\w\d]+)/i,
+    );
+    if (!m) return { type: "", id: "" };
+    return {
+      type: String(m[1] || "").toLowerCase(),
+      id: String(m[2] || "").trim(),
+    };
+  }
+
+  function _countHistoryDownloadedForRelease(releaseAlbumId) {
+    const rid = String(releaseAlbumId || "").trim();
+    if (!rid) return 0;
+    let n = 0;
+    for (const it of _tsDbItemByKey.values()) {
+      if (String(it.release_album_id || "").trim() !== rid) continue;
+      const st = String(it.download_status || "downloaded").toLowerCase();
+      if (st !== "downloaded") continue;
+      const ap = String(it.audio_path || "").trim();
+      if (!ap || ap.startsWith(_GUI_PENDING_AUDIO_PREFIX)) continue;
+      n++;
+    }
+    return n;
+  }
+
+  function _albumRemainingAndTotalFromQueueItem(qi) {
+    if (!qi || !qi.resolved) return null;
+    const r = qi.resolved;
+    if (r.type !== "album" || r.tracks == null) return null;
+    let total = Number(r.tracks);
+    if (!Number.isFinite(total) || total <= 0) return null;
+    total = Math.max(0, Math.floor(total));
+    const id =
+      String(r.release_album_id || "").trim() ||
+      _qobuzUrlTypeAndId(qi.url).id ||
+      "";
+    if (!id) return null;
+    const done = _countHistoryDownloadedForRelease(id);
+    const remaining = Math.max(0, total - done);
+    return { total, done, remaining };
+  }
+
+  function _releaseAlbumIdFromQueueItem(qi) {
+    if (!qi?.resolved || qi.resolved.type !== "album") return "";
+    const r = qi.resolved;
+    const fromMeta = String(r.release_album_id || "").trim();
+    if (fromMeta) return fromMeta;
+    return String(_qobuzUrlTypeAndId(qi.url).id || "").trim();
+  }
+
+  /** True while album still has unfinished work: remaining tracks vs history, failed/purchase rows, or pending substitute slots. */
+  function _albumQueueItemNeedsToStayVisible(qi) {
+    if (!qi?.resolved || qi.resolved.type !== "album") return false;
+    const rid = _releaseAlbumIdFromQueueItem(qi);
+    if (!rid) return false;
+    const alb = _albumRemainingAndTotalFromQueueItem(qi);
+    if (alb != null && alb.remaining > 0) return true;
+    for (const it of _tsDbItemByKey.values()) {
+      if (String(it.release_album_id || "").trim() !== rid) continue;
+      const st = String(it.download_status || "downloaded").toLowerCase();
+      const ap = String(it.audio_path || "").trim();
+      if (st === "failed" || st === "purchase_only") return true;
+      if (ap.startsWith(_GUI_PENDING_AUDIO_PREFIX)) return true;
+    }
+    return false;
+  }
+
+  function _remainingTracksContributionFromQueueItem(qi) {
+    if (!qi.resolved) return 1;
+    const r = qi.resolved;
+    if (r.type === "track") return 1;
+    const alb = _albumRemainingAndTotalFromQueueItem(qi);
+    if (alb) return alb.remaining;
+    if (r.type === "artist") {
+      const sdCheck = document.getElementById("dl-smart-discography");
+      if (r.raw_tracks !== undefined) {
+        if (sdCheck?.checked) {
+          const n = Number(r.sd_filtered_tracks);
+          return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+        }
+        const n = Number(r.raw_tracks);
+        return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+      }
+      if (r.albums) return (Number(r.albums) || 0) * 10;
+      return 1;
+    }
+    if (r.tracks) {
+      const n = Number(r.tracks);
+      return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 1;
+    }
+    return 1;
+  }
+
+  /** Expected track workload for URL queue card mode (subtracts GUI download history per album). */
+  function _calcTrackTotalFromQueue() {
+    let total = 0;
+    _urlQueue.forEach((qi) => {
+      total += _remainingTracksContributionFromQueueItem(qi);
+    });
+    return Math.max(total, 1);
+  }
+
+  /**
+   * Planned track_result callbacks for progress (full album/track passes), not remaining-after-history.
+   * Downloader walks every album track even when skipping | remaining-only totals caused done > denominator.
+   */
+  function _progressBarDenominatorFromQueueItem(qi) {
+    if (!qi?.resolved) return 1;
+    const r = qi.resolved;
+    if (r.type === "track") return 1;
+    if (r.type === "album") {
+      const alb = _albumRemainingAndTotalFromQueueItem(qi);
+      if (alb != null && alb.total > 0) return alb.total;
+      const n = Number(r.tracks);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+    }
+    if (r.type === "playlist") {
+      const n = Number(r.tracks);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+    }
+    return _remainingTracksContributionFromQueueItem(qi);
+  }
+
+  function _calcProgressDenominatorFromQueue() {
+    let total = 0;
+    _urlQueue.forEach((qi) => {
+      total += _progressBarDenominatorFromQueueItem(qi);
+    });
+    return Math.max(total, 1);
+  }
+
+  let _guiQueueRestoring = false;
+  let _guiQueuePersistTimer = null;
+
+  function _buildGuiQueuePersistPayload() {
+    const ta = document.getElementById("dl-urls");
+    if (_textMode) {
+      return {
+        version: 1,
+        text_mode: true,
+        text_urls: ta ? String(ta.value || "") : "",
+        items: [],
+      };
+    }
+    return {
+      version: 1,
+      text_mode: false,
+      text_urls: "",
+      items: _urlQueue.map((qi) => ({
+        url: qi.url,
+        resolved: qi.resolved,
+      })),
+    };
+  }
+
+  function _schedulePersistGuiQueueState() {
+    if (_guiQueueRestoring) return;
+    if (_guiQueuePersistTimer) clearTimeout(_guiQueuePersistTimer);
+    _guiQueuePersistTimer = window.setTimeout(() => {
+      _guiQueuePersistTimer = null;
+      void fetch("/api/download-queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(_buildGuiQueuePersistPayload()),
+      }).catch(() => {});
+    }, 400);
+  }
+
+  async function _restoreGuiQueueFromServer() {
+    try {
+      const res = await fetch("/api/download-queue");
+      const data = await res.json();
+      if (!data.ok) return;
+      const items = Array.isArray(data.items) ? data.items : [];
+      _guiQueueRestoring = true;
+      if (data.text_mode) {
+        _setMode(false);
+        _urlQueue.length = 0;
+        const ta = document.getElementById("dl-urls");
+        if (ta) ta.value = data.text_urls || "";
+        document
+          .getElementById("dl-queue")
+          ?.querySelectorAll(".queue-card")
+          .forEach((c) => c.remove());
+        const empty = document.getElementById("dl-queue-empty");
+        if (empty) empty.style.display = ta && ta.value.trim() ? "none" : "";
+        if (window._updateQueueBadge) window._updateQueueBadge();
+        _syncSearchQueuedHighlights();
+      } else {
+        _setMode(true);
+        _urlQueue.length = 0;
+        for (let i = 0; i < items.length; i++) {
+          const row = items[i];
+          const u = String(row.url || "").trim();
+          if (!u) continue;
+          _urlQueue.push({
+            url: u,
+            resolved:
+              row.resolved != null && typeof row.resolved === "object"
+                ? row.resolved
+                : null,
+          });
+        }
+        _rebuildCards();
+      }
+    } catch (_) {
+      /* ignore */
+    } finally {
+      _guiQueueRestoring = false;
+    }
+  }
+
+  function _refreshAlbumQueueCardMetas() {
+    _urlQueue.forEach((qi) => {
+      if (!qi.resolved || qi.resolved.type !== "album") return;
+      const cards = document.querySelectorAll("#dl-queue .queue-card");
+      let card = null;
+      for (let i = 0; i < cards.length; i++) {
+        if (cards[i].dataset.url === qi.url) {
+          card = cards[i];
+          break;
+        }
+      }
+      if (card) _updateQueueCard(card, qi.resolved);
+    });
+  }
+
+  const _TIP_SEARCH_QUEUED_IDLE = "In download queue";
+  const _TIP_SEARCH_QUEUED_REMOVE = "Remove from queue";
+
   const _RESULT_ADD_BTN_HTML_ARROW = `
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -2497,17 +3486,27 @@
         </svg>
       `;
   const _RESULT_ADD_BTN_HTML_CHECK = `
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
+            <span class="result-add-btn-ico-stack">
+                <span class="result-add-btn-ico result-add-btn-ico--check" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                </span>
+                <span class="result-add-btn-ico result-add-btn-ico--remove" aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </span>
+            </span>
           `;
 
   function _setSearchResultAddBtnAppearance(addBtn, inQueue) {
     if (!addBtn) return;
     addBtn.classList.toggle("result-add-btn--queued", !!inQueue);
     if (inQueue) {
-      addBtn.setAttribute("aria-label", "In download queue");
-      addBtn.setAttribute("data-tip", "In download queue");
+      addBtn.setAttribute("aria-label", "In download queue — activate to remove");
+      addBtn.setAttribute("data-tip", _TIP_SEARCH_QUEUED_IDLE);
       addBtn.innerHTML = _RESULT_ADD_BTN_HTML_CHECK;
     } else {
       addBtn.setAttribute("aria-label", "Add to Queue");
@@ -2556,6 +3555,7 @@
     if (empty) empty.style.display = _urlQueue.length ? "none" : "";
     if (window._updateQueueBadge) window._updateQueueBadge();
     _syncSearchQueuedHighlights();
+    _schedulePersistGuiQueueState();
   }
 
   function _addUrlToQueue(rawUrl) {
@@ -2611,6 +3611,9 @@
              .catch(() => {
                 data.result.resolving_discography = false;
                 _updateQueueCard(card, data.result);
+             })
+             .finally(() => {
+                _schedulePersistGuiQueueState();
              });
           }
         } else {
@@ -2629,6 +3632,9 @@
           artist: "",
           cover: "",
         });
+      })
+      .finally(() => {
+        _schedulePersistGuiQueueState();
       });
   }
 
@@ -2637,6 +3643,26 @@
     if (i !== -1) _urlQueue.splice(i, 1);
     card.remove();
     _syncHiddenTextarea();
+  }
+
+  function _removeFromQueueByUrl(url) {
+    const wrap = document.getElementById("dl-queue");
+    let card = null;
+    if (wrap) {
+      for (const c of wrap.querySelectorAll(".queue-card")) {
+        if (c.dataset.url === url) {
+          card = c;
+          break;
+        }
+      }
+    }
+    if (card) {
+      _removeFromQueue(url, card);
+    } else {
+      const i = _urlQueue.findIndex((q) => q.url === url);
+      if (i !== -1) _urlQueue.splice(i, 1);
+      _syncHiddenTextarea();
+    }
   }
 
   function _createQueueCard(url) {
@@ -2659,7 +3685,10 @@
     info.className = "queue-card-info";
     info.innerHTML = `
       <span class="queue-card-title">${_esc(url)}</span>
-      <span class="queue-card-artist">Loading…</span>
+      <span class="queue-card-artist-row">
+        <span class="queue-card-artist">Loading…</span>
+      </span>
+      <span class="queue-card-bottom-row queue-card-bottom-row--loading" aria-hidden="true"></span>
     `;
     card.appendChild(info);
 
@@ -2764,9 +3793,20 @@
 
     // === Meta parts (tracks, year, etc.) ===
     const metaParts = [];
+    const qurlTrim = String(card.dataset.url || "").trim();
+    const qiCard = qurlTrim
+      ? _urlQueue.find((x) => x.url === qurlTrim)
+      : null;
 
     if (r.tracks && r.type !== "artist") {
-      metaParts.push(`${r.tracks} track${r.tracks !== 1 ? "s" : ""}`);
+      const alb = qiCard ? _albumRemainingAndTotalFromQueueItem(qiCard) : null;
+      if (alb && alb.done > 0 && alb.remaining < alb.total) {
+        metaParts.push(
+          `${alb.remaining} remaining \u00b7 ${alb.total} on album`,
+        );
+      } else {
+        metaParts.push(`${r.tracks} track${r.tracks !== 1 ? "s" : ""}`);
+      }
     }
 
     if (r.albums) {
@@ -2819,7 +3859,7 @@
   // Rebuild cards from queue data (used when switching back from text mode)
   function _rebuildCards() {
     const queue = document.getElementById("dl-queue");
-    queue.innerHTML = "";
+    queue.querySelectorAll(".queue-card").forEach((c) => c.remove());
     _urlQueue.forEach((qi) => {
       const card = _createQueueCard(qi.url);
       queue.appendChild(card);
@@ -2834,6 +3874,7 @@
         });
       }
     });
+    _syncHiddenTextarea();
     _scrollDlQueueToBottom();
   }
 
@@ -2863,7 +3904,10 @@
             const qi = _urlQueue.find((q) => q.url === u);
             if (qi && data.ok && data.result) qi.resolved = data.result;
           })
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => {
+            _schedulePersistGuiQueueState();
+          });
       }
     });
     _syncHiddenTextarea();
@@ -2894,6 +3938,9 @@
       .map((l) => l.trim())
       .filter(Boolean);
     ta.value = (cur ? cur + "\n" : "") + lines.join("\n");
+    if (window._updateQueueBadge) window._updateQueueBadge();
+    _syncSearchQueuedHighlights();
+    _schedulePersistGuiQueueState();
   };
 
   function _setMode(cardMode) {
@@ -2930,6 +3977,9 @@
           .map((l) => l.trim())
           .filter(Boolean);
         ta.value = (cur ? cur + "\n" : "") + lines.join("\n");
+        if (window._updateQueueBadge) window._updateQueueBadge();
+        _syncSearchQueuedHighlights();
+        _schedulePersistGuiQueueState();
       } else {
         val.split(/[\n\r]+/).forEach((u) => {
           if (u.trim()) _addUrlToQueue(u.trim());
@@ -2959,6 +4009,9 @@
               .map((l) => l.trim())
               .filter(Boolean);
             ta.value = (cur ? cur + "\n" : "") + lines.join("\n");
+            if (window._updateQueueBadge) window._updateQueueBadge();
+            _syncSearchQueuedHighlights();
+            _schedulePersistGuiQueueState();
           } else {
             val.split(/[\n\r]+/).forEach((u) => {
               if (u.trim()) _addUrlToQueue(u.trim());
@@ -2974,6 +4027,7 @@
         _syncTextareaToQueue();
         _setMode(true);
         _rebuildCards();
+        _schedulePersistGuiQueueState();
       }
     });
 
@@ -2983,6 +4037,7 @@
         document.getElementById("dl-urls").value = _urlQueue
           .map((q) => q.url)
           .join("\n");
+        _schedulePersistGuiQueueState();
       }
     });
 
@@ -2990,6 +4045,7 @@
     document.getElementById("dl-urls").addEventListener("input", () => {
       if (window._updateQueueBadge) window._updateQueueBadge();
       if (_textMode) _syncSearchQueuedHighlights();
+      _schedulePersistGuiQueueState();
     });
   }
 
@@ -3135,6 +4191,12 @@
         no_label_tag: String(!document.getElementById("dl-tag-label").checked),
         no_upc_tag: String(!document.getElementById("dl-tag-upc").checked),
         no_isrc_tag: String(!document.getElementById("dl-tag-isrc").checked),
+        tag_title_from_track_format: String(
+          document.getElementById("dl-meta-title-from-track-format").checked,
+        ),
+        tag_album_from_folder_format: String(
+          document.getElementById("dl-meta-album-from-folder-format").checked,
+        ),
       };
       const dir = document.getElementById("dl-directory").value.trim();
       if (dir) payload.default_folder = dir;
@@ -3184,6 +4246,8 @@
       "dl-tag-label",
       "dl-tag-upc",
       "dl-tag-isrc",
+      "dl-meta-title-from-track-format",
+      "dl-meta-album-from-folder-format",
     ].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.addEventListener("change", _autosave);
@@ -3230,41 +4294,25 @@
             return;
           }
           const r = qi.resolved;
-          if (r.type === "track") {
-            total += 1;
-            return;
-          }
           if (r.type === "artist") {
-            const sdCheck = document.getElementById("dl-smart-discography");
-            const aoCheck = document.getElementById("dl-albums-only");
-            
-            if (r.raw_tracks !== undefined) {
-                if (sdCheck?.checked) {
-                    total += r.sd_filtered_tracks;
-                } else {
-                    total += r.raw_tracks;
-                }
-            } else {
-                if (r.albums) total += (r.albums * 10); // temporary rough estimate until check async resolves
-                hasUnknown = true;
-            }
             hasArtist = true;
-            return;
+            if (r.raw_tracks === undefined && r.albums) hasUnknown = true;
           }
-          if (r.tracks) {
-            total += r.tracks;
-            return;
-          }
-          total += 1;
+          total += _remainingTracksContributionFromQueueItem(qi);
         });
       }
       
       if (total === 0 && !hasUnknown) {
         badge.classList.add("hidden");
         badge.textContent = "";
+        badge.removeAttribute("aria-label");
       } else {
         badge.classList.remove("hidden");
         badge.textContent = hasUnknown ? `${total}+` : String(total);
+        badge.setAttribute(
+          "aria-label",
+          `${badge.textContent} tracks to download (${hasUnknown ? "estimate" : "queue"})`,
+        );
       }
       
       const artistGroup = document.getElementById("dl-artist-section");
@@ -3286,26 +4334,23 @@
     let _dlTrackDone = 0;
     let _dlTotalLocked = false;
     let _dlTrackFinished = new Set();
-    /** Queue URL → count of purchase-only tracks (album badge). */
-    let _purchaseOnlyCountByUrl = new Map();
+    /** Queue URL → track keys still counted as purchase-only on the album badge. */
+    let _purchaseOnlyKeysByUrl = new Map();
+
+    window._qUrlForPurchaseSlot = (slotId) => {
+      const sid = String(slotId || "").trim();
+      if (!sid) return "";
+      const pk = `sid:${sid}`;
+      for (const [url, set] of _purchaseOnlyKeysByUrl.entries()) {
+        if (set.has(pk)) return url;
+      }
+      return "";
+    };
 
     const DL_TIP_PURCHASE_QUEUE =
       "Open album on Qobuz to purchase (full album required for these tracks)";
     const DL_TIP_NOT_STREAMABLE =
       "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted) | open it on Qobuz to check.";
-
-    function _trackCountForResolvedQueueUrl(url) {
-      const qi = _urlQueue.find((q) => q.url === url);
-      if (!qi || !qi.resolved) return 1;
-      const r = qi.resolved;
-      const n = Number(r.tracks);
-      if (r.type === "artist" && r.raw_tracks != null) {
-        const a = Number(r.raw_tracks);
-        if (a > 0) return a;
-      }
-      if (n > 0) return n;
-      return 1;
-    }
 
     function _findCardByUrl(url) {
       const cards = document.querySelectorAll("#dl-queue .queue-card");
@@ -3313,26 +4358,60 @@
       return null;
     }
 
-    // Sum up expected track count from resolved queue metadata
-    function _calcTrackTotal() {
-      let total = 0;
-      _urlQueue.forEach((qi) => {
-        if (!qi.resolved) {
-          total += 1;
-          return;
+    function _syncQueueCardPurchaseIssues(qurl) {
+      const q = String(qurl || "").trim();
+      if (!q) return;
+      const card = _findCardByUrl(q);
+      if (!card) return;
+      const info = card.querySelector(".queue-card-info");
+      if (!info) return;
+      const set = _purchaseOnlyKeysByUrl.get(q);
+      const purchaseBadge = info.querySelector(".dl-error-badge.dl-purchase-badge");
+      const failedBadge = info.querySelector(".dl-error-badge.dl-url-failed-badge");
+      const qiHold = _urlQueue.find((x) => x.url === q);
+      const stayAlbum =
+        qiHold != null && _albumQueueItemNeedsToStayVisible(qiHold);
+
+      if (!set || set.size === 0) {
+        _purchaseOnlyKeysByUrl.delete(q);
+        if (purchaseBadge) purchaseBadge.remove();
+        if (!failedBadge && !stayAlbum) {
+          card.classList.remove("dl-error");
         }
-        const r = qi.resolved;
-        if (r.type === "track") {
-          total += 1;
-          return;
+        const stillActive =
+          card.classList.contains("dl-active") ||
+          card.classList.contains("dl-pending");
+        if (!stillActive && !failedBadge) {
+          if (stayAlbum) {
+            card.classList.add("dl-error");
+            _refreshAlbumQueueCardMetas();
+            return;
+          }
+          card.classList.add("dl-done");
+          setTimeout(() => _removeFromQueue(q, card), 1400);
         }
-        if (r.tracks) {
-          total += r.tracks;
-          return;
-        }
-        total += 1; // artist / label / unknown | will grow dynamically
-      });
-      return Math.max(total, 1);
+        return;
+      }
+
+      let badge = purchaseBadge;
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = "dl-error-badge dl-purchase-badge";
+        badge.setAttribute("data-tip", DL_TIP_PURCHASE_QUEUE);
+        badge.setAttribute("aria-label", DL_TIP_PURCHASE_QUEUE);
+        badge.removeAttribute("title");
+        info.appendChild(badge);
+      }
+      badge.textContent = `${set.size} ⚠ Purchase only`;
+      badge.setAttribute("data-tip", DL_TIP_PURCHASE_QUEUE);
+      badge.setAttribute("aria-label", DL_TIP_PURCHASE_QUEUE);
+      badge.removeAttribute("title");
+    }
+
+    function _purchaseIssueSlotKey(ev, resAlb) {
+      const sid = String(ev.slot_track_id || "").trim();
+      if (sid) return `sid:${sid}`;
+      return _trackKey(ev.track_no, ev.title, resAlb);
     }
 
     function _updateProgress() {
@@ -3345,7 +4424,7 @@
         fill.style.width = pct + "%";
       }
       if (label) {
-        label.textContent = `${_dlTrackDone} / ${_dlTrackTotal} tracks`;
+        label.textContent = `${_dlTrackDone} / ${cap} tracks`;
         label.title = "";
       }
     }
@@ -3358,15 +4437,14 @@
       if (isDownloading) {
         dlBtn.dataset.state = "downloading";
         dlBtn.innerHTML = `
-          <svg id="dl-btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-          <span id="dl-btn-text">Cancel</span>`;
-        // Hide badge during active download
-        const _badge = document.getElementById("dl-btn-badge");
-        if (_badge) _badge.classList.add("hidden");
+          <span class="dl-btn-body">
+            <svg id="dl-btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"
+                 aria-hidden="true">
+              <rect x="4" y="4" width="6" height="16" rx="1.5"/>
+              <rect x="14" y="4" width="6" height="16" rx="1.5"/>
+            </svg>
+            <span id="dl-btn-text">Pause</span>
+          </span>`;
         dlBtn.disabled = false;
         progressWrap.classList.remove("hidden");
         _updateProgress();
@@ -3377,14 +4455,16 @@
       } else {
         dlBtn.dataset.state = "idle";
         dlBtn.innerHTML = `
-          <svg id="dl-btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 15 17 10"/>
-            <line x1="12" y1="15" x2="12" y2="3"/>
-          </svg>
-          <span id="dl-btn-text">Start Download</span>
-          <span id="dl-btn-badge" class="dl-btn-badge hidden"></span>`;
+          <span class="dl-btn-body">
+            <svg id="dl-btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span id="dl-btn-text">Start Download</span>
+          </span>
+          <span id="dl-btn-badge" class="dl-btn-badge hidden" aria-live="polite"></span>`;
         window._updateQueueBadge();
         dlBtn.disabled = false;
         // Re-enable remove buttons on leftover (error) cards
@@ -3468,13 +4548,11 @@
           pa,
         );
       } else if (ev.type === "track_result") {
-        const _trackKey = `${String(ev.track_no || "").trim()}|${String(
-          ev.title || "",
-        ).trim()}|${String(ev.status || "").trim()}|${String(
-          ev.detail || "",
-        ).trim()}`;
-        if (!_dlTrackFinished.has(_trackKey)) {
-          _dlTrackFinished.add(_trackKey);
+        const resAlb = _lyricAlbumForTrackEv(ev);
+        const qurl = String(ev.source_url || "").trim();
+        const slotProgKey = _trackKey(ev.track_no, ev.title, resAlb);
+        if (!_dlTrackFinished.has(slotProgKey)) {
+          _dlTrackFinished.add(slotProgKey);
           _dlTrackDone++;
           if (!_dlTotalLocked && _dlTrackDone > _dlTrackTotal) {
             _dlTrackTotal = _dlTrackDone + 1;
@@ -3485,7 +4563,8 @@
         const isPurchase = st === "purchase_only";
         const detail = String(ev.detail || "").trim();
         const ap = String(ev.audio_path || "").trim();
-        const resAlb = _lyricAlbumForTrackEv(ev);
+        const sidTrim = String(ev.slot_track_id || "").trim();
+        const ridTrim = String(ev.release_album_id || "").trim();
         const preCard = _ensureTrackStatusCard(
           ev.track_no,
           ev.title,
@@ -3493,6 +4572,18 @@
           undefined,
           resAlb,
         );
+        if (preCard && qurl) {
+          preCard.dataset.queueSourceUrl = qurl;
+        }
+        if (preCard && sidTrim) {
+          preCard.dataset.slotTrackId = sidTrim;
+        }
+        if (preCard && ridTrim) {
+          preCard.dataset.releaseAlbumId = ridTrim;
+        }
+        if (preCard && sidTrim && ridTrim && (isPurchase || isFailed)) {
+          preCard.dataset.attachSearchEligible = "1";
+        }
         if (preCard && ap) {
           preCard.dataset.audioPath = ap;
           _tsRegisterAudioPathAlbum(ap, resAlb);
@@ -3506,6 +4597,8 @@
             {
               href: detail,
               titleAttr: DL_TIP_PURCHASE_QUEUE,
+              slotTrackId: sidTrim,
+              releaseAlbumId: ridTrim,
             },
             resAlb,
           );
@@ -3519,8 +4612,22 @@
             resAlb,
           );
         }
+        if (st === "downloaded" && preCard) {
+          if (ev.substitute_attach === true) {
+            preCard.dataset.attachSearchEligible = "1";
+          } else {
+            delete preCard.dataset.attachSearchEligible;
+          }
+        }
         if (st === "downloaded" && ap) {
           _persistDownloadHistoryAfterResult(ev, resAlb);
+        } else if (
+          preCard &&
+          sidTrim &&
+          ridTrim &&
+          ((isPurchase && detail) || isFailed)
+        ) {
+          _persistPendingSlotDownloadHistory(ev, preCard, resAlb);
         }
         if (preCard) {
           _tsStoreDbItemFromTrackResult(ev, resAlb, preCard);
@@ -3529,34 +4636,30 @@
           }
           _tsVirtOnScroll();
         }
-        const qurl = String(ev.source_url || "").trim();
+        const pk = _purchaseIssueSlotKey(ev, resAlb);
         if (isPurchase && qurl) {
+          let pset = _purchaseOnlyKeysByUrl.get(qurl);
+          if (!pset) {
+            pset = new Set();
+            _purchaseOnlyKeysByUrl.set(qurl, pset);
+          }
+          pset.add(pk);
           const qcard = _findCardByUrl(qurl);
           if (qcard) {
             qcard.classList.remove("dl-active", "dl-pending", "dl-done");
             qcard.classList.add("dl-error");
-            const info = qcard.querySelector(".queue-card-info");
-            if (info) {
-              const n =
-                (_purchaseOnlyCountByUrl.get(qurl) || 0) + 1;
-              _purchaseOnlyCountByUrl.set(qurl, n);
-              let badge = info.querySelector(".dl-error-badge.dl-purchase-badge");
-              if (!badge) {
-                badge = document.createElement("span");
-                badge.className = "dl-error-badge dl-purchase-badge";
-                badge.setAttribute("data-tip", DL_TIP_PURCHASE_QUEUE);
-                badge.setAttribute("aria-label", DL_TIP_PURCHASE_QUEUE);
-                badge.removeAttribute("title");
-                info.appendChild(badge);
-              }
-              badge.textContent = `${n} ⚠ Purchase only`;
-              badge.setAttribute("data-tip", DL_TIP_PURCHASE_QUEUE);
-              badge.setAttribute("aria-label", DL_TIP_PURCHASE_QUEUE);
-              badge.removeAttribute("title");
-            }
+            _syncQueueCardPurchaseIssues(qurl);
           }
+        } else if (st === "downloaded" && qurl) {
+          const pset = _purchaseOnlyKeysByUrl.get(qurl);
+          if (pset && pset.delete(pk) && pset.size === 0) {
+            _purchaseOnlyKeysByUrl.delete(qurl);
+          }
+          _syncQueueCardPurchaseIssues(qurl);
         }
         _updateProgress();
+        _tsApplyHistoryFilter();
+        _refreshAlbumQueueCardMetas();
       } else if (ev.type === "track_lyrics") {
         let albLy = "";
         const apEv = String(ev.audio_path || "").trim();
@@ -3597,6 +4700,7 @@
             ev.confidence != null && String(ev.confidence).trim() !== ""
               ? String(ev.confidence).trim()
               : "";
+          _tsApplyHistoryFilter();
         }
       } else if (ev.type === "url_done") {
         _dlDone++;
@@ -3606,7 +4710,13 @@
         const card = _findCardByUrl(ev.url);
         if (card) {
           card.classList.remove("dl-active", "dl-pending");
-          if (card.querySelector(".dl-purchase-badge")) {
+          const qi = _urlQueue.find((x) => x.url === ev.url);
+          const stayAlbum =
+            qi != null && _albumQueueItemNeedsToStayVisible(qi);
+          if (
+            card.querySelector(".dl-purchase-badge") ||
+            stayAlbum
+          ) {
             card.classList.add("dl-error");
           } else {
             card.classList.add("dl-done");
@@ -3622,14 +4732,13 @@
           card.classList.add("dl-error");
           const info = card.querySelector(".queue-card-info");
           if (info) {
-            const n = _trackCountForResolvedQueueUrl(ev.url);
             let badge = info.querySelector(".dl-error-badge.dl-url-failed-badge");
             if (!badge) {
               badge = document.createElement("span");
               badge.className = "dl-error-badge dl-url-failed-badge";
               info.appendChild(badge);
             }
-            badge.textContent = `${n} ⚠ Failed`;
+            badge.textContent = "⚠ Issue";
             badge.setAttribute("data-tip", DL_TIP_NOT_STREAMABLE);
             badge.setAttribute("aria-label", DL_TIP_NOT_STREAMABLE);
             badge.removeAttribute("title");
@@ -3639,47 +4748,57 @@
         // Snap progress to 100% and show final count
         _dlTrackTotal = Math.max(_dlTrackTotal, _dlTrackDone);
         const fill = document.getElementById("dl-progress-fill");
-        if (fill) fill.style.width = ev.cancelled ? fill.style.width : "100%";
+        const holdProg = Boolean(ev.cancelled || ev.paused);
+        if (fill) {
+          fill.style.width = holdProg ? fill.style.width : "100%";
+        }
         const label = document.getElementById("dl-progress-label");
         if (label) {
           label.textContent = `${_dlTrackDone} track${_dlTrackDone !== 1 ? "s" : ""}`;
           label.title = "";
         }
-        // Reset any cards still mid-flight (cancelled before they finished)
-        if (ev.cancelled) {
+        // Reset cards still marked as active once the graceful stop settles
+        if (ev.cancelled || ev.paused) {
           document
             .querySelectorAll(
               "#dl-queue .queue-card.dl-active, #dl-queue .queue-card.dl-pending",
             )
             .forEach((c) => c.classList.remove("dl-active", "dl-pending"));
         }
-        // Clear the cancelling-state inline styles before restoring button
+        // Clear the pausing-state inline styles before restoring button
         const dlBtn = document.getElementById("dl-btn");
         dlBtn.style.opacity = "";
         dlBtn.style.cursor = "";
         dlBtn.style.pointerEvents = "";
         _setDownloadingState(false);
+        _refreshAlbumQueueCardMetas();
       }
     };
 
     document.getElementById("dl-btn").addEventListener("click", async () => {
       const dlBtn = document.getElementById("dl-btn");
 
-      // Cancel if already running
+      // Pause if already running (graceful stop; same as /api/pause)
       if (dlBtn.dataset.state === "downloading") {
-        dlBtn.dataset.state = "cancelling";
-        const span = dlBtn.querySelector("span");
-        if (span) span.textContent = "Cancelling…";
-        // Keep button enabled but re-style it so it looks responsive, not frozen
+        dlBtn.dataset.state = "pausing";
+        const te = document.getElementById("dl-btn-text");
+        if (te) te.textContent = "Pausing…";
         dlBtn.disabled = false;
         dlBtn.style.opacity = "0.6";
         dlBtn.style.cursor = "default";
         dlBtn.style.pointerEvents = "none";
-        await fetch("/api/cancel", { method: "POST" }).catch(() => {});
+        try {
+          await fetch("/api/pause", { method: "POST" });
+        } catch (_) {
+          dlBtn.dataset.state = "downloading";
+          dlBtn.style.opacity = "";
+          dlBtn.style.cursor = "";
+          dlBtn.style.pointerEvents = "";
+          _setDownloadingState(true);
+        }
         return;
       }
-      // Ignore clicks while waiting for cancel to propagate
-      if (dlBtn.dataset.state === "cancelling") return;
+      if (dlBtn.dataset.state === "pausing") return;
 
       // Collect URLs
       let urls;
@@ -3758,6 +4877,12 @@
         no_label_tag: document.getElementById("dl-tag-label").checked === false,
         no_upc_tag: document.getElementById("dl-tag-upc").checked === false,
         no_isrc_tag: document.getElementById("dl-tag-isrc").checked === false,
+        tag_title_from_track_format: document.getElementById(
+          "dl-meta-title-from-track-format",
+        ).checked,
+        tag_album_from_folder_format: document.getElementById(
+          "dl-meta-album-from-folder-format",
+        ).checked,
       };
 
       try {
@@ -3771,11 +4896,11 @@
           // Mark all visible queue cards as pending (keep them in the list)
           _dlTotal = data.queued;
           _dlDone = 0;
-          _dlTrackTotal = _textMode ? data.queued : _calcTrackTotal();
+          _dlTrackTotal = _textMode ? data.queued : _calcProgressDenominatorFromQueue();
           _dlTrackDone = 0;
           _dlTotalLocked = false;
           _dlTrackFinished = new Set();
-          _purchaseOnlyCountByUrl = new Map();
+          _purchaseOnlyKeysByUrl = new Map();
           document.querySelectorAll("#dl-queue .queue-card").forEach((c) => {
             c.classList.add("dl-pending");
           });
@@ -3787,14 +4912,34 @@
     });
 
     const clearTrackStatusBtn = document.getElementById("dl-clear-track-status");
-    if (clearTrackStatusBtn) {
-      clearTrackStatusBtn.addEventListener("click", () => {
-        void _resetTrackStatusCards();
+    const clearHistoryConfirm = document.getElementById("dl-clear-history-confirm");
+    const clearHistoryCancel = document.getElementById("dl-clear-history-cancel");
+    const clearHistoryDo = document.getElementById("dl-clear-history-confirm-do");
+    if (clearTrackStatusBtn && clearHistoryConfirm) {
+      clearTrackStatusBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!clearHistoryConfirm.classList.contains("hidden")) {
+          _closeClearHistoryConfirm();
+          return;
+        }
+        _openClearHistoryConfirm();
       });
     }
+    clearHistoryCancel?.addEventListener("click", () => {
+      _closeClearHistoryConfirm();
+    });
+    clearHistoryDo?.addEventListener("click", async () => {
+      _closeClearHistoryConfirm();
+      await _resetTrackStatusCards();
+    });
     _initLyricSearchModal();
-    _initCollapsibleContainer("dl-track-status-container", "dl-track-status-toggle");
-    void _hydrateDownloadHistoryFromDb();
+    _initAttachTrackSearchPopover();
+    _initDownloadHistorySegment();
+    void (async () => {
+      await _restoreGuiQueueFromServer();
+      await _hydrateDownloadHistoryFromDb();
+      _refreshAlbumQueueCardMetas();
+    })();
   }
 
   // ── Search tab ────────────────────────────────────────────
@@ -4072,8 +5217,21 @@
     addBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (!r.url) return;
-      if (_urlQueue.some((q) => q.url === r.url)) return;
+      if (_urlQueue.some((q) => q.url === r.url)) {
+        _removeFromQueueByUrl(r.url);
+        return;
+      }
       _addUrlToQueue(r.url);
+    });
+    addBtn.addEventListener("mouseover", () => {
+      if (addBtn.classList.contains("result-add-btn--queued")) {
+        addBtn.setAttribute("data-tip", _TIP_SEARCH_QUEUED_REMOVE);
+      }
+    });
+    addBtn.addEventListener("mouseleave", () => {
+      if (addBtn.classList.contains("result-add-btn--queued")) {
+        addBtn.setAttribute("data-tip", _TIP_SEARCH_QUEUED_IDLE);
+      }
     });
 
     item.appendChild(addBtn);
@@ -4249,6 +5407,14 @@
       setCheck("dl-tag-label", cfg.no_label_tag !== "true");
       setCheck("dl-tag-upc", cfg.no_upc_tag !== "true");
       setCheck("dl-tag-isrc", cfg.no_isrc_tag !== "true");
+      setCheck(
+        "dl-meta-title-from-track-format",
+        cfg.tag_title_from_track_format !== "false",
+      );
+      setCheck(
+        "dl-meta-album-from-folder-format",
+        cfg.tag_album_from_folder_format !== "false",
+      );
 
       const md5Toggle = document.getElementById("dl-fix-md5s");
       if (md5Toggle) {
@@ -4645,7 +5811,7 @@
       "{tracknumber}": "08",
       "{track_number}": "08",
       "{tracktitle}": "Icarus (Dan's Bedroom Demo)",
-      "{track_title_base}": "Icarus",
+      "{track_title_base}": "Icarus (feat. Maya)",
       "{version}": "10th Anniversary Edition",
       "{disc_number}": "02",
       "{disc_number_unpadded}": "2",
@@ -4937,7 +6103,8 @@
           e.target &&
           typeof e.target.closest === "function" &&
           (e.target.closest("#dl-track-status") ||
-            e.target.closest("#lyric-search-popover"))
+            e.target.closest("#lyric-search-popover") ||
+            e.target.closest("#attach-track-popover"))
         ) {
           return;
         }

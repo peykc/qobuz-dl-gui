@@ -7,6 +7,7 @@ from pathlib import Path
 
 import configparser
 import hashlib
+import json
 import logging
 import queue
 import re
@@ -31,6 +32,7 @@ else:
 CONFIG_PATH = os.path.join(OS_CONFIG, "qobuz-dl")
 CONFIG_FILE = os.path.join(CONFIG_PATH, "config.ini")
 QOBUZ_DB = os.path.join(CONFIG_PATH, "qobuz_dl.db")
+DOWNLOAD_QUEUE_JSON = os.path.join(CONFIG_PATH, "download_queue.json")
 
 
 def _gui_static_dir():
@@ -129,18 +131,14 @@ class _QueueHandler(logging.Handler):
                     parts[2],
                     parts[3],
                 )
-                queue_url = ""
-                audio_path = ""
-                lyric_album = ""
-                if len(parts) >= 7:
-                    queue_url = parts[4]
-                    audio_path = parts[5]
-                    lyric_album = parts[6].strip()
-                elif len(parts) >= 6:
-                    queue_url = parts[4]
-                    audio_path = parts[5]
-                elif len(parts) >= 5:
-                    queue_url = parts[4]
+                queue_url = parts[4].strip() if len(parts) >= 5 else ""
+                if queue_url == "-":
+                    queue_url = ""
+                audio_path = parts[5].strip() if len(parts) >= 6 else ""
+                lyric_album = parts[6].strip() if len(parts) >= 7 else ""
+                slot_track_id = parts[7].strip() if len(parts) >= 8 else ""
+                release_album_id = parts[8].strip() if len(parts) >= 9 else ""
+                substitute_attach = len(parts) > 9 and parts[9].strip() == "1"
                 # Do not _ctx_mark_error() for purchase_only: it is a per-track outcome
                 # (queue card shows purchase count); URL-level url_error should reflect
                 # album/connection failures (e.g. Not streamable), not purchasable tracks.
@@ -157,6 +155,12 @@ class _QueueHandler(logging.Handler):
                     ev["audio_path"] = audio_path
                 if lyric_album:
                     ev["lyric_album"] = lyric_album
+                if slot_track_id:
+                    ev["slot_track_id"] = slot_track_id
+                if release_album_id:
+                    ev["release_album_id"] = release_album_id
+                if substitute_attach:
+                    ev["substitute_attach"] = True
                 _emit_event(ev)
             return
 
@@ -220,8 +224,12 @@ qobuz_dl.core.ui_emitter = _emit_event
 # ---------------------------------------------------------------------------
 _client_lock = threading.Lock()
 _qobuz_client = None  # QobuzDL instance
-_cancel_download = threading.Event()  # set by /api/cancel
+_cancel_download = threading.Event()  # graceful stop signal (pause or cancel share this)
+_abort_byte_streams = (
+    threading.Event()
+)  # cancel-only — interrupt FLAC/cover HTTP chunks (pause lets bytes finish)
 _download_active = False  # True while a download thread is running
+_graceful_dl_stop: Optional[str] = None  # "pause" | "cancel" while stop requested; unset at run start/end
 _url_ctx_lock = threading.Lock()
 _url_ctx = {"tracking": False, "had_error": False}  # cross-thread URL error tracking
 
@@ -363,6 +371,14 @@ def _build_qobuz_from_config(cfg, overrides=None):
         o.get("native_lang"),
         cfg.getboolean("DEFAULT", "native_lang", fallback=False),
     )
+    tag_title_from_track_format = _as_bool(
+        o.get("tag_title_from_track_format"),
+        cfg.getboolean("DEFAULT", "tag_title_from_track_format", fallback=True),
+    )
+    tag_album_from_folder_format = _as_bool(
+        o.get("tag_album_from_folder_format"),
+        cfg.getboolean("DEFAULT", "tag_album_from_folder_format", fallback=True),
+    )
 
     qobuz = QobuzDL(
         directory=directory,
@@ -455,6 +471,8 @@ def _build_qobuz_from_config(cfg, overrides=None):
             o.get("no_isrc_tag"),
             cfg.getboolean("DEFAULT", "no_isrc_tag", fallback=False),
         ),
+        tag_title_from_track_format=tag_title_from_track_format,
+        tag_album_from_folder_format=tag_album_from_folder_format,
     )
     return qobuz
 
@@ -563,6 +581,12 @@ def api_status():
                 "no_label_tag": cfg["DEFAULT"].get("no_label_tag", "false"),
                 "no_upc_tag": cfg["DEFAULT"].get("no_upc_tag", "false"),
                 "no_isrc_tag": cfg["DEFAULT"].get("no_isrc_tag", "false"),
+                "tag_title_from_track_format": cfg["DEFAULT"].get(
+                    "tag_title_from_track_format", "true"
+                ),
+                "tag_album_from_folder_format": cfg["DEFAULT"].get(
+                    "tag_album_from_folder_format", "true"
+                ),
             }
         except Exception:
             pass
@@ -712,6 +736,8 @@ def api_setup():
             "no_isrc_tag",
         ):
             cfg["DEFAULT"][key] = "false"
+        cfg["DEFAULT"]["tag_title_from_track_format"] = "true"
+        cfg["DEFAULT"]["tag_album_from_folder_format"] = "true"
 
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)
@@ -923,6 +949,8 @@ def api_oauth_start():
                     "no_label_tag",
                     "no_upc_tag",
                     "no_isrc_tag",
+                    "tag_title_from_track_format",
+                    "tag_album_from_folder_format",
                 ):
                     if not cfg_write.has_option("DEFAULT", key):
                         defaults = {
@@ -966,6 +994,8 @@ def api_oauth_start():
                             "no_label_tag": "false",
                             "no_upc_tag": "false",
                             "no_isrc_tag": "false",
+                            "tag_title_from_track_format": "true",
+                            "tag_album_from_folder_format": "true",
                         }
                         cfg_write["DEFAULT"][key] = defaults.get(key, "")
                 with open(CONFIG_FILE, "w") as f:
@@ -1068,6 +1098,8 @@ def api_token_login():
             "no_isrc_tag",
         ):
             cfg["DEFAULT"][key] = "false"
+        cfg["DEFAULT"]["tag_title_from_track_format"] = "true"
+        cfg["DEFAULT"]["tag_album_from_folder_format"] = "true"
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)
 
@@ -1185,6 +1217,7 @@ def api_resolve():
                 "quality": f"{meta.get('maximum_bit_depth', '?')}bit / {meta.get('maximum_sampling_rate', '?')}kHz",
                 "explicit": bool(meta.get("parental_warning") or meta.get("explicit")),
                 "url": url,
+                "release_album_id": str(item_id).strip(),
             }
         elif url_type == "track":
             meta = qobuz.client.get_track_meta(item_id)
@@ -1244,6 +1277,210 @@ def api_resolve():
         logging.error(f"Resolve failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
+
+def _attach_explicit_flag(track_dict):
+    if not track_dict or not isinstance(track_dict, dict):
+        return False
+    return bool(
+        track_dict.get("parental_warning")
+        or track_dict.get("explicit")
+        or track_dict.get("parental_advisory")
+    )
+
+
+def _attach_track_quality_fields(track_dict):
+    """Best-effort tier + specs from track/search items (matches sidebar track badges)."""
+    if not isinstance(track_dict, dict):
+        return ("LOSSLESS", None, None)
+    alb = track_dict.get("album") if isinstance(track_dict.get("album"), dict) else {}
+    bd_t = track_dict.get("maximum_bit_depth")
+    sr_t = track_dict.get("maximum_sampling_rate")
+    bd_a = alb.get("maximum_bit_depth")
+    sr_a = alb.get("maximum_sampling_rate")
+    try:
+        bit_depth = int(bd_t if bd_t is not None else bd_a or 0) or None
+    except (TypeError, ValueError):
+        bit_depth = None
+    try:
+        sample_rate = int(sr_t if sr_t is not None else sr_a or 0) or None
+    except (TypeError, ValueError):
+        sample_rate = None
+
+    hires = bool(track_dict.get("hires_streamable") or alb.get("hires_streamable"))
+    mime = str(track_dict.get("mime_type") or "").lower()
+    aq = track_dict.get("audio_quality")
+
+    tier = "LOSSLESS"
+    if hires:
+        tier = "HI-RES"
+    elif bit_depth and bit_depth > 16:
+        tier = "HI-RES"
+    elif sample_rate and sample_rate > 48000:
+        tier = "HI-RES"
+    elif "mpeg" in mime or aq == 5 or str(aq).strip().lower() == "mp3":
+        tier = "MP3"
+
+    return (tier, bit_depth, sample_rate)
+
+
+@app.route("/api/search_tracks_attach", methods=["POST"])
+def api_search_tracks_attach():
+    qobuz = _get_qobuz()
+    if not qobuz or not qobuz.client:
+        return jsonify({"ok": False, "error": "Not connected"}), 400
+
+    data = request.json or {}
+    query = (data.get("query") or "").strip()
+    if len(query) < 2:
+        return jsonify({"ok": False, "error": "Query too short"}), 400
+
+    anchor_explicit = data.get("anchor_explicit")
+    if anchor_explicit is not None:
+        anchor_explicit = bool(anchor_explicit)
+
+    try:
+        raw = qobuz.client.search_tracks(query, limit=48, offset=0)
+        items = (raw.get("tracks") or {}).get("items") or []
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            exp = _attach_explicit_flag(it)
+            if anchor_explicit is True and not exp:
+                continue
+            if anchor_explicit is False and exp:
+                continue
+            tid = str(it.get("id") or "").strip()
+            if not tid:
+                continue
+            perf = (it.get("performer") or {}).get("name") or ""
+            alb = it.get("album") or {}
+            alb_title = alb.get("title") or ""
+            try:
+                dur = int(it.get("duration") or 0)
+            except (TypeError, ValueError):
+                dur = 0
+            tier, q_bd, q_sr = _attach_track_quality_fields(it)
+            out.append(
+                {
+                    "id": tid,
+                    "title": it.get("title") or "",
+                    "artist": perf,
+                    "album_title": alb_title,
+                    "explicit": exp,
+                    "duration_sec": dur,
+                    "quality_tier": tier,
+                    "maximum_bit_depth": q_bd,
+                    "maximum_sampling_rate": q_sr,
+                }
+            )
+        return jsonify({"ok": True, "tracks": out})
+    except Exception as e:
+        logging.error("search_tracks_attach failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/download_attach_track", methods=["POST"])
+def api_download_attach_track():
+    qobuz = _get_qobuz()
+    if not qobuz or not qobuz.client:
+        return jsonify({"ok": False, "error": "Not connected"}), 400
+
+    data = request.json or {}
+    slot_id = str(data.get("slot_track_id") or "").strip()
+    sub_id = str(data.get("substitute_track_id") or "").strip()
+    album_id_post = str(data.get("album_id") or "").strip()
+    queue_src = str(data.get("queue_source_url") or "").strip()
+    if not slot_id or not sub_id:
+        return jsonify({"ok": False, "error": "slot_track_id and substitute_track_id required"}), 400
+
+    def run():
+        from qobuz_dl.downloader import Download as DLCls
+
+        try:
+            cfg = configparser.ConfigParser()
+            cfg.read(CONFIG_FILE)
+            tmp = _build_qobuz_from_config(cfg)
+            tmp.client = qobuz.client
+            tmp.client.set_language_headers(tmp.native_lang)
+
+            album_meta = None
+            slot_final = None
+
+            if album_id_post:
+                album_meta = tmp.client.get_album_meta(album_id_post)
+                for tr in (album_meta.get("tracks") or {}).get("items") or []:
+                    if isinstance(tr, dict) and str(tr.get("id")) == str(slot_id):
+                        slot_final = tr
+                        break
+                if slot_final is None:
+                    try:
+                        slot_final = tmp.client.get_track_meta(slot_id)
+                    except Exception as e:
+                        logging.error(
+                            "attach: slot %s not in album %s listing and track/get failed: %s",
+                            slot_id,
+                            album_id_post,
+                            e,
+                        )
+                        return
+            else:
+                try:
+                    slot_api = tmp.client.get_track_meta(slot_id)
+                except Exception as e:
+                    logging.error("attach: track/get slot failed: %s", e)
+                    return
+                alb_wrap = slot_api.get("album") or {}
+                album_id_resolved = str(alb_wrap.get("id") or "").strip()
+                if not album_id_resolved:
+                    logging.error("attach: no album id on slot track")
+                    return
+                album_meta = tmp.client.get_album_meta(album_id_resolved)
+                slot_final = None
+                for tr in (album_meta.get("tracks") or {}).get("items") or []:
+                    if isinstance(tr, dict) and str(tr.get("id")) == str(slot_id):
+                        slot_final = tr
+                        break
+                if slot_final is None:
+                    slot_final = slot_api
+
+            dl_album_id = str(album_meta.get("id") or album_id_post or "").strip()
+            if not dl_album_id:
+                logging.error("attach: could not resolve album id for downloader")
+                return
+
+            dloader = DLCls(
+                tmp.client,
+                dl_album_id,
+                tmp.directory,
+                int(tmp.quality),
+                tmp.embed_art,
+                tmp.ignore_singles_eps,
+                tmp.quality_fallback,
+                tmp.cover_og_quality,
+                tmp.no_cover,
+                tmp.lyrics_enabled,
+                tmp.folder_format,
+                tmp.track_format,
+                cancel_event=None,
+                source_queue_url=queue_src,
+                tag_options=tmp.tag_options,
+                multiple_disc_prefix=tmp.multiple_disc_prefix,
+                multiple_disc_one_dir=tmp.multiple_disc_one_dir,
+                multiple_disc_track_format=tmp.multiple_disc_track_format,
+                max_workers=tmp.max_workers,
+                delay_seconds=0,
+                segmented_fallback=tmp.segmented_fallback,
+                no_credits=tmp.no_credits,
+                tag_title_from_track_format=tmp.tag_title_from_track_format,
+                tag_album_from_folder_format=tmp.tag_album_from_folder_format,
+            )
+            dloader.download_substitute_for_slot(album_meta, slot_final, sub_id)
+        except Exception as e:
+            logging.error("download_attach_track worker: %s", e, exc_info=True)
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1386,12 +1623,20 @@ def api_download():
         "no_label_tag": data.get("no_label_tag", False),
         "no_upc_tag": data.get("no_upc_tag", False),
         "no_isrc_tag": data.get("no_isrc_tag", False),
+        "tag_title_from_track_format": data.get(
+            "tag_title_from_track_format", True
+        ),
+        "tag_album_from_folder_format": data.get(
+            "tag_album_from_folder_format", True
+        ),
     }
 
     def run():
-        global _download_active
+        global _download_active, _graceful_dl_stop
         _download_active = True
         _cancel_download.clear()
+        _abort_byte_streams.clear()
+        _graceful_dl_stop = None
         cfg = configparser.ConfigParser()
         cfg.read(CONFIG_FILE)
         try:
@@ -1402,6 +1647,7 @@ def api_download():
             tmp.client.set_language_headers(tmp.native_lang)
             print(f"DEBUG: Worker thread starting. cancel_event id={id(_cancel_download)}")
             tmp.cancel_event = _cancel_download
+            tmp.abort_stream_event = _abort_byte_streams
             logging.info(f"Starting download of {len(urls)} URL(s)…")
             for url in urls:
                 if _cancel_download.is_set():
@@ -1428,7 +1674,18 @@ def api_download():
         except Exception as e:
             logging.error(f"Download error: {e}")
         finally:
-            _emit_event({"type": "dl_complete", "cancelled": _cancel_download.is_set()})
+            was_stop = _cancel_download.is_set()
+            mode = _graceful_dl_stop
+            paused = was_stop and mode == "pause"
+            cancelled = was_stop and mode != "pause"
+            _emit_event(
+                {
+                    "type": "dl_complete",
+                    "cancelled": cancelled,
+                    "paused": paused,
+                }
+            )
+            _graceful_dl_stop = None
             _download_active = False
 
     t = threading.Thread(target=run, daemon=True)
@@ -1441,10 +1698,13 @@ def api_download():
 # ---------------------------------------------------------------------------
 @app.route("/api/cancel", methods=["POST"])
 def api_cancel():
+    global _graceful_dl_stop
     if _download_active:
         print(f"DEBUG: api_cancel hit. setting id={id(_cancel_download)}")
         sys.stdout.flush()
+        _graceful_dl_stop = "cancel"
         _cancel_download.set()
+        _abort_byte_streams.set()
         logging.info("Cancelling | current item will finish then stop…")
         
         def purge():
@@ -1463,11 +1723,22 @@ def api_cancel():
         def delayed_purge():
             time.sleep(0.5)
             purge()
-            # Emit final status
-            _emit_event({"type": "dl_complete", "cancelled": True})
-            
+
         threading.Thread(target=delayed_purge, daemon=True).start()
-        
+
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# API: pause download (graceful stop like cancel — tracks on disk kept; resume = Start again)
+# ---------------------------------------------------------------------------
+@app.route("/api/pause", methods=["POST"])
+def api_pause():
+    global _graceful_dl_stop
+    if _download_active:
+        _graceful_dl_stop = "pause"
+        _cancel_download.set()
+        logging.info("Pause requested | in-flight downloads will finish then worker stops.")
     return jsonify({"ok": True})
 
 
@@ -1526,6 +1797,16 @@ def _lyrics_explicit_tag_enabled_from_config() -> bool:
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_FILE)
     return not cfg.getboolean("DEFAULT", "no_explicit_tag", fallback=False)
+
+
+def _download_history_audio_path_accepted(audio_path: str) -> bool:
+    """Real library files or synthetic pending-slot rows (persist purchase/failed slots)."""
+    from qobuz_dl.db import is_gui_pending_track_key
+
+    raw = (audio_path or "").strip()
+    if is_gui_pending_track_key(raw):
+        return True
+    return _audio_path_allowed_for_lyrics_attach(raw)
 
 
 def _audio_path_allowed_for_lyrics_attach(audio_path: str) -> bool:
@@ -1595,6 +1876,80 @@ def api_reveal_in_folder():
     return jsonify({"ok": True})
 
 
+def _sanitize_gui_queue_items(items) -> list:
+    if not items or not isinstance(items, list):
+        return []
+    out = []
+    for it in items[:5000]:
+        if not isinstance(it, dict):
+            continue
+        url = (it.get("url") or "").strip()
+        if not url:
+            continue
+        res = it.get("resolved")
+        if res is not None and not isinstance(res, dict):
+            res = None
+        out.append({"url": url, "resolved": res})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# API: download URL queue (persisted across GUI restarts)
+# ---------------------------------------------------------------------------
+@app.route("/api/download-queue", methods=["GET", "POST"])
+def api_download_queue():
+    empty = {
+        "ok": True,
+        "version": 1,
+        "text_mode": False,
+        "text_urls": "",
+        "items": [],
+    }
+    os.makedirs(CONFIG_PATH, exist_ok=True)
+    if request.method == "GET":
+        if not os.path.isfile(DOWNLOAD_QUEUE_JSON):
+            return jsonify(empty)
+        try:
+            with open(DOWNLOAD_QUEUE_JSON, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return jsonify(empty)
+            return jsonify(
+                {
+                    "ok": True,
+                    "version": int(data.get("version") or 1),
+                    "text_mode": bool(data.get("text_mode")),
+                    "text_urls": str(data.get("text_urls") or ""),
+                    "items": _sanitize_gui_queue_items(data.get("items")),
+                }
+            )
+        except Exception as e:
+            logging.warning("download-queue load: %s", e)
+            return jsonify(empty)
+    payload = request.get_json(silent=True) or {}
+    text_urls = str(payload.get("text_urls") or "")
+    if len(text_urls) > 1_500_000:
+        return jsonify({"ok": False, "error": "payload too large"}), 400
+    items = payload.get("items")
+    if items is not None and not isinstance(items, list):
+        return jsonify({"ok": False, "error": "items must be a list"}), 400
+    out_doc = {
+        "version": 1,
+        "text_mode": bool(payload.get("text_mode")),
+        "text_urls": text_urls,
+        "items": _sanitize_gui_queue_items(items),
+    }
+    try:
+        tmp = DOWNLOAD_QUEUE_JSON + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out_doc, f, ensure_ascii=False, indent=0)
+        os.replace(tmp, DOWNLOAD_QUEUE_JSON)
+    except Exception as e:
+        logging.error("download-queue save: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # API: download history (SQLite; survives restarts for files still on disk)
 # ---------------------------------------------------------------------------
@@ -1606,7 +1961,7 @@ def api_download_history():
     safe = [
         it
         for it in items
-        if _audio_path_allowed_for_lyrics_attach(it.get("audio_path") or "")
+        if _download_history_audio_path_accepted(it.get("audio_path") or "")
     ]
     return jsonify({"ok": True, "items": safe})
 
@@ -1619,7 +1974,7 @@ def api_download_history_upsert():
     audio_path = (data.get("audio_path") or "").strip()
     if not audio_path:
         return jsonify({"ok": False, "error": "audio_path required"}), 400
-    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+    if not _download_history_audio_path_accepted(audio_path):
         return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
     te = data.get("track_explicit", None)
     if te is None or te == "":
@@ -1636,6 +1991,10 @@ def api_download_history_upsert():
             track_explicit = 0
         else:
             track_explicit = None
+    raw_attach = data.get("attach_search_eligible")
+    attach_search_kw = None
+    if raw_attach is not None and raw_attach != "":
+        attach_search_kw = 1 if _as_bool(raw_attach) else 0
     try:
         duration_sec = int(data.get("duration_sec") or 0)
     except (TypeError, ValueError):
@@ -1654,6 +2013,10 @@ def api_download_history_upsert():
         lyric_type=str(data.get("lyric_type") or ""),
         lyric_provider=str(data.get("lyric_provider") or ""),
         lyric_confidence=str(data.get("lyric_confidence") or ""),
+        slot_track_id=str(data.get("slot_track_id") or ""),
+        release_album_id=str(data.get("release_album_id") or ""),
+        pending_slot_cleanup_id=str(data.get("pending_slot_cleanup_id") or ""),
+        attach_search_eligible=attach_search_kw,
     )
     return jsonify({"ok": True})
 
@@ -1880,6 +2243,7 @@ def api_lucky():
             with _client_lock:
                 tmp.client = qobuz.client
             tmp.cancel_event = _cancel_download
+            tmp.abort_stream_event = _abort_byte_streams
             tmp.lucky_type = lucky_type
             tmp.lucky_limit = number
             logging.info(f'Lucky download: "{query}" ({lucky_type}, top {number})')

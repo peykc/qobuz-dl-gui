@@ -4,7 +4,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from qobuz_dl.downloader import Download, _track_dict_for_lrclib
+from qobuz_dl.downloader import (
+    Download,
+    _track_dict_for_lrclib,
+    _track_metadata_display_title,
+    _track_title_base_with_feat,
+)
 from qobuz_dl.utils import flac_fix_md5s, make_m3u
 
 
@@ -77,6 +82,38 @@ class DownloaderFeatureTests(unittest.TestCase):
         self.assertEqual(attrs["album_url"], "https://play.qobuz.com/album/999")
         self.assertEqual(attrs["barcode"], "123456789012")
 
+    def test_track_title_base_with_feat_keeps_feat_drops_edition(self):
+        self.assertEqual(
+            _track_title_base_with_feat("Emit Remmus (2014 Remaster)"),
+            "Emit Remmus",
+        )
+        self.assertEqual(
+            _track_title_base_with_feat(
+                "Night Song (feat. Guest MC) (Deluxe Edition)"
+            ),
+            "Night Song (feat. Guest MC)",
+        )
+        self.assertEqual(
+            _track_title_base_with_feat("Radio [feat. Jane]"),
+            "Radio [feat. Jane]",
+        )
+
+    def test_track_metadata_display_title_no_track_numbers(self):
+        meta = {"title": "Emit Remmus", "track_number": 9}
+        self.assertEqual(_track_metadata_display_title(meta), "Emit Remmus")
+
+    def test_track_metadata_display_title_classical_work_prefix(self):
+        meta = {"title": "Movement I", "work": "Symphony No. 9"}
+        self.assertEqual(
+            _track_metadata_display_title(meta), "Symphony No. 9: Movement I"
+        )
+
+    def test_track_metadata_display_title_feat_from_version_field(self):
+        meta = {"title": "Hit Song", "version": "feat. Collaborator"}
+        self.assertEqual(
+            _track_metadata_display_title(meta), "Hit Song (feat. Collaborator)"
+        )
+
     def test_track_dict_for_lrclib_fills_missing_nested_album(self):
         track = {
             "title": "Song",
@@ -92,6 +129,56 @@ class DownloaderFeatureTests(unittest.TestCase):
         out = _track_dict_for_lrclib(track, release)
         self.assertEqual(out["album"]["title"], "Album Name")
         self.assertTrue(out["album"].get("explicit"))
+
+    def test_stream_abort_falls_back_to_cancel_event(self):
+        import tempfile
+        import threading
+        from unittest.mock import MagicMock
+
+        ce = threading.Event()
+        d = Download(MagicMock(), "1", tempfile.gettempdir(), 6, cancel_event=ce)
+        self.assertFalse(d._stream_abort_is_set())
+        ce.set()
+        self.assertTrue(d._stream_abort_is_set())
+
+    def test_stream_abort_uses_bound_event_not_cooperative_cancel(self):
+        import tempfile
+        import threading
+        from unittest.mock import MagicMock
+
+        ce = threading.Event()
+        ae = threading.Event()
+        d = Download(
+            MagicMock(),
+            "1",
+            tempfile.gettempdir(),
+            6,
+            cancel_event=ce,
+            abort_stream_event=ae,
+        )
+        ce.set()
+        self.assertFalse(d._stream_abort_is_set())
+        ae.set()
+        self.assertTrue(d._stream_abort_is_set())
+
+    def test_cooperative_stop_is_set_independent_of_stream_abort(self):
+        import tempfile
+        import threading
+        from unittest.mock import MagicMock
+
+        ce = threading.Event()
+        ae = threading.Event()
+        d = Download(
+            MagicMock(),
+            "1",
+            tempfile.gettempdir(),
+            6,
+            cancel_event=ce,
+            abort_stream_event=ae,
+        )
+        ce.set()
+        self.assertTrue(d._cooperative_stop_is_set())
+        self.assertFalse(d._stream_abort_is_set())
 
 
 if __name__ == "__main__":

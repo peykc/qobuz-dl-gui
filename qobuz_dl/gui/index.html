@@ -543,8 +543,8 @@
                                             </tr>
                                             <tr>
                                                 <td><code>{track_title_base}</code></td>
-                                                <td>Track title without version suffix</td>
-                                                <td class="fmt-example">Icarus</td>
+                                                <td>Title without edition/remaster parentheses; keeps feat./ft./featuring credits only</td>
+                                                <td class="fmt-example">Icarus (feat. Jane)</td>
                                             </tr>
                                             <tr>
                                                 <td><code>{artist}</code></td>
@@ -684,8 +684,8 @@
                                             </tr>
                                             <tr>
                                                 <td><code>{track_title_base}</code></td>
-                                                <td>Track title without version</td>
-                                                <td class="fmt-example">Icarus</td>
+                                                <td>No edition/remaster parentheses; keeps feat./ft./featuring only</td>
+                                                <td class="fmt-example">Icarus (feat. Jane)</td>
                                             </tr>
                                             <tr>
                                                 <td><code>{tracktitle}</code></td>
@@ -867,6 +867,28 @@
                             </div>
 
                             <div class="toggle-group">
+                                <span class="toggle-group-label">Metadata titles</span>
+                                <div class="toggle-group-items">
+                                    <label class="toggle-label"
+                                        data-tip="Plain TITLE tag: core title plus feat credits only—no edition parentheses or track numbers from filenames. Off: catalog title (with version field).">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-meta-title-from-track-format" checked />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Plain track metadata title
+                                    </label>
+                                    <label class="toggle-label"
+                                        data-tip="The embedded metadata title for albums. On: your folder format segment. Off: Qobuz album title.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-meta-album-from-folder-format" checked />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Album metadata title from format
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="toggle-group">
                                 <span class="toggle-group-label">Tag Controls (checked = write tag)</span>
                                 <!-- Per-tag data-tip; use data-tip-icon="/gui/....png" for Plex (or future Jellyfin/Kodi assets under /gui/). -->
                                 <div class="tag-checkbox-grid">
@@ -956,23 +978,28 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                         </div>
                     </div>
                     <!-- Text mode: plain textarea (hidden by default) -->
-                    <textarea id="dl-urls" class="dl-urls-text hidden" rows="6"
+                    <textarea id="dl-urls" class="dl-urls-text hidden" rows="3"
                         placeholder="https://play.qobuz.com/album/...&#10;https://play.qobuz.com/track/..."
                         ondragover="event.preventDefault()" ondrop="
                                 event.preventDefault();
                                 window._handleDropText(event);
                             "></textarea>
                     <div class="action-row">
-                        <button id="dl-btn" class="btn-primary" data-state="idle">
-                            <svg id="dl-btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <polyline points="7 10 12 15 17 10" />
-                                <line x1="12" y1="15" x2="12" y2="3" />
-                            </svg>
-                            <span id="dl-btn-text">Start Download</span>
-                            <span id="dl-btn-badge" class="dl-btn-badge hidden"></span>
-                        </button>
+                        <div class="dl-download-buttons">
+                            <button id="dl-btn" class="btn-primary dl-btn-split" data-state="idle">
+                                <span class="dl-btn-body">
+                                    <svg id="dl-btn-icon" width="15" height="15" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2.5"
+                                        stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                        <polyline points="7 10 12 15 17 10" />
+                                        <line x1="12" y1="15" x2="12" y2="3" />
+                                    </svg>
+                                    <span id="dl-btn-text">Start Download</span>
+                                </span>
+                                <span id="dl-btn-badge" class="dl-btn-badge hidden" aria-live="polite"></span>
+                            </button>
+                        </div>
                         <div id="dl-progress-wrap" class="dl-progress-wrap hidden">
                             <div class="dl-progress-bar">
                                 <div id="dl-progress-fill" class="dl-progress-fill"></div>
@@ -983,13 +1010,33 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                 </div>
 
                 <div class="log-container" id="dl-track-status-container">
-                    <div class="log-header">
-                        <button class="log-header-toggle" id="dl-track-status-toggle" type="button"
-                            aria-expanded="true" aria-controls="dl-track-status">
-                            <span class="log-header-chevron">▾</span>
-                            <span>Download History</span>
-                        </button>
-                        <button class="btn-ghost btn-sm" id="dl-clear-track-status">Clear</button>
+                    <div class="log-header dl-history-header">
+                        <div class="dl-history-segment" role="tablist" aria-label="History source">
+                            <button type="button" role="tab" id="dl-history-tab-all"
+                                class="dl-history-segment-btn dl-history-segment-btn--all is-active"
+                                aria-selected="true" tabindex="0">Download history</button>
+                            <button type="button" role="tab" id="dl-history-tab-errors"
+                                class="dl-history-segment-btn dl-history-segment-btn--errors"
+                                aria-selected="false" tabindex="-1">Error history</button>
+                        </div>
+                        <div class="dl-clear-history-shell">
+                            <button type="button" class="btn-ghost btn-sm" id="dl-clear-track-status"
+                                aria-expanded="false" aria-haspopup="dialog"
+                                aria-controls="dl-clear-history-confirm">Clear</button>
+                            <div id="dl-clear-history-confirm" class="dl-clear-history-confirm hidden" role="dialog"
+                                aria-labelledby="dl-clear-history-confirm-heading" aria-modal="true" tabindex="-1">
+                                <p id="dl-clear-history-confirm-heading" class="dl-clear-history-confirm-heading"
+                                    role="heading" aria-level="2">Clear the entire download history?</p>
+                                <p class="dl-clear-history-confirm-detail">This cannot be undone. (This can cause UI bugs
+                                    during active downloads.)</p>
+                                <div class="dl-clear-history-confirm-actions">
+                                    <button type="button" class="btn-ghost btn-sm"
+                                        id="dl-clear-history-cancel">Cancel</button>
+                                    <button type="button" class="btn-danger btn-sm"
+                                        id="dl-clear-history-confirm-do">Clear all</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="track-status-list" id="dl-track-status"></div>
                 </div>
@@ -1086,10 +1133,43 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
             </div>
         </div>
 
+        <!-- Attach streamable substitute for purchase-only album slots -->
+        <div id="attach-track-popover" class="lyric-search-popover attach-track-popover hidden" role="dialog"
+            aria-labelledby="attach-track-heading" aria-hidden="true">
+            <div class="lyric-search-popover-inner">
+                <div class="lyric-search-head">
+                    <h2 id="attach-track-heading">Find track replacement</h2>
+                    <button type="button" id="attach-track-close" class="btn-ghost btn-sm lyric-search-close"
+                        aria-label="Close">×</button>
+                </div>
+                <div class="lyric-search-body attach-track-body">
+                    <div class="lyric-search-col lyric-search-col--form">
+                        <div class="lyric-search-fields">
+                            <p class="attach-track-hint">Search Qobuz for another release of this song.</p>
+                            <div class="form-group">
+                                <label for="attach-track-title">Title</label>
+                                <input type="text" id="attach-track-title" autocomplete="off" placeholder="Track title…" />
+                            </div>
+                            <div class="form-group">
+                                <label for="attach-track-artist">Artist</label>
+                                <input type="text" id="attach-track-artist" autocomplete="off" placeholder="Artist…" />
+                            </div>
+                            <button type="button" id="attach-track-submit" class="btn-primary btn-full">Search</button>
+                        </div>
+                        <div id="attach-track-status" class="lyric-search-status hidden" role="status"></div>
+                    </div>
+                    <div class="lyric-search-col lyric-search-col--results">
+                        <div id="attach-track-results" class="lyric-search-results" role="listbox"
+                            aria-label="Qobuz substitute tracks"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Global Tooltip -->
     <div id="global-tooltip" class="global-tooltip"></div>
 
-    <script src="/gui/app.js?v=39"></script>
+    <script src="/gui/app.js?v=49"></script>
 </body>
 
 </html>
