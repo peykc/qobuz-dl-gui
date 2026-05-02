@@ -4,6 +4,13 @@
 
 ---
 
+## Disclaimer
+
+- For educational use. Respect the [Qobuz API Terms of Use](https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf).
+- **qobuz-dl** / **Qobuz-DL-GUI** are not affiliated with Qobuz.
+
+---
+
 ## Main: search and download in the app
 
 Use the sidebar search to find albums and tracks, inspect quality and metadata, add releases to the queue, and run downloads while watching progress and download history inside the app.
@@ -106,13 +113,6 @@ Pushing a Git tag `v*` runs [.github/workflows/build-desktop.yml](.github/workfl
 The original terminal workflow is still shipped for scripting and automation.
 
 [CLI documentation](CLI.md)
-
----
-
-## Disclaimer
-
-- For educational use. Respect the [Qobuz API Terms of Use](https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf).
-- **qobuz-dl** / **Qobuz-DL-GUI** are not affiliated with Qobuz.
 
 ---
 
