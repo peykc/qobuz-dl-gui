@@ -152,6 +152,61 @@
     return a ? `${num}::${t}::${a}` : `${num}::${t}`;
   }
 
+  /**
+   * `num + normalized-title` ignoring album suffix. Used while a row might be keyed
+   * with or without lyric_album (short TRACK_START vs hydrate) so transient error
+   * classification matches parallel / multi-queue downloads.
+   */
+  function _trackKeyStem(fullKey) {
+    const k = String(fullKey || "").trim();
+    if (!k) return "";
+    const sep = "::";
+    const i = k.indexOf(sep);
+    if (i < 0) return k;
+    const num = k.slice(0, i);
+    const rest = k.slice(i + sep.length);
+    const j = rest.indexOf(sep);
+    const t = j < 0 ? rest : rest.slice(0, j);
+    if (!num && !t.trim()) return k;
+    return t ? `${num}::${t}` : `${num}`;
+  }
+
+  function _tsMountedCardShowsDlTerminal(card) {
+    if (!card) return false;
+    return Boolean(
+      card.querySelector("a.download-chip.purchase-only") ||
+        card.querySelector("button.download-chip.track-dl-btn--failed"),
+    );
+  }
+
+  /**
+   * One pass over `_tsActiveDlKeys` / mounted rows to classify history keys for Error tab churn.
+   * `unsettledStems`: download active or lyric refetch (`loading`) — row outcome not final for UI yet.
+   * `dlTerminalErrStems`: a mounted row for that stem shows purchase-only / download-failed chip.
+   * Stale hydrate `.lyrics-chip.error` alone must NOT qualify during unsettled work (fixes flicker).
+   */
+  function _tsComputeErrorStemContext() {
+    const unsettledStems = new Set();
+    const dlTerminalErrStems = new Set();
+    for (const k of _tsActiveDlKeys) {
+      const st = _trackKeyStem(k);
+      if (st) unsettledStems.add(st);
+    }
+    for (const k of _trackStatusMap.keys()) {
+      const card = _trackStatusMap.get(k);
+      if (!card) continue;
+      const st = _trackKeyStem(k);
+      if (!st) continue;
+      if (card.querySelector(".lyrics-chip.loading")) unsettledStems.add(st);
+      const dlBtn = card.querySelector(
+        "button.download-chip.track-dl-btn.track-dl-btn--active",
+      );
+      if (dlBtn) unsettledStems.add(st);
+      if (_tsMountedCardShowsDlTerminal(card)) dlTerminalErrStems.add(st);
+    }
+    return { unsettledStems, dlTerminalErrStems };
+  }
+
   function _tsRegisterAudioPathAlbum(audioPath, lyricAlbum) {
     const p = String(audioPath || "").trim();
     if (!p) return;
@@ -165,36 +220,77 @@
     }
   }
 
-  function _tsDbItemIsError(it) {
+  /** Download / purchase placeholders only (excludes lyric sidecar failures). */
+  function _tsDbDownloadOutcomeError(it) {
     if (!it) return false;
     const st = String(it.download_status || "").toLowerCase();
     if (st === "purchase_only" || st === "failed") return true;
     const ap = String(it.audio_path || "").trim();
-    if (ap.startsWith(_GUI_PENDING_AUDIO_PREFIX)) return true;
+    return ap.startsWith(_GUI_PENDING_AUDIO_PREFIX);
+  }
+
+  function _tsDbItemIsError(it) {
+    if (_tsDbDownloadOutcomeError(it)) return true;
     const lt = String(it.lyric_type || "").toLowerCase();
     return lt === "error";
   }
 
   function _tsCardLooksLikeError(card) {
     if (!card) return false;
-    if (card.querySelector("a.download-chip.purchase-only")) return true;
-    if (card.querySelector("button.download-chip.track-dl-btn--failed"))
-      return true;
+    if (_tsMountedCardShowsDlTerminal(card)) return true;
     if (card.querySelector(".lyrics-chip.error")) return true;
     return false;
   }
 
-  function _tsKeyIsErrorInCurrentSession(key) {
+  function _tsKeyIsErrorInCurrentSession(key, stemCtx /* optional result of _tsComputeErrorStemContext */) {
+    const ctx = stemCtx || _tsComputeErrorStemContext();
+    const stem = key ? _trackKeyStem(key) : "";
+    if (stem && ctx.unsettledStems.has(stem)) {
+      return ctx.dlTerminalErrStems.has(stem);
+    }
+    const card = key ? _trackStatusMap.get(key) : null;
+    const dlGlobally =
+      typeof window !== "undefined" && Boolean(window.isDownloading);
+    if (dlGlobally) {
+      if (_tsDbDownloadOutcomeError(_tsDbItemByKey.get(key))) return true;
+      if (_tsMountedCardShowsDlTerminal(card)) return true;
+      return false;
+    }
     if (_tsDbItemIsError(_tsDbItemByKey.get(key))) return true;
-    return _tsCardLooksLikeError(_trackStatusMap.get(key));
+    return _tsCardLooksLikeError(card);
+  }
+
+  function _tsUpdateErrorHistoryCountBadge(optStemCtx) {
+    const badge = document.getElementById("dl-history-errors-count");
+    if (!badge) return;
+    const stemCtx = optStemCtx != null ? optStemCtx : _tsComputeErrorStemContext();
+    let n = 0;
+    for (let i = 0; i < _tsOrderAll.length; i++) {
+      if (_tsKeyIsErrorInCurrentSession(_tsOrderAll[i], stemCtx)) n++;
+    }
+    if (n === 0) {
+      badge.classList.add("hidden");
+      badge.textContent = "";
+      badge.removeAttribute("aria-label");
+    } else {
+      badge.classList.remove("hidden");
+      badge.textContent = String(n);
+      badge.setAttribute(
+        "aria-label",
+        `${n} error entr${n === 1 ? "y" : "ies"} in download history`,
+      );
+    }
   }
 
   function _tsApplyHistoryFilter() {
     if (_tsSkipHistoryFilterApply) return;
+    const stemCtx = _tsComputeErrorStemContext();
     const list = document.getElementById("dl-track-status");
     if (_tsVirtActive && _tsVirtInnerEl && list) {
       if (_tsHistoryFilterMode === "errors") {
-        _tsOrder = _tsOrderAll.filter((k) => _tsKeyIsErrorInCurrentSession(k));
+        _tsOrder = _tsOrderAll.filter((k) =>
+          _tsKeyIsErrorInCurrentSession(k, stemCtx),
+        );
       } else {
         _tsOrder = _tsOrderAll.slice();
       }
@@ -221,12 +317,13 @@
           if (!card) continue;
           const show =
             _tsHistoryFilterMode !== "errors" ||
-            _tsKeyIsErrorInCurrentSession(k);
+            _tsKeyIsErrorInCurrentSession(k, stemCtx);
           card.classList.toggle("hidden", !show);
           card.setAttribute("aria-hidden", show ? "false" : "true");
         }
       }
     }
+    _tsUpdateErrorHistoryCountBadge(stemCtx);
   }
 
   function _initDownloadHistorySegment() {
@@ -401,6 +498,12 @@
       if (rawAp && !rawAp.startsWith(_GUI_PENDING_AUDIO_PREFIX)) {
         card.dataset.audioPath = rawAp;
         _tsRegisterAudioPathAlbum(rawAp, alb);
+        if (rawAp.toLowerCase().endsWith(".missing.txt")) {
+          card.dataset.resolvedBy = "placeholder";
+        } else if ((it.attach_search_eligible === true || it.attach_search_eligible === 1) && 
+                   String(it.download_status || "").toLowerCase() === "downloaded") {
+          card.dataset.resolvedBy = "search";
+        }
       }
     }
     if (it.track_explicit === true || it.track_explicit === false) {
@@ -645,10 +748,10 @@
       if (isNewRow && !_tsOrderAll.includes(key)) {
         _tsOrderAll.push(key);
       }
+      _trackStatusMap.set(key, card);
       if (!_tsSkipHistoryFilterApply && isNewRow) {
         _tsApplyHistoryFilter();
       }
-      _trackStatusMap.set(key, card);
       if (_tsVirtActive && _tsVirtInnerEl) {
         const idx = _tsKeyToIndex.get(key);
         if (idx !== undefined) _tsPositionVirtCard(card, idx);
@@ -681,6 +784,10 @@
 
   const _TRACK_DL_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 12 12 17 17 12"/><path d="M5 21h14"/></svg>`;
   const _TRACK_SEARCH_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>`;
+  const _TRACK_MISSING_NOTE_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/></svg>`;
+  /** Global-tooltip text for queue-row *.missing.txt control. */
+  const _MISSING_PLACEHOLDER_BTN_TIP =
+    'Writes a detailed placeholder txt file using your track naming pattern (*.missing.txt). Search "missing" in your library to find placeholders.';
   const _TRACK_FOLDER_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>`;
   /** Shown after explicit/clean in lyric search when this LRCLIB id matches the saved sidecar. */
   const _LYRIC_SEARCH_ATTACHED_SVG = `<svg class="lyric-search-attached-ico lucide-folder-check" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m9 13 2 2 4-4"/></svg>`;
@@ -721,14 +828,29 @@
     return _formatLyricDeltaSec(delta);
   }
 
+  /** Match ``normalize_sampling_rate_hz`` in Python (Hz/kHz/MHz-ish API quirks). */
+  function _normalizeSamplingRateHz(raw) {
+    const f =
+      typeof raw === "number" ? raw : parseFloat(String(raw != null ? raw : ""));
+    if (!Number.isFinite(f) || f <= 0) return null;
+    if (f < 1) return f * 1_000_000;
+    if (f < 1000) return f * 1000;
+    return f;
+  }
+
   function _attachQualitySpecsTooltip(t) {
     const bd = parseInt(String(t.maximum_bit_depth || ""), 10);
-    const sr = parseInt(String(t.maximum_sampling_rate || ""), 10);
-    if (!Number.isFinite(bd) || !Number.isFinite(sr) || bd <= 0 || sr <= 0) {
+    let srHz = _normalizeSamplingRateHz(t.maximum_sampling_rate);
+    if (!Number.isFinite(bd) || bd <= 0) {
       return "";
     }
-    const khz = sr / 1000;
-    const kStr = Number.isInteger(khz) ? String(khz) : khz.toFixed(1);
+    if (srHz == null || !Number.isFinite(srHz) || srHz <= 0) {
+      return "";
+    }
+    const khz = srHz / 1000;
+    const kStr = Number.isInteger(khz)
+      ? String(khz)
+      : khz.toFixed(4).replace(/\.?0+$/, "");
     return `${bd}-bit / ${kStr} kHz`;
   }
 
@@ -898,6 +1020,7 @@
 
   function _closeAttachTrackPopover() {
     _attachTrackAnchorCard = null;
+    _clearLyricSearchAnchorHighlight();
     const pop = document.getElementById("attach-track-popover");
     if (!pop) return;
     pop.classList.add("hidden");
@@ -909,6 +1032,7 @@
     if (!sid || !card) return;
     _closeLyricSearchModal();
     _attachTrackAnchorCard = card;
+    _setLyricSearchAnchorCard(card);
     const pop = document.getElementById("attach-track-popover");
     const ti = document.getElementById("attach-track-title");
     const ar = document.getElementById("attach-track-artist");
@@ -1042,6 +1166,132 @@
     }
   }
 
+  function _hasValidLyrics(card) {
+    if (!card) return false;
+    const chip = card.querySelector(".lyrics-chip");
+    if (!chip) return false;
+    const parts = (chip.className || "").split(/\s+/);
+    return parts.includes("synced") || parts.includes("plain");
+  }
+
+  async function _writeAttachMissingPlaceholder(card, triggerBtnOpt) {
+    const c = card && card.dataset ? card : _attachTrackAnchorCard;
+    const sid = ((c && c.dataset && c.dataset.slotTrackId) || "").trim();
+
+    const pop = document.getElementById("attach-track-popover");
+    const statusEl =
+      pop &&
+      !pop.classList.contains("hidden") &&
+      _attachTrackAnchorCard === c
+        ? document.getElementById("attach-track-status")
+        : null;
+
+    const triggerBtn = triggerBtnOpt || null;
+    const clearBusy = () => {
+      if (triggerBtn instanceof HTMLElement) {
+        triggerBtn.disabled = false;
+        triggerBtn.removeAttribute("aria-busy");
+      }
+    };
+
+    if (!c) {
+      clearBusy();
+      return;
+    }
+    if (!sid) {
+      if (statusEl) {
+        statusEl.textContent =
+          "No queued track linked — use a purchase/failed queue row.";
+        statusEl.classList.remove("hidden");
+      }
+      clearBusy();
+      return;
+    }
+
+    const albumId = ((c.dataset.releaseAlbumId) || "").trim();
+    const payload = { slot_track_id: sid };
+    if (albumId) payload.album_id = albumId;
+    let qs = ((c.dataset.queueSourceUrl) || "").trim();
+    if (!qs && typeof window._qUrlForPurchaseSlot === "function") {
+      qs = window._qUrlForPurchaseSlot(sid) || "";
+    }
+    if (qs) payload.queue_source_url = qs;
+    if (_hasValidLyrics(c)) payload.skip_lyrics = true;
+
+    if (triggerBtn instanceof HTMLElement) {
+      triggerBtn.disabled = true;
+      triggerBtn.setAttribute("aria-busy", "true");
+    }
+
+    try {
+      const res = await fetch("/api/write_missing_track_placeholder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (data.ok) {
+        // Store the saved path so we can delete it if the user switches to search.
+        const sp = String(data.saved_path || "").trim();
+        if (sp) c.dataset.missingPlaceholderPath = sp;
+        c.dataset.resolvedBy = "placeholder";
+        _syncResolutionButtonStates(c);
+        if (statusEl) {
+          const bn = String(data.basename || "").trim();
+          statusEl.textContent = bn ? `Saved: ${bn}` : "Placeholder saved.";
+          statusEl.classList.remove("hidden");
+        }
+      } else {
+        const msg = String(data.error || "Could not save placeholder.");
+        if (statusEl) {
+          statusEl.textContent = msg;
+          statusEl.classList.remove("hidden");
+        } else {
+          console.warn(msg);
+        }
+      }
+    } catch (_) {
+      if (statusEl) {
+        statusEl.textContent = "Network error.";
+        statusEl.classList.remove("hidden");
+      }
+    } finally {
+      clearBusy();
+    }
+  }
+
+  /**
+   * Sync the green "resolved" fill on the search/placeholder button pair for a card.
+   * card.dataset.resolvedBy === "search"      → search btn gets track-resolution-active
+   * card.dataset.resolvedBy === "placeholder" → placeholder btn gets track-resolution-active
+   * Anything else (undefined / "none")        → both buttons unfilled.
+   */
+  function _syncResolutionButtonStates(card) {
+    if (!card) return;
+    const tags = card.querySelector(".track-status-tags");
+    if (!tags) return;
+    const sb = tags.querySelector(".track-substitute-search-btn");
+    const pb = tags.querySelector(".track-missing-placeholder-btn");
+    const resolvedBy = (card.dataset.resolvedBy || "").trim();
+    if (sb) {
+      sb.classList.toggle("track-resolution-active", resolvedBy === "search");
+      if (resolvedBy === "search") {
+        sb.setAttribute("data-tip", "Downloaded replacement — click to search again");
+      } else {
+        sb.setAttribute("data-tip", "Search to replace track with similar");
+      }
+    }
+    if (pb) {
+      pb.classList.toggle("track-resolution-active", resolvedBy === "placeholder");
+      if (resolvedBy === "placeholder") {
+        pb.setAttribute("data-tip", "Placeholder .missing.txt written — click to switch to search replacement");
+      } else {
+        pb.setAttribute("data-tip", _MISSING_PLACEHOLDER_BTN_TIP);
+      }
+    }
+  }
+
   async function _submitAttachSubstitute(subId) {
     const card = _attachTrackAnchorCard;
     const sid = ((card && card.dataset.slotTrackId) || "").trim();
@@ -1154,6 +1404,43 @@
     const sid = (card.dataset.slotTrackId || "").trim();
     const rid = (card.dataset.releaseAlbumId || "").trim();
     if (!sid || !rid) return;
+    tags.querySelectorAll(".track-missing-placeholder-btn").forEach((n) => n.remove());
+
+    // ── Placeholder button ────────────────────────────────────────────────
+    const mp = document.createElement("button");
+    mp.type = "button";
+    mp.className = "track-dl-btn track-missing-placeholder-btn";
+    mp.setAttribute("data-tip", _MISSING_PLACEHOLDER_BTN_TIP);
+    mp.setAttribute(
+      "aria-label",
+      "Save missing-track placeholder (.missing.txt) beside downloads",
+    );
+    mp.innerHTML = _TRACK_MISSING_NOTE_ICON_SVG;
+    mp.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (mp.disabled) return;
+      if (card.dataset.resolvedBy === "placeholder") return;
+      
+      const prevAudio = (card.dataset.audioPath || "").trim();
+      if (card.dataset.resolvedBy === "search" && prevAudio && !prevAudio.toLowerCase().endsWith(".missing.txt")) {
+        fetch("/api/delete_track_resolution_file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_path: prevAudio }),
+        }).catch(() => {});
+        delete card.dataset.audioPath;
+        delete card.dataset.resolvedBy;
+      }
+
+      // If previously resolved by search, just write the placeholder — no
+      // audio file to delete (the substitute is a real downloaded track the
+      // user may want to keep; only the resolution *label* switches).
+      void _writeAttachMissingPlaceholder(card, mp);
+    });
+    tags.appendChild(mp);
+
+    // ── Search / substitute button ────────────────────────────────────────
     const sb = document.createElement("button");
     sb.type = "button";
     sb.className = "track-dl-btn track-substitute-search-btn";
@@ -1163,9 +1450,25 @@
     sb.addEventListener("click", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
+      // If previously resolved by placeholder, delete the .missing.txt first
+      // so the library doesn't end up with both a real file and a placeholder.
+      const prevPath = (card.dataset.missingPlaceholderPath || "").trim();
+      if (card.dataset.resolvedBy === "placeholder" && prevPath) {
+        fetch("/api/delete_track_resolution_file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_path: prevPath }),
+        }).catch(() => { /* fire-and-forget; open search regardless */ });
+        delete card.dataset.missingPlaceholderPath;
+        delete card.dataset.resolvedBy;
+        _syncResolutionButtonStates(card);
+      }
       _openAttachTrackPopover(card);
     });
     tags.appendChild(sb);
+
+    // Restore any previously saved resolution state (survives re-renders).
+    _syncResolutionButtonStates(card);
   }
 
   function _setTrackDownloadChip(
@@ -1181,6 +1484,7 @@
     const tags = card.querySelector(".track-status-tags");
     if (!tags) return;
     tags.querySelectorAll(".track-substitute-search-btn").forEach((n) => n.remove());
+    tags.querySelectorAll(".track-missing-placeholder-btn").forEach((n) => n.remove());
     const old = card.querySelector(".download-chip");
     if (old) old.remove();
 
@@ -1936,8 +2240,11 @@
   function _lyricSearchKindClass(kind) {
     const k = String(kind || "").toLowerCase();
     if (k === "plain") return "lyric-search-kind lyric-search-kind--plain";
-    if (k === "instrumental") return "lyric-search-kind lyric-search-kind--instrumental";
-    return "lyric-search-kind";
+    if (k === "instrumental") {
+      return "lyric-search-kind lyric-search-kind--instrumental";
+    }
+    if (k === "synced") return "lyric-search-kind lyric-search-kind--synced";
+    return "lyric-search-kind lyric-search-kind--muted";
   }
 
   function _clearLyricSearchFieldErrors() {
@@ -1998,17 +2305,30 @@
   }
 
   function _bindLyricSearchKindConfidenceHover(kindEl, kindLabel, confVal) {
-    const pct = _formatLyricConfidencePct(confVal);
-    if (!pct) return;
     kindEl.dataset.kindLabel = kindLabel;
+    const pct = _formatLyricConfidencePct(confVal);
+    if (!pct) {
+      kindEl.textContent = kindLabel;
+      return;
+    }
     kindEl.dataset.confidencePct = pct;
     kindEl.classList.add("lyric-search-kind--pct-swap");
-    kindEl.addEventListener("mouseenter", () => {
-      kindEl.textContent = pct + "%";
-    });
-    kindEl.addEventListener("mouseleave", () => {
+    kindEl.textContent = `${pct}%`;
+    kindEl.setAttribute(
+      "aria-label",
+      `LRCLIB match ${pct}% (${kindLabel}); hover shows lyric type.`,
+    );
+
+    function showKindLabel() {
       kindEl.textContent = kindEl.dataset.kindLabel || kindLabel;
-    });
+    }
+    function showPct() {
+      const p = kindEl.dataset.confidencePct;
+      kindEl.textContent = p ? `${p}%` : kindEl.dataset.kindLabel || kindLabel;
+    }
+
+    kindEl.addEventListener("mouseenter", showKindLabel);
+    kindEl.addEventListener("mouseleave", showPct);
   }
 
   function _createLyricSearchResultRow(row) {
@@ -2952,6 +3272,7 @@
     list.innerHTML = "";
     _trackStatusMap.clear();
     _refreshAlbumQueueCardMetas();
+    _tsUpdateErrorHistoryCountBadge();
   }
 
   function _positionClearHistoryConfirm() {
@@ -3731,6 +4052,12 @@
     }
     let bd = Number(r.bit_depth);
     let sr = Number(r.sample_rate);
+    if (r.sample_rate != null && r.sample_rate !== "") {
+      const hzNorm = _normalizeSamplingRateHz(r.sample_rate);
+      if (hzNorm != null && Number.isFinite(hzNorm)) {
+        sr = hzNorm / 1000;
+      }
+    }
     if ((!Number.isFinite(bd) || !Number.isFinite(sr)) && r.quality) {
       const m = String(r.quality).match(/(\d+)\s*bit\s*\/\s*([\d.]+)\s*kHz/i);
       if (m) {
@@ -4535,6 +4862,7 @@
           evAlb,
         );
         _updateProgress();
+        _tsApplyHistoryFilter();
       } else if (ev.type === "track_download_progress") {
         const pa =
           ev.lyric_album != null && String(ev.lyric_album).trim() !== ""
@@ -4615,6 +4943,22 @@
         if (st === "downloaded" && preCard) {
           if (ev.substitute_attach === true) {
             preCard.dataset.attachSearchEligible = "1";
+            // Mark resolved-by-search and delete any prior .missing.txt.
+            const prevPlaceholderPath = (preCard.dataset.missingPlaceholderPath || "").trim();
+            if (prevPlaceholderPath) {
+              fetch("/api/delete_track_resolution_file", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ file_path: prevPlaceholderPath }),
+              }).catch(() => {});
+              delete preCard.dataset.missingPlaceholderPath;
+            }
+            preCard.dataset.resolvedBy = "search";
+            _syncResolutionButtonStates(preCard);
+          } else if (ap.toLowerCase().endsWith(".missing.txt")) {
+            preCard.dataset.attachSearchEligible = "1";
+            preCard.dataset.resolvedBy = "placeholder";
+            _syncResolutionButtonStates(preCard);
           } else {
             delete preCard.dataset.attachSearchEligible;
           }
@@ -5563,6 +5907,20 @@
     const backdrop = document.getElementById("settings-backdrop");
     const closeBtn = document.getElementById("settings-popover-close");
     const feedback = document.getElementById("settings-popover-feedback");
+    const reportBtn = document.getElementById("report-issue-btn");
+    const reportPopover = document.getElementById("issue-report-popover");
+    const reportCloseBtn = document.getElementById("issue-report-close");
+    const reportOpenBtn = document.getElementById("issue-report-open");
+    const reportMessage = document.getElementById("issue-report-message");
+    const reportFeedback = document.getElementById("issue-report-feedback");
+    const FEEDBACK_ENDPOINT = "https://feedback.pkcollection.net";
+    let issueReportSending = false;
+
+    function syncIssueReportSendBtn() {
+      if (!reportOpenBtn || !reportMessage) return;
+      reportOpenBtn.disabled =
+        issueReportSending || reportMessage.value.trim().length === 0;
+    }
 
     function openPopover() {
       popover.classList.remove("hidden");
@@ -5576,11 +5934,101 @@
       feedback.className = "feedback-msg hidden";
     }
 
+    function closeReportPopover() {
+      if (!reportPopover || !reportBtn) return;
+      reportPopover.classList.add("hidden");
+      reportPopover.setAttribute("aria-hidden", "true");
+      reportBtn.classList.remove("active");
+      if (reportFeedback) reportFeedback.className = "feedback-msg hidden";
+    }
+
+    function openReportPopover() {
+      if (!reportPopover || !reportBtn) return;
+      closePopover();
+      reportPopover.classList.remove("hidden");
+      reportPopover.setAttribute("aria-hidden", "false");
+      reportBtn.classList.add("active");
+      if (reportFeedback) reportFeedback.className = "feedback-msg hidden";
+      if (reportMessage) reportMessage.focus();
+      syncIssueReportSendBtn();
+    }
+
+    async function submitFeedbackFromApp() {
+      if (!reportMessage || !reportFeedback || !reportOpenBtn) return;
+      const message = reportMessage.value.trim();
+      if (!message || issueReportSending) return;
+      issueReportSending = true;
+      syncIssueReportSendBtn();
+      try {
+        const st = await checkStatus();
+        const version = st && st.app_version ? String(st.app_version) : "unknown";
+        const navP = String(navigator.platform || "").toLowerCase();
+        let platform = "unknown";
+        if (navP.includes("win")) platform = "windows";
+        else if (navP.includes("mac")) platform = "macos";
+        else if (navP.includes("linux")) platform = "linux";
+        const payload = {
+          message,
+          version,
+          platform,
+          timestamp: Math.floor(Date.now() / 1000),
+        };
+        const res = await fetch(FEEDBACK_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          showFeedback(reportFeedback, "Failed to send", false);
+          return;
+        }
+        reportMessage.value = "";
+        showFeedback(reportFeedback, "Feedback sent", true);
+      } catch (_) {
+        showFeedback(reportFeedback, "Failed to send", false);
+      } finally {
+        issueReportSending = false;
+        syncIssueReportSendBtn();
+      }
+    }
+
+    if (reportOpenBtn) {
+      reportOpenBtn.addEventListener("click", () => {
+        void submitFeedbackFromApp();
+      });
+    }
+    if (reportMessage) {
+      reportMessage.addEventListener("input", syncIssueReportSendBtn);
+      syncIssueReportSendBtn();
+    }
+
     gearBtn.addEventListener("click", () => {
-      popover.classList.contains("hidden") ? openPopover() : closePopover();
+      if (popover.classList.contains("hidden")) {
+        closeReportPopover();
+        openPopover();
+      } else {
+        closePopover();
+      }
     });
     backdrop.addEventListener("click", closePopover);
     closeBtn.addEventListener("click", closePopover);
+    if (reportBtn) {
+      reportBtn.addEventListener("click", () => {
+        if (!reportPopover || reportPopover.classList.contains("hidden")) {
+          openReportPopover();
+        } else {
+          closeReportPopover();
+        }
+      });
+    }
+    if (reportCloseBtn) reportCloseBtn.addEventListener("click", closeReportPopover);
+    document.addEventListener("mousedown", (e) => {
+      if (!reportPopover || reportPopover.classList.contains("hidden")) return;
+      const t = e.target;
+      if (reportPopover.contains(t)) return;
+      if (reportBtn && reportBtn.contains(t)) return;
+      closeReportPopover();
+    });
 
     // ── Re-auth (OAuth) ───────────────────────────────────────
     const reauthBtn = document.getElementById("settings-reauth-btn");
@@ -6184,6 +6632,50 @@
 
     let activeTarget = null;
 
+    function _viewportClientBox() {
+      const vv = window.visualViewport;
+      if (vv) {
+        return {
+          left: vv.offsetLeft,
+          top: vv.offsetTop,
+          width: vv.width,
+          height: vv.height,
+        };
+      }
+      return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+
+    /** Nudge tooltip so its paint box stays inside the client viewport (WebView quirks, scrollbars). */
+    function _clampTooltipToViewport(marginPx) {
+      const m = marginPx;
+      void tooltip.offsetWidth;
+      let r = tooltip.getBoundingClientRect();
+      let baseLeft = parseFloat(tooltip.style.left);
+      let baseTop = parseFloat(tooltip.style.top);
+      if (!Number.isFinite(baseLeft)) baseLeft = r.left;
+      if (!Number.isFinite(baseTop)) baseTop = r.top;
+      for (let pass = 0; pass < 3; pass++) {
+        const vp = _viewportClientBox();
+        const minL = vp.left + m;
+        const maxR = vp.left + vp.width - m;
+        const minT = vp.top + m;
+        const maxB = vp.top + vp.height - m;
+        let dx = 0;
+        let dy = 0;
+        if (r.left < minL) dx = minL - r.left;
+        else if (r.right > maxR) dx = maxR - r.right;
+        if (r.top < minT) dy = minT - r.top;
+        else if (r.bottom > maxB) dy = maxB - r.bottom;
+        if (!dx && !dy) break;
+        baseLeft += dx;
+        baseTop += dy;
+        tooltip.style.left = baseLeft + "px";
+        tooltip.style.top = baseTop + "px";
+        void tooltip.offsetWidth;
+        r = tooltip.getBoundingClientRect();
+      }
+    }
+
     const formatHelpTooltipId = {
       "folder-format-help": "folder-format-tooltip",
       "track-format-help": "track-format-tooltip",
@@ -6194,6 +6686,10 @@
       if (!targetEl || !targetEl.id) return false;
       if (targetEl.id === "settings-gear-btn") {
         const pop = document.getElementById("settings-popover");
+        return !!(pop && !pop.classList.contains("hidden"));
+      }
+      if (targetEl.id === "report-issue-btn") {
+        const pop = document.getElementById("issue-report-popover");
         return !!(pop && !pop.classList.contains("hidden"));
       }
       if (targetEl.id === "monero-btn") {
@@ -6288,33 +6784,45 @@
         }
         tooltip.classList.add("visible");
 
+        void tooltip.offsetWidth;
+
         const rect = targetEl.getBoundingClientRect();
         const margin = 10;
+        const tipW = tooltip.offsetWidth;
+        const tipH = tooltip.offsetHeight;
+        const vpBox = _viewportClientBox();
+        const vpBot = vpBox.top + vpBox.height;
         const place = (
           targetEl.getAttribute("data-tip-placement") || ""
         ).toLowerCase();
         let top;
         if (place === "bottom") {
           top = rect.bottom + margin;
-          if (top + tooltip.offsetHeight > window.innerHeight - margin) {
-            top = rect.top - tooltip.offsetHeight - margin;
+          if (top + tipH > vpBot - margin) {
+            top = rect.top - tipH - margin;
           }
         } else if (place === "top") {
-          top = rect.top - tooltip.offsetHeight - margin;
-          if (top < margin) top = rect.bottom + margin;
+          top = rect.top - tipH - margin;
+          if (top < vpBox.top + margin) top = rect.bottom + margin;
         } else {
-          top = rect.top - tooltip.offsetHeight - margin;
-          if (top < margin) top = rect.bottom + margin;
+          top = rect.top - tipH - margin;
+          if (top < vpBox.top + margin) top = rect.bottom + margin;
         }
-        let left = rect.left + rect.width / 2 - tooltip.offsetWidth / 2;
+        top = Math.max(
+          vpBox.top + margin,
+          Math.min(
+            top,
+            vpBot - tipH - margin,
+          ),
+        );
 
-        if (left < margin) left = margin;
-        else if (left + tooltip.offsetWidth > window.innerWidth - margin) {
-          left = window.innerWidth - tooltip.offsetWidth - margin;
-        }
+        let left = rect.left + rect.width / 2 - tipW / 2;
+        const leftMax = vpBox.left + vpBox.width - tipW - margin;
+        left = Math.max(vpBox.left + margin, Math.min(left, leftMax));
 
         tooltip.style.top = top + "px";
         tooltip.style.left = left + "px";
+        _clampTooltipToViewport(margin);
       }
     });
 

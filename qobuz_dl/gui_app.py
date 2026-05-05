@@ -1195,7 +1195,11 @@ def api_resolve():
         return jsonify({"ok": False, "error": "No URL"}), 400
 
     try:
-        from qobuz_dl.utils import get_url_info
+        from qobuz_dl.utils import (
+            format_sampling_rate_specs,
+            get_url_info,
+            sampling_rate_khz_for_chip,
+        )
 
         url_type, item_id = get_url_info(url)
     except Exception:
@@ -1213,8 +1217,10 @@ def api_resolve():
                 "year": (meta.get("release_date_original") or "")[:4],
                 "release_date": meta.get("release_date_original", ""),
                 "bit_depth": meta.get("maximum_bit_depth"),
-                "sample_rate": meta.get("maximum_sampling_rate"),
-                "quality": f"{meta.get('maximum_bit_depth', '?')}bit / {meta.get('maximum_sampling_rate', '?')}kHz",
+                "sample_rate": sampling_rate_khz_for_chip(
+                    meta.get("maximum_sampling_rate")
+                ),
+                "quality": f"{meta.get('maximum_bit_depth', '?')}bit / {format_sampling_rate_specs(meta.get('maximum_sampling_rate'))}",
                 "explicit": bool(meta.get("parental_warning") or meta.get("explicit")),
                 "url": url,
                 "release_album_id": str(item_id).strip(),
@@ -1230,8 +1236,10 @@ def api_resolve():
                 "album": album.get("title", ""),
                 "year": (album.get("release_date_original") or "")[:4],
                 "bit_depth": album.get("maximum_bit_depth"),
-                "sample_rate": album.get("maximum_sampling_rate"),
-                "quality": f"{album.get('maximum_bit_depth', '?')}bit / {album.get('maximum_sampling_rate', '?')}kHz",
+                "sample_rate": sampling_rate_khz_for_chip(
+                    album.get("maximum_sampling_rate")
+                ),
+                "quality": f"{album.get('maximum_bit_depth', '?')}bit / {format_sampling_rate_specs(album.get('maximum_sampling_rate'))}",
                 "url": url,
             }
         elif url_type == "artist":
@@ -1290,6 +1298,8 @@ def _attach_explicit_flag(track_dict):
 
 def _attach_track_quality_fields(track_dict):
     """Best-effort tier + specs from track/search items (matches sidebar track badges)."""
+    from qobuz_dl.utils import normalize_sampling_rate_hz
+
     if not isinstance(track_dict, dict):
         return ("LOSSLESS", None, None)
     alb = track_dict.get("album") if isinstance(track_dict.get("album"), dict) else {}
@@ -1301,10 +1311,10 @@ def _attach_track_quality_fields(track_dict):
         bit_depth = int(bd_t if bd_t is not None else bd_a or 0) or None
     except (TypeError, ValueError):
         bit_depth = None
-    try:
-        sample_rate = int(sr_t if sr_t is not None else sr_a or 0) or None
-    except (TypeError, ValueError):
-        sample_rate = None
+    hz_t = normalize_sampling_rate_hz(sr_t)
+    hz_a = normalize_sampling_rate_hz(sr_a)
+    hz = hz_t if hz_t is not None else hz_a
+    sample_rate = int(round(hz)) if hz is not None else None
 
     hires = bool(track_dict.get("hires_streamable") or alb.get("hires_streamable"))
     mime = str(track_dict.get("mime_type") or "").lower()
@@ -1321,6 +1331,42 @@ def _attach_track_quality_fields(track_dict):
         tier = "MP3"
 
     return (tier, bit_depth, sample_rate)
+
+
+def _resolve_attach_album_track(client, album_id_post: str, slot_id: str):
+    """Return (album_meta, slot_track_dict, dl_album_id) or (None,)*3."""
+    try:
+        if album_id_post:
+            album_meta = client.get_album_meta(album_id_post)
+            slot_final = None
+            for tr in (album_meta.get("tracks") or {}).get("items") or []:
+                if isinstance(tr, dict) and str(tr.get("id")) == str(slot_id):
+                    slot_final = tr
+                    break
+            if slot_final is None:
+                slot_final = client.get_track_meta(slot_id)
+        else:
+            slot_api = client.get_track_meta(slot_id)
+            alb_wrap = slot_api.get("album") or {}
+            album_id_resolved = str(alb_wrap.get("id") or "").strip()
+            if not album_id_resolved:
+                return None, None, None
+            album_meta = client.get_album_meta(album_id_resolved)
+            slot_final = None
+            for tr in (album_meta.get("tracks") or {}).get("items") or []:
+                if isinstance(tr, dict) and str(tr.get("id")) == str(slot_id):
+                    slot_final = tr
+                    break
+            if slot_final is None:
+                slot_final = slot_api
+
+        dl_album_id = str(album_meta.get("id") or album_id_post or "").strip()
+        if not dl_album_id:
+            return None, None, None
+        return album_meta, slot_final, dl_album_id
+    except Exception as exc:
+        logging.error("_resolve_attach_album_track: %s", exc)
+        return None, None, None
 
 
 @app.route("/api/search_tracks_attach", methods=["POST"])
@@ -1404,49 +1450,15 @@ def api_download_attach_track():
             tmp.client = qobuz.client
             tmp.client.set_language_headers(tmp.native_lang)
 
-            album_meta = None
-            slot_final = None
-
-            if album_id_post:
-                album_meta = tmp.client.get_album_meta(album_id_post)
-                for tr in (album_meta.get("tracks") or {}).get("items") or []:
-                    if isinstance(tr, dict) and str(tr.get("id")) == str(slot_id):
-                        slot_final = tr
-                        break
-                if slot_final is None:
-                    try:
-                        slot_final = tmp.client.get_track_meta(slot_id)
-                    except Exception as e:
-                        logging.error(
-                            "attach: slot %s not in album %s listing and track/get failed: %s",
-                            slot_id,
-                            album_id_post,
-                            e,
-                        )
-                        return
-            else:
-                try:
-                    slot_api = tmp.client.get_track_meta(slot_id)
-                except Exception as e:
-                    logging.error("attach: track/get slot failed: %s", e)
-                    return
-                alb_wrap = slot_api.get("album") or {}
-                album_id_resolved = str(alb_wrap.get("id") or "").strip()
-                if not album_id_resolved:
-                    logging.error("attach: no album id on slot track")
-                    return
-                album_meta = tmp.client.get_album_meta(album_id_resolved)
-                slot_final = None
-                for tr in (album_meta.get("tracks") or {}).get("items") or []:
-                    if isinstance(tr, dict) and str(tr.get("id")) == str(slot_id):
-                        slot_final = tr
-                        break
-                if slot_final is None:
-                    slot_final = slot_api
-
-            dl_album_id = str(album_meta.get("id") or album_id_post or "").strip()
-            if not dl_album_id:
-                logging.error("attach: could not resolve album id for downloader")
+            album_meta, slot_final, dl_album_id = _resolve_attach_album_track(
+                tmp.client, album_id_post, slot_id
+            )
+            if not album_meta or not slot_final or not dl_album_id:
+                logging.error(
+                    "attach: could not resolve album/slot (%s %s)",
+                    album_id_post,
+                    slot_id,
+                )
                 return
 
             dloader = DLCls(
@@ -1474,6 +1486,7 @@ def api_download_attach_track():
                 no_credits=tmp.no_credits,
                 tag_title_from_track_format=tmp.tag_title_from_track_format,
                 tag_album_from_folder_format=tmp.tag_album_from_folder_format,
+                native_lang=bool(tmp.native_lang),
             )
             dloader.download_substitute_for_slot(album_meta, slot_final, sub_id)
         except Exception as e:
@@ -1481,6 +1494,146 @@ def api_download_attach_track():
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"ok": True})
+
+
+@app.route("/api/write_missing_track_placeholder", methods=["POST"])
+def api_write_missing_track_placeholder():
+    """Create `{stem}.missing.txt` for a queued purchase-only slot — same naming as FLAC/MP3."""
+    qobuz = _get_qobuz()
+    if not qobuz or not qobuz.client:
+        return jsonify({"ok": False, "error": "Not connected"}), 400
+
+    data = request.json or {}
+    slot_id = str(data.get("slot_track_id") or "").strip()
+    album_id_post = str(data.get("album_id") or "").strip()
+    queue_src = str(data.get("queue_source_url") or "").strip()
+    skip_lyrics = bool(data.get("skip_lyrics"))
+
+    if not slot_id:
+        return jsonify({"ok": False, "error": "slot_track_id required"}), 400
+
+    try:
+        from qobuz_dl.downloader import Download as DLCls
+
+        cfg = configparser.ConfigParser()
+        cfg.read(CONFIG_FILE)
+        tmp = _build_qobuz_from_config(cfg)
+        if skip_lyrics:
+            tmp.lyrics_enabled = False
+        tmp.client = qobuz.client
+        tmp.client.set_language_headers(tmp.native_lang)
+
+        album_meta, slot_final, dl_album_id = _resolve_attach_album_track(
+            tmp.client, album_id_post, slot_id
+        )
+        if not album_meta or not slot_final:
+            return (
+                jsonify(
+                    {"ok": False, "error": "Could not resolve album or track metadata."},
+                ),
+                400,
+            )
+
+        dloader = DLCls(
+            tmp.client,
+            dl_album_id,
+            tmp.directory,
+            int(tmp.quality),
+            tmp.embed_art,
+            tmp.ignore_singles_eps,
+            tmp.quality_fallback,
+            tmp.cover_og_quality,
+            tmp.no_cover,
+            tmp.lyrics_enabled,
+            tmp.folder_format,
+            tmp.track_format,
+            cancel_event=None,
+            source_queue_url=queue_src,
+            tag_options=tmp.tag_options,
+            multiple_disc_prefix=tmp.multiple_disc_prefix,
+            multiple_disc_one_dir=tmp.multiple_disc_one_dir,
+            multiple_disc_track_format=tmp.multiple_disc_track_format,
+            max_workers=tmp.max_workers,
+            delay_seconds=0,
+            segmented_fallback=tmp.segmented_fallback,
+            no_credits=tmp.no_credits,
+            tag_title_from_track_format=tmp.tag_title_from_track_format,
+            tag_album_from_folder_format=tmp.tag_album_from_folder_format,
+            native_lang=bool(tmp.native_lang),
+        )
+        ok, detail = dloader.write_missing_track_placeholder(
+            album_meta,
+            slot_final,
+            native_lang=bool(tmp.native_lang),
+        )
+        if not ok:
+            return jsonify({"ok": False, "error": detail}), 400
+        basename = os.path.basename(detail)
+        return jsonify({"ok": True, "saved_path": detail, "basename": basename})
+    except Exception as e:
+        logging.error("write_missing_track_placeholder failed: %s", e, exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# API: delete a track resolution file (audio file or *.missing.txt) + sidecars
+#      (used when switching resolution mode from "placeholder" to "search" or vice versa)
+# ---------------------------------------------------------------------------
+@app.route("/api/delete_track_resolution_file", methods=["POST"])
+def api_delete_track_resolution_file():
+    """Delete a *.missing.txt or substitute audio file that was previously written."""
+    data = request.json or {}
+    file_path = str(data.get("file_path") or "").strip()
+    if not file_path:
+        return jsonify({"ok": False, "error": "file_path required"}), 400
+
+    # Safety: must be an allowed file inside the configured download root.
+    try:
+        p = Path(file_path).expanduser().resolve()
+    except (OSError, ValueError) as e:
+        return jsonify({"ok": False, "error": f"Invalid path: {e}"}), 400
+
+    allowed_exts = {".missing.txt", ".flac", ".mp3", ".m4a", ".alac", ".wav", ".wma", ".ogg", ".aac"}
+    ext_lower = "".join(p.suffixes).lower()
+    if not ext_lower.endswith(".missing.txt"):
+        ext_lower = p.suffix.lower()
+        
+    if ext_lower not in allowed_exts:
+        return jsonify({"ok": False, "error": f"File extension not permitted for deletion: {ext_lower}"}), 400
+
+    allowed_roots = _download_roots_for_lyrics_allow()
+    in_root = False
+    for root in allowed_roots:
+        try:
+            p.relative_to(root)
+            in_root = True
+            break
+        except ValueError:
+            continue
+    if not in_root:
+        return jsonify({"ok": False, "error": "File is outside the download root"}), 403
+
+    try:
+        if p.exists():
+            p.unlink()
+            
+        # Delete sidecars if they exist
+        stem_path = p.with_suffix('')
+        if ext_lower == ".missing.txt":
+            stem_path = p.parent / p.name[:-12] # strip .missing.txt
+            
+        lrc_path = stem_path.with_suffix('.lrc')
+        if lrc_path.exists():
+            lrc_path.unlink()
+            
+        lrclib_path = stem_path.with_suffix('.lrclib_id')
+        if lrclib_path.exists():
+            lrclib_path.unlink()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        logging.error("delete_track_resolution_file: %s", e, exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -1801,11 +1954,13 @@ def _lyrics_explicit_tag_enabled_from_config() -> bool:
 
 def _download_history_audio_path_accepted(audio_path: str) -> bool:
     """Real library files or synthetic pending-slot rows (persist purchase/failed slots)."""
-    from qobuz_dl.db import is_gui_pending_track_key
+    from qobuz_dl.db import is_gui_missing_placeholder_audio_path, is_gui_pending_track_key
 
     raw = (audio_path or "").strip()
     if is_gui_pending_track_key(raw):
         return True
+    if is_gui_missing_placeholder_audio_path(raw):
+        return _audio_path_allowed_for_lyrics_attach(raw)
     return _audio_path_allowed_for_lyrics_attach(raw)
 
 
@@ -1826,6 +1981,9 @@ def _audio_path_allowed_for_lyrics_attach(audio_path: str) -> bool:
             continue
     if not allowed:
         return False
+    name_low = str(p.name or "").lower()
+    if name_low.endswith(".missing.txt"):
+        return True
     if p.suffix.lower() not in (
         ".flac",
         ".mp3",

@@ -1180,7 +1180,11 @@ def instrumental_placeholder_lrc() -> str:
 def write_lrc_sidecar(audio_path: str, lyrics_text: str, overwrite: bool = False) -> Optional[str]:
     if not (lyrics_text or "").strip():
         return None
-    base, _ = os.path.splitext(audio_path)
+    ap = audio_path or ""
+    if ap.lower().endswith(".missing.txt"):
+        base = ap[: -len(".missing.txt")]
+    else:
+        base, _ = os.path.splitext(ap)
     out = base + ".lrc"
     if not overwrite and os.path.exists(out):
         return None
@@ -1403,6 +1407,9 @@ def attach_lrclib_id_to_audio(
     if _lyrics_looks_like_garbage(body):
         return None, False, False
     explicit = lyrics_text_indicates_explicit(body)
+    audio_low = str(audio_path or "").lower()
+    if audio_low.endswith(".missing.txt"):
+        update_explicit_tag = False
     out = write_lrc_sidecar(audio_path, body, overwrite=overwrite)
     if not out:
         return None, explicit, False

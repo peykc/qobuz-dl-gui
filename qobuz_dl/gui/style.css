@@ -337,8 +337,8 @@ textarea,
     border-right: 1px solid var(--border-light);
     display: flex;
     flex-direction: column;
-    padding: 24px 20px;
-    gap: 20px;
+    padding: 24px 20px 14px;
+    gap: 16px;
     overflow: visible;
 }
 
@@ -346,6 +346,7 @@ textarea,
     display: flex;
     align-items: center;
     justify-content: space-between;
+    position: relative;
     font-size: 20px;
     font-weight: 600;
     padding: 0 4px;
@@ -366,7 +367,7 @@ textarea,
 .sidebar-search {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
     overflow: hidden;
     flex: 1;
 }
@@ -383,7 +384,7 @@ textarea,
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 6px 0;
+    padding: 6px 6px 0;
     border-top: 1px solid var(--border-light);
     font-size: 11px;
     color: var(--text-muted);
@@ -1191,7 +1192,7 @@ td.fmt-example {
 .global-tooltip {
     position: fixed;
     z-index: 100000;
-    max-width: 300px;
+    max-width: min(300px, calc(100vw - 20px));
     background: #111111;
     border: 1px solid var(--border);
     color: var(--text-secondary);
@@ -1549,6 +1550,7 @@ td.fmt-example {
     border-top: none;
     border-radius: 0 0 var(--radius) var(--radius);
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+    clip-path: inset(0 -100px -100px -100px);
     box-sizing: border-box;
 }
 
@@ -1881,6 +1883,53 @@ td.fmt-example {
     color: #ffffff;
 }
 
+/* Mirror Start Download split strip: adjoining count on Error history tab */
+.dl-history-segment-btn.dl-history-segment-split {
+    display: inline-flex;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+}
+
+.dl-history-segment-split .dl-history-segment-body {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 12px;
+}
+
+.dl-history-segment-split .dl-history-errors-count:not(.hidden) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    margin: 0;
+    padding: 0 11px;
+    min-width: 2.25em;
+    border-radius: 0;
+    border: none;
+    border-left: 1px solid rgba(0, 0, 0, 0.38);
+    /* Inverse of label: reads “highlighted” while tab is inactive so counts pop. */
+    background: var(--danger);
+    color: #ffffff;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    transition:
+        background var(--transition),
+        border-color var(--transition),
+        color var(--transition);
+}
+
+.dl-history-segment-btn--errors.is-active .dl-history-errors-count:not(.hidden) {
+    /* Same red field as label — no darker inset; divider only. */
+    background: transparent;
+    color: inherit;
+    border-left-color: rgba(255, 255, 255, 0.32);
+}
+
 .log-header-toggle {
     appearance: none;
     border: 0;
@@ -2066,18 +2115,64 @@ td.fmt-example {
 }
 
 .track-dl-btn.download-chip {
-    order: 4;
+    order: 5;
 }
 
 .track-substitute-search-btn {
+    order: 4;
+    cursor: pointer;
+}
+
+.track-missing-placeholder-btn {
     order: 3;
     cursor: pointer;
 }
 
+.track-missing-placeholder-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.track-status-tags .track-missing-placeholder-btn {
+    flex-shrink: 0;
+}
+
+.track-missing-placeholder-btn:hover:not(:disabled),
 .track-substitute-search-btn:hover:not(:disabled) {
     background: var(--accent);
     color: #0a0a0a;
     border-color: var(--accent);
+}
+
+/* ── Resolved states: one-or-the-other mutual exclusion ─────────────────── */
+/* Search button filled green = track was resolved by downloading a substitute */
+.track-substitute-search-btn.track-resolution-active {
+    background: var(--success);
+    border-color: var(--success);
+    color: #0a0a0a;
+    cursor: pointer;
+}
+
+.track-substitute-search-btn.track-resolution-active:hover:not(:disabled) {
+    background: var(--success);
+    border-color: var(--success);
+    color: #0a0a0a;
+    opacity: 0.82;
+}
+
+/* Placeholder button filled green = track was resolved by writing a .missing.txt */
+.track-missing-placeholder-btn.track-resolution-active {
+    background: var(--success);
+    border-color: var(--success);
+    color: #0a0a0a;
+    cursor: pointer;
+}
+
+.track-missing-placeholder-btn.track-resolution-active:hover:not(:disabled) {
+    background: var(--success);
+    border-color: var(--success);
+    color: #0a0a0a;
+    opacity: 0.82;
 }
 
 .track-status-tags .track-substitute-search-btn {
@@ -2368,10 +2463,22 @@ a.track-dl-btn.purchase-only {
     max-width: min(132px, 36vw);
     overflow: hidden;
     text-overflow: ellipsis;
+    transition:
+        background var(--transition),
+        color var(--transition),
+        border-color var(--transition);
 }
 
+/* Match active “Error history” segment: solid danger + white label */
 a.track-dl-btn.purchase-only:hover {
-    filter: brightness(1.08);
+    background: var(--danger);
+    color: #ffffff;
+    border-color: var(--danger);
+}
+
+a.track-dl-btn.purchase-only:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .track-status-chip.synced {
@@ -2912,7 +3019,7 @@ a.track-dl-btn.purchase-only:hover {
 }
 
 .sidebar-search {
-    padding-bottom: 20px;
+    padding-bottom: 6px;
 }
 
 /* ============================================================
@@ -3600,6 +3707,19 @@ a.track-dl-btn.purchase-only:hover {
     background: var(--accent-dim);
 }
 
+.report-issue-btn:hover,
+.report-issue-btn.active {
+    color: var(--danger);
+    border-color: rgba(255, 77, 77, 0.7);
+    background: rgba(255, 77, 77, 0.12);
+}
+
+.report-issue-btn:focus-visible {
+    outline: none;
+    border-color: rgba(255, 77, 77, 0.7);
+    box-shadow: 0 0 0 2px rgba(255, 77, 77, 0.24);
+}
+
 /* ============================================================
    SETTINGS POPOVER BACKDROP
    ============================================================ */
@@ -3621,8 +3741,9 @@ a.track-dl-btn.purchase-only:hover {
     position: absolute;
     top: calc(100% + 10px);
     right: 0;
-    z-index: 109;
-    width: 340px;
+    z-index: 120;
+    width: min(340px, calc(100% - 8px));
+    box-sizing: border-box;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -3642,6 +3763,74 @@ a.track-dl-btn.purchase-only:hover {
 
 .settings-popover.hidden {
     display: none;
+}
+
+.issue-report-popover {
+    position: absolute;
+    top: calc(100% + 10px);
+    right: 34px;
+    z-index: 120;
+    width: min(340px, calc(100% - 34px - 8px));
+    box-sizing: border-box;
+    max-height: calc(100vh - 90px);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow: hidden;
+    transform-origin: top right;
+    animation: popover-in 0.14s ease;
+    font-size: 13px;
+    font-weight: 400;
+    text-transform: none;
+    line-height: normal;
+}
+
+.issue-report-popover.hidden {
+    display: none;
+}
+
+.issue-report-popover > .settings-section {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.issue-report-input {
+    width: 100%;
+}
+
+.issue-report-textarea {
+    width: 100%;
+    min-height: 78px;
+    max-height: calc(100vh - 200px);
+    resize: vertical;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.issue-report-textarea:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(110, 231, 247, 0.2);
+}
+
+.issue-report-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-light);
 }
 
 @keyframes popover-in {
@@ -4025,12 +4214,7 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
     margin-bottom: 0;
 }
 
-.lyric-search-close {
-    font-size: 22px;
-    line-height: 1;
-    padding: 2px 10px;
-    min-width: auto;
-}
+
 
 .lyric-search-fields {
     display: flex;
@@ -4258,10 +4442,30 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
     font-weight: 600;
     padding: 2px 8px;
     border-radius: var(--radius-sm);
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+    transition:
+        background var(--transition),
+        color var(--transition),
+        border-color var(--transition);
+}
+
+.lyric-search-kind--synced {
     background: var(--accent-dim);
     color: var(--accent);
     border: 1px solid rgba(110, 231, 247, 0.35);
-    flex-shrink: 0;
+}
+
+.lyric-search-kind--synced:hover,
+.lyric-search-kind--synced:focus-visible {
+    background: var(--accent);
+    color: #0a0a0a;
+    border-color: var(--accent);
 }
 
 .lyric-search-kind--plain {
@@ -4270,20 +4474,41 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
     border: 1px solid rgba(77, 255, 145, 0.35);
 }
 
+.lyric-search-kind--plain:hover,
+.lyric-search-kind--plain:focus-visible {
+    background: var(--success);
+    color: #0a0a0a;
+    border-color: var(--success);
+}
+
 .lyric-search-kind--instrumental {
     background: rgba(179, 128, 255, 0.13);
     color: #dfb3ff;
     border: 1px solid rgba(179, 128, 255, 0.35);
 }
 
+.lyric-search-kind--instrumental:hover,
+.lyric-search-kind--instrumental:focus-visible {
+    background: rgb(179, 128, 255);
+    color: #0a0a0a;
+    border-color: rgb(179, 128, 255);
+}
+
+.lyric-search-kind--muted {
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+
+.lyric-search-kind--muted:hover,
+.lyric-search-kind--muted:focus-visible {
+    background: var(--danger);
+    color: #0a0a0a;
+    border-color: var(--danger);
+}
+
 .lyric-search-kind.lyric-search-kind--pct-swap {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
     min-width: 6.75rem;
-    font-variant-numeric: tabular-nums;
-    cursor: default;
 }
 
 .lyric-search-delta {
@@ -4395,11 +4620,39 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
 }
 
 .track-status-chip.lyrics-chip:not(.loading) {
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    transition:
+        background var(--transition),
+        color var(--transition),
+        border-color var(--transition);
 }
 
-.track-status-chip.lyrics-chip:not(.loading):hover {
+/* Solid-fill “inverted” hover per LRC kind (synced stays as default outline style). */
+.track-status-chip.lyrics-chip.synced:not(.loading):hover,
+.track-status-chip.lyrics-chip.synced:not(.loading):focus-visible {
     background: var(--accent) !important;
     color: #0a0a0a !important;
     border-color: var(--accent) !important;
+}
+
+.track-status-chip.lyrics-chip.plain:not(.loading):hover,
+.track-status-chip.lyrics-chip.plain:not(.loading):focus-visible {
+    background: var(--success) !important;
+    color: #0a0a0a !important;
+    border-color: var(--success) !important;
+}
+
+.track-status-chip.lyrics-chip.instrumental:not(.loading):hover,
+.track-status-chip.lyrics-chip.instrumental:not(.loading):focus-visible {
+    background: rgb(179, 128, 255) !important;
+    color: #0a0a0a !important;
+    border-color: rgb(179, 128, 255) !important;
+}
+
+.track-status-chip.lyrics-chip.none:not(.loading):hover,
+.track-status-chip.lyrics-chip.none:not(.loading):focus-visible,
+.track-status-chip.lyrics-chip.error:not(.loading):hover,
+.track-status-chip.lyrics-chip.error:not(.loading):focus-visible {
+    background: var(--danger) !important;
+    color: #0a0a0a !important;
+    border-color: var(--danger) !important;
 }

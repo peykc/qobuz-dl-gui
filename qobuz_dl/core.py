@@ -220,6 +220,7 @@ class QobuzDL:
                 no_credits=self.no_credits,
                 tag_title_from_track_format=self.tag_title_from_track_format,
                 tag_album_from_folder_format=self.tag_album_from_folder_format,
+                native_lang=self.native_lang,
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)

@@ -4,6 +4,7 @@ import os
 import logging
 import subprocess
 import time
+from typing import Optional, Union
 
 from mutagen.mp3 import EasyMP3
 from mutagen.flac import FLAC
@@ -223,6 +224,63 @@ def smart_discography_filter(
 
 def format_duration(duration):
     return time.strftime("%H:%M:%S", time.gmtime(duration))
+
+
+def normalize_sampling_rate_hz(value) -> Optional[float]:
+    """Return sample rate in Hz.
+
+    Qobuz ``maximum_sampling_rate`` is most often Hz (44100, 96000).
+    Payloads sometimes use canonical kHz (44.1, 48, 96, 192) or fractional
+    megahertz (0.048 → 48000 Hz). Values below ``1`` are scaled as MHz fractions;
+    ``1 .. 1000`` (exclusive of full Hz ladder) scale as kilohertz.
+    """
+
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f <= 0:
+        return None
+    if f < 1:
+        f *= 1_000_000
+        return f
+    if f < 1000:
+        f *= 1000
+    return f
+
+
+def sampling_rate_khz_for_chip(value) -> Union[int, float, None]:
+    """Numeric catalog rate in kHz for UI chips (queue cards, resolves without ``…kHz`` typos).
+
+    Handles the same scales as ``normalize_sampling_rate_hz``. Returns rounded ``int``
+    when visually integral (96, 48), otherwise a bounded float for 44.1 / 176.4.
+    """
+
+    hz = normalize_sampling_rate_hz(value)
+    if hz is None:
+        return None
+    k = hz / 1000.0
+    nk = round(k, 12)
+    if abs(nk - round(nk)) < 1e-6:
+        return int(round(nk))
+    return round(nk + 1e-12, 4)
+
+
+def format_sampling_rate_specs(value) -> str:
+    """Display string suitable for GUIs / placeholders (e.g. ``44100 Hz (44.1 kHz)``)."""
+
+    hz = normalize_sampling_rate_hz(value)
+    if hz is None:
+        return "unknown"
+    hz_r = round(hz)
+    khz = hz / 1000.0
+    if abs(khz - round(khz)) < 1e-6:
+        ks = str(int(round(khz)))
+    else:
+        ks = f"{khz:.4g}"
+    return f"{hz_r} Hz ({ks} kHz)"
 
 
 def create_and_return_dir(directory):

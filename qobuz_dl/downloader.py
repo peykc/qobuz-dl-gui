@@ -16,9 +16,56 @@ import qobuz_dl.metadata as metadata
 from qobuz_dl import lyrics
 from qobuz_dl.color import CYAN, GREEN, OFF, RED, YELLOW
 from qobuz_dl.exceptions import NonStreamable
-from qobuz_dl.utils import get_album_artist
+from qobuz_dl.utils import get_album_artist, sampling_rate_khz_for_chip
+from qobuz_dl.version import __version__ as QOBUZ_DL_GUI_VERSION
 
 QL_DOWNGRADE = "FormatRestrictedByFormatAvailability"
+
+
+def _missing_ph_line(label: str, value: str, width: int = 22) -> str:
+    """One aligned Label : value row for *.missing.txt placeholder files."""
+    lb = label.strip()
+    val = "" if value is None else str(value).replace("\n", " ").replace("\r", "")
+    return f"{lb.ljust(width)}: {val}"
+
+
+def _missing_ph_quality_line(
+    qlid: int,
+    qlabel_fallback: str,
+    bd,
+    sr_raw,
+) -> str:
+    """Short preset label + catalog bit-depth / sample rate where available."""
+    try:
+        bd_i = int(bd)
+    except (TypeError, ValueError):
+        bd_i = None
+    if bd_i is not None and bd_i <= 0:
+        bd_i = None
+    kid = sampling_rate_khz_for_chip(sr_raw)
+    kid_s = ""
+    if kid is not None:
+        if isinstance(kid, float) and not kid.is_integer():
+            kid_s = f"{kid:.4g}"
+        else:
+            kid_s = str(int(round(float(kid))))
+    presets = {
+        5: "MP3 (~320 kbps)",
+        6: "CD-quality FLAC",
+        7: "24-bit FLAC",
+        27: "Best available FLAC / Hi-Res",
+    }
+    head = presets.get(int(qlid), qlabel_fallback)
+    specs = ""
+    if bd_i and kid_s:
+        specs = f" ({bd_i}-bit / {kid_s} kHz)"
+    elif bd_i:
+        specs = f" ({bd_i}-bit)"
+    elif kid_s:
+        specs = f" ({kid_s} kHz)"
+    return head + specs
+
+
 # used in case of error
 DEFAULT_FORMATS = {
     "MP3": [
@@ -156,17 +203,54 @@ def _qobuz_album_open_url(album_id) -> str:
     return f"https://play.qobuz.com/album/{aid}" if aid else ""
 
 
-def _qobuz_purchase_open_url(track_meta: dict, album_meta: dict = None) -> str:
-    """Qobuz purchase-only items require buying the album; link to the album store page."""
-    if album_meta and isinstance(album_meta, dict):
-        aid = album_meta.get("id")
-        if aid:
-            return _qobuz_album_open_url(aid)
+def _qobuz_store_slug_from_cms_or_default(native_lang: bool, cms_url: str) -> str:
+    """www.qobuz.com storefront locale (``us-en``, ``fr-fr``)."""
+
+    cms = str(cms_url or "").strip()
+    if native_lang and cms:
+        m = re.search(r"https?://(?:www\.)?qobuz\.com/([a-z]{2}-[a-z]{2})(?:/|$)", cms, re.I)
+        if m:
+            return m.group(1).lower()
+    return "us-en"
+
+
+def _qobuz_www_album_product_url(store_slug: str, album_id) -> str:
+    aid = str(album_id or "").strip()
+    if not aid:
+        return ""
+    slug = (store_slug or "us-en").strip().lower() or "us-en"
+    return f"https://www.qobuz.com/{slug}/album/-/{aid}"
+
+
+def _qobuz_www_track_product_url(store_slug: str, track_id) -> str:
+    tid = str(track_id or "").strip()
+    if not tid:
+        return ""
+    slug = (store_slug or "us-en").strip().lower() or "us-en"
+    return f"https://www.qobuz.com/{slug}/track/-/{tid}"
+
+
+def _qobuz_purchase_store_url(
+    track_meta: dict,
+    album_meta: dict = None,
+    *,
+    native_lang: bool = False,
+) -> str:
+    """www.qobuz storefront URL for purchase / not-streamable (same style as placeholders)."""
+    cand_alb = album_meta if isinstance(album_meta, dict) else None
+    if not cand_alb and isinstance((track_meta or {}).get("album"), dict):
+        cand_alb = track_meta["album"]
+    alb_cms_url = ""
+    if isinstance(cand_alb, dict):
+        alb_cms_url = str(cand_alb.get("url") or "").strip()
+    slug = _qobuz_store_slug_from_cms_or_default(native_lang, alb_cms_url)
+    if isinstance(cand_alb, dict) and cand_alb.get("id"):
+        return _qobuz_www_album_product_url(slug, cand_alb["id"])
     if track_meta and isinstance(track_meta, dict):
-        alb = track_meta.get("album")
-        if isinstance(alb, dict) and alb.get("id"):
-            return _qobuz_album_open_url(alb["id"])
-    return _qobuz_track_open_url((track_meta or {}).get("id"))
+        tid = track_meta.get("id")
+        if tid:
+            return _qobuz_www_track_product_url(slug, tid)
+    return ""
 
 
 def _album_cover_thumb(meta: dict) -> str:
@@ -232,14 +316,11 @@ def _emit_track_start(
     )
     title_s = _safe_marker_value(track_title)
     cov = _safe_marker_value(cover_url)
-    if (artist or "").strip() or (album or "").strip() or int(duration_sec or 0) > 0:
-        a = _safe_marker_value(artist)
-        al = _safe_marker_value(album)
-        d = int(duration_sec or 0)
-        e = 1 if track_explicit else 0
-        logger.info(f"[TRACK_START] {num}|{title_s}|{cov}|{a}|{al}|{d}|{e}")
-    else:
-        logger.info(f"[TRACK_START] {num}|{title_s}|{cov}")
+    a = _safe_marker_value(artist)
+    al = _safe_marker_value(album)
+    d = int(duration_sec or 0)
+    e = 1 if track_explicit else 0
+    logger.info(f"[TRACK_START] {num}|{title_s}|{cov}|{a}|{al}|{d}|{e}")
 
 
 def _album_title_for_track_marker(
@@ -431,6 +512,7 @@ class Download:
         no_credits: bool = False,
         tag_title_from_track_format: bool = True,
         tag_album_from_folder_format: bool = True,
+        native_lang: bool = False,
     ):
         self.client = client
         self.item_id = item_id
@@ -459,6 +541,14 @@ class Download:
         self.no_credits = bool(no_credits)
         self.tag_title_from_track_format = bool(tag_title_from_track_format)
         self.tag_album_from_folder_format = bool(tag_album_from_folder_format)
+        self.native_lang = bool(native_lang)
+
+    def _purchase_open_url(self, track_meta: dict, album_meta: Optional[dict] = None) -> str:
+        return _qobuz_purchase_store_url(
+            track_meta,
+            album_meta,
+            native_lang=self.native_lang,
+        )
 
     def _stream_abort_evt(self):
         """Event that aborts chunked HTTP downloads (tracks, cover, segmented fallback).
@@ -666,7 +756,7 @@ class Download:
                 track_num,
                 track_title,
                 "purchase_only",
-                _qobuz_purchase_open_url(track_meta, album_meta),
+                self._purchase_open_url(track_meta, album_meta),
                 queue_url=self.source_queue_url,
                 lyric_album=_album_title_for_track_marker(False, track_meta, album_meta),
                 slot_track_id=str(track_meta.get("id") or ""),
@@ -813,11 +903,353 @@ class Download:
                 is_mp3,
                 slot_track_meta.get("media_number") if is_multiple else None,
                 stream_track_id=sid,
+                lyrics_track_meta=sub_chk,
             )
         except Exception as exc:
             logger.error("%sAttach download failed: %s", RED, exc)
             return _fail(str(exc))
         return True
+
+    def write_missing_track_placeholder(
+        self,
+        album_meta: dict,
+        slot_track_meta: dict,
+        *,
+        native_lang: bool = False,
+    ) -> Tuple[bool, str]:
+        """Write `{stem}.missing.txt` using the same naming rules as a real rip (no audio)."""
+        try:
+            track_title = _get_title(slot_track_meta)
+            artist = _safe_get(slot_track_meta, "performer", "name")
+            dirn, is_multiple = self._album_folder_for_meta(album_meta)
+            os.makedirs(dirn, exist_ok=True)
+
+            multiple = slot_track_meta.get("media_number") if is_multiple else None
+            root_dir = dirn
+            if multiple is not None and not self.multiple_disc_one_dir:
+                try:
+                    d_num = int(multiple)
+                except (ValueError, TypeError):
+                    d_num = 1
+                root_dir = os.path.join(dirn, f"{self.multiple_disc_prefix} {d_num:02d}")
+                os.makedirs(root_dir, exist_ok=True)
+
+            filename_attr = self._get_filename_attr(
+                artist, slot_track_meta, track_title
+            )
+            if multiple:
+                formatted_path = sanitize_filename(
+                    self.multiple_disc_track_format.format(**filename_attr)
+                )
+            else:
+                formatted_path = sanitize_filename(
+                    self.track_format.format(**filename_attr)
+                )
+            stem = formatted_path[:250]
+            missing_path = os.path.join(root_dir, f"{stem}.missing.txt")
+
+            try:
+                dur_s = int(slot_track_meta.get("duration") or 0)
+            except (TypeError, ValueError):
+                dur_s = 0
+
+            hid = str(slot_track_meta.get("id") or "")
+            alb_id_e = (
+                album_meta.get("id")
+                if isinstance(album_meta, dict)
+                else slot_track_meta.get("album_id")
+            )
+
+            alb_title = ""
+            try:
+                alb_title = _get_title(album_meta) if isinstance(album_meta, dict) else ""
+            except (KeyError, TypeError):
+                alb_title = ""
+
+            bd = slot_track_meta.get("maximum_bit_depth")
+            sr_raw = slot_track_meta.get("maximum_sampling_rate")
+
+            qlid = int(self.quality)
+            qlabel_fb = (
+                {
+                    5: "MP3 (~320 kbps)",
+                    6: "CD FLAC (~16-bit / 44.1 kHz)",
+                    7: "24-bit FLAC (selected depth/rate varies)",
+                    27: "Best available FLAC / hires (according to subscription)",
+                }.get(
+                    qlid,
+                    str(qlid),
+                )
+            )
+            ext_expect = ".mp3" if qlid == 5 else ".flac"
+
+            alb_cms_url = ""
+            if isinstance(album_meta, dict):
+                alb_cms_url = str(album_meta.get("url") or "").strip()
+            slug = _qobuz_store_slug_from_cms_or_default(native_lang, alb_cms_url)
+            www_album = ""
+            www_track = ""
+            if alb_id_e:
+                www_album = _qobuz_www_album_product_url(slug, alb_id_e)
+            if hid:
+                www_track = _qobuz_www_track_product_url(slug, hid)
+            play_album = ""
+            play_track = ""
+            if alb_id_e:
+                play_album = _qobuz_album_open_url(alb_id_e)
+            if hid:
+                play_track = _qobuz_track_open_url(hid)
+
+            tn = slot_track_meta.get("track_number", "")
+            dnum = slot_track_meta.get("media_number", "")
+            dur_mm = dur_s // 60
+            dur_ss = dur_s % 60
+
+            rel_folder = "(see Full path below)"
+            try:
+                dl_root_abs = os.path.abspath(self.path or "")
+                root_abs = os.path.abspath(root_dir)
+                nl = os.path.normcase(dl_root_abs)
+                nr = os.path.normcase(root_abs)
+                if self.path and (nr == nl or nr.startswith(nl + os.sep)):
+                    rel_folder = os.path.relpath(root_dir, self.path)
+            except (ValueError, OSError):
+                pass
+
+            explicit_flag = _track_explicit_flag(slot_track_meta)
+            explicit_txt = "Yes" if explicit_flag else "No"
+            tn_disp = str(tn).strip() if str(tn).strip() != "" else "?"
+            disc_disp = str(dnum).strip() if str(dnum).strip() != "" else "1"
+            isrc_s = (slot_track_meta.get("isrc") or "").strip()
+            album_id_s = str(alb_id_e or "").strip()
+            track_id_s = str(hid or "").strip()
+            artist_s = (artist or "").strip()
+            album_title_s = (alb_title or "").strip()
+            abs_missing = os.path.abspath(missing_path)
+            would_name = f"{stem}{ext_expect}"
+            quality_human = _missing_ph_quality_line(qlid, qlabel_fb, bd, sr_raw)
+
+            def _url_or_dash(u: str) -> str:
+                u = (u or "").strip()
+                return u if u else "(not available)"
+
+            txt_lines = [
+                "MISSING TRACK PLACEHOLDER",
+                f"Created by Qobuz-DL-GUI v{QOBUZ_DL_GUI_VERSION}",
+                "",
+                "This track could not be downloaded (removed from streaming / "
+                "purchase-only / no replacement available).",
+                "The file below shows exactly what the track would have been named "
+                "and where it would have gone.",
+                "",
+                "--- Track Info ---",
+                _missing_ph_line("Title", _get_title(slot_track_meta)),
+                _missing_ph_line("Artist", artist_s or "(unknown)"),
+                _missing_ph_line("Explicit", explicit_txt),
+                _missing_ph_line(
+                    "Duration",
+                    f"{dur_mm}:{dur_ss:02d} ({dur_s} seconds)" if dur_s else "0:00 (0 seconds)",
+                ),
+                _missing_ph_line("Track #", tn_disp),
+                _missing_ph_line("Disc #", disc_disp),
+                "",
+                "--- Album ---",
+                _missing_ph_line("Album Title", album_title_s or "(unknown)"),
+                _missing_ph_line("Qobuz Album ID", album_id_s or "(unknown)"),
+                "",
+                "--- Links (click to open) ---",
+                _missing_ph_line("Store (album)", _url_or_dash(www_album)),
+                _missing_ph_line("Store (track)", _url_or_dash(www_track)),
+                _missing_ph_line("Play (album)", _url_or_dash(play_album)),
+                _missing_ph_line("Play (track)", _url_or_dash(play_track)),
+                "",
+                "--- Technical Details ---",
+                _missing_ph_line("Quality", quality_human),
+                _missing_ph_line("Qobuz Track ID", track_id_s or "(unknown)"),
+                _missing_ph_line("ISRC", isrc_s or "(unknown)"),
+                "",
+                "--- Naming Used ---",
+                _missing_ph_line("Would have been", would_name),
+                _missing_ph_line(
+                    "Folder",
+                    rel_folder.replace("/", os.sep) if rel_folder else "(unknown)",
+                ),
+                _missing_ph_line("Full path", abs_missing),
+                "",
+                "Configured track naming pattern:",
+                f"  {(self.multiple_disc_track_format if multiple else self.track_format)}",
+                "",
+            ]
+            payload = ("\n".join(txt_lines)).encode("utf-8")
+            with open(missing_path, "wb") as fh:
+                fh.write(payload)
+
+            missing_abs = os.path.abspath(missing_path)
+            canonical_audio_anchor = os.path.join(root_dir, f"{stem}{ext_expect}")
+
+            cov = (
+                _album_cover_thumb(slot_track_meta)
+                or (
+                    _album_cover_thumb(album_meta)
+                    if isinstance(album_meta, dict)
+                    else ""
+                )
+            )
+            la, alb_tl, dura, tr_ex = _lyric_ctx_for_ui(
+                slot_track_meta,
+                album_meta if isinstance(album_meta, dict) else None,
+            )
+            _emit_track_start(
+                slot_track_meta.get("track_number", 1),
+                track_title,
+                cov,
+                artist=la,
+                album=alb_tl,
+                duration_sec=dura,
+                track_explicit=tr_ex,
+            )
+            _emit_track_marker(
+                "TRACK_RESULT",
+                slot_track_meta.get("track_number", 1),
+                track_title,
+                "downloaded",
+                os.path.basename(missing_path),
+                queue_url=self.source_queue_url or "",
+                local_path=missing_abs,
+                lyric_album=_album_title_for_track_marker(
+                    True, slot_track_meta, album_meta
+                ),
+                slot_track_id=str(slot_track_meta.get("id") or ""),
+                album_release_id=str(
+                    (album_meta.get("id") if isinstance(album_meta, dict) else "")
+                    or self.item_id
+                    or "",
+                ),
+            )
+
+            if self.lyrics_enabled:
+                try:
+                    lyrics_ui_title = track_title
+                    explicit_pre = bool(
+                        slot_track_meta.get("parental_warning")
+                        or slot_track_meta.get("parental_advisory")
+                        or slot_track_meta.get("explicit")
+                        or _safe_get(slot_track_meta, "album", "parental_warning")
+                        or _safe_get(slot_track_meta, "album", "parental_advisory")
+                        or _safe_get(slot_track_meta, "album", "explicit")
+                    )
+                    track_for_lyrics = _track_dict_for_lrclib(
+                        slot_track_meta,
+                        album_meta if isinstance(album_meta, dict) else None,
+                    )
+                    _emit_lyrics_marker(
+                        slot_track_meta.get("track_number"),
+                        lyrics_ui_title,
+                        "loading",
+                        "searching",
+                        None,
+                        missing_abs,
+                    )
+                    result = lyrics.fetch_synced_lyrics_with_search_fallback(
+                        track_for_lyrics,
+                        prefer_explicit=explicit_pre,
+                        timeout_sec=12.0,
+                        max_fallback_candidates=5,
+                    )
+                    if not result:
+                        _emit_lyrics_marker(
+                            slot_track_meta.get("track_number"),
+                            lyrics_ui_title,
+                            "none",
+                            "not-found",
+                            0,
+                            missing_abs,
+                        )
+                    else:
+                        lyric_type = str(result.get("lyrics_type", "synced"))
+                        conf = result.get("confidence")
+                        lyrics_body = (result.get("lyrics") or "").strip()
+                        if lyric_type == "instrumental" and not lyrics_body:
+                            lyrics_body = lyrics.instrumental_placeholder_lrc()
+                        if not lyrics_body:
+                            _emit_lyrics_marker(
+                                slot_track_meta.get("track_number"),
+                                lyrics_ui_title,
+                                "none",
+                                result.get("provider", "none"),
+                                conf,
+                                missing_abs,
+                            )
+                        else:
+                            # Sidecar basename matches would-be FLAC/MP3 stem (see write_lrc_sidecar).
+                            out = lyrics.write_lrc_sidecar(
+                                canonical_audio_anchor,
+                                result["lyrics"],
+                                overwrite=False,
+                            )
+                            if not out:
+                                _emit_lyrics_marker(
+                                    slot_track_meta.get("track_number"),
+                                    lyrics_ui_title,
+                                    result.get("lyrics_type", "unknown"),
+                                    "already-exists",
+                                    conf,
+                                    missing_abs,
+                                )
+                            else:
+                                lid = result.get("lrclib_id")
+                                if lid is not None:
+                                    try:
+                                        lyrics.write_lrclib_id_sidecar(
+                                            missing_abs, int(lid)
+                                        )
+                                    except (
+                                        TypeError,
+                                        ValueError,
+                                        OSError,
+                                    ):
+                                        pass
+                                provider = result.get("provider", "provider")
+                                _emit_lyrics_marker(
+                                    slot_track_meta.get("track_number"),
+                                    lyrics_ui_title,
+                                    lyric_type,
+                                    provider,
+                                    conf,
+                                    missing_abs,
+                                )
+                except Exception as le:
+                    logger.warning(
+                        "%sLyrics fetch for missing placeholder failed: %s",
+                        YELLOW,
+                        le,
+                    )
+                    try:
+                        _emit_lyrics_marker(
+                            slot_track_meta.get("track_number"),
+                            track_title,
+                            "error",
+                            str(le),
+                            0,
+                            missing_abs,
+                        )
+                    except Exception:
+                        pass
+
+            logger.info("%sSaved missing-placeholder: %s", OFF, missing_path)
+            return True, missing_abs
+        except KeyError as e:
+            logger.warning("%smissing-placeholder format error: %s", YELLOW, e)
+            return (
+                False,
+                f"Track format pattern refers to unknown field: {e}. Check Settings -> Track format.",
+            )
+        except OSError as e:
+            logger.warning("%smissing-placeholder I/O error: %s", YELLOW, e)
+            return False, str(e)
+        except Exception as e:
+            logger.warning("%smissing-placeholder failed: %s", YELLOW, e, exc_info=True)
+            return False, str(e)
 
     def download_track(self):
         parse = self.client.get_track_url(self.item_id, self.quality)
@@ -914,7 +1346,7 @@ class Download:
                 track_num,
                 track_title,
                 "purchase_only",
-                _qobuz_purchase_open_url(meta, meta.get("album")),
+                self._purchase_open_url(meta, meta.get("album")),
                 queue_url=self.source_queue_url,
                 lyric_album=_album_title_for_track_marker(True, meta, meta.get("album")),
                 slot_track_id=str(meta.get("id") or ""),
@@ -935,6 +1367,7 @@ class Download:
         multiple=None,
         *,
         stream_track_id=None,
+        lyrics_track_meta=None,
     ):
         if self._stream_abort_is_set():
             return
@@ -944,7 +1377,7 @@ class Download:
         try:
             initial_url = track_url_dict["url"]
         except KeyError:
-            turl = _qobuz_purchase_open_url(
+            turl = self._purchase_open_url(
                 track_metadata,
                 album_or_track_metadata if not is_track else None,
             )
@@ -1021,20 +1454,23 @@ class Download:
         lyrics_fut: Optional[concurrent.futures.Future] = None
         _t_lrc_start: Optional[float] = None
         if self.lyrics_enabled:
+            l_meta = lyrics_track_meta or track_metadata
             try:
-                lyrics_ui_title_pre = _get_title(track_metadata)
+                lyrics_ui_title_pre = _get_title(l_meta)
             except Exception:
-                lyrics_ui_title_pre = str((track_metadata or {}).get("title") or "track")
+                lyrics_ui_title_pre = str((l_meta or {}).get("title") or "track")
             explicit_pre = bool(
-                track_metadata.get("parental_warning")
-                or track_metadata.get("parental_advisory")
-                or track_metadata.get("explicit")
-                or _safe_get(track_metadata, "album", "parental_warning")
-                or _safe_get(track_metadata, "album", "parental_advisory")
-                or _safe_get(track_metadata, "album", "explicit")
+                l_meta.get("parental_warning")
+                or l_meta.get("parental_advisory")
+                or l_meta.get("explicit")
+                or _safe_get(l_meta, "album", "parental_warning")
+                or _safe_get(l_meta, "album", "parental_advisory")
+                or _safe_get(l_meta, "album", "explicit")
             )
+            
+            l_album_meta = l_meta.get("album") if lyrics_track_meta else lyrics_release_album
             track_for_lyrics = _track_dict_for_lrclib(
-                track_metadata, lyrics_release_album
+                l_meta, l_album_meta
             )
             _emit_lyrics_marker(
                 track_metadata.get("track_number"),
@@ -1164,6 +1600,7 @@ class Download:
                 lyrics_release_album,
                 lyrics_fetch_future=lyrics_fut,
                 lyrics_fetch_started_at=_t_lrc_start,
+                lyrics_track_meta=lyrics_track_meta,
             )
         finally:
             if lyrics_ex is not None:
@@ -1177,6 +1614,7 @@ class Download:
         *,
         lyrics_fetch_future: Optional[concurrent.futures.Future] = None,
         lyrics_fetch_started_at: Optional[float] = None,
+        lyrics_track_meta: Optional[dict] = None,
     ):
         if not self.lyrics_enabled:
             return
@@ -1200,17 +1638,19 @@ class Download:
                 None,
                 final_file,
             )
+            l_meta = lyrics_track_meta or track_metadata
             explicit = bool(
-                track_metadata.get("parental_warning")
-                or track_metadata.get("parental_advisory")
-                or track_metadata.get("explicit")
-                or _safe_get(track_metadata, "album", "parental_warning")
-                or _safe_get(track_metadata, "album", "parental_advisory")
-                or _safe_get(track_metadata, "album", "explicit")
+                l_meta.get("parental_warning")
+                or l_meta.get("parental_advisory")
+                or l_meta.get("explicit")
+                or _safe_get(l_meta, "album", "parental_warning")
+                or _safe_get(l_meta, "album", "parental_advisory")
+                or _safe_get(l_meta, "album", "explicit")
             )
             try:
+                l_album_meta = l_meta.get("album") if lyrics_track_meta else release_album_meta
                 track_for_lyrics = _track_dict_for_lrclib(
-                    track_metadata, release_album_meta
+                    l_meta, l_album_meta
                 )
                 _t_sidecar_lrc = time.monotonic()
                 logger.info(

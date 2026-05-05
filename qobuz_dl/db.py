@@ -184,6 +184,20 @@ def is_gui_pending_track_key(audio_path: Optional[str]) -> bool:
     return isinstance(audio_path, str) and audio_path.startswith(GUI_PENDING_TRACK_PREFIX)
 
 
+def is_gui_missing_placeholder_audio_path(audio_path: str) -> bool:
+    """``.missing.txt`` note written instead of FLAC/MP3 (same naming pattern)."""
+
+    raw = str(audio_path or "").strip()
+    if not raw or is_gui_pending_track_key(raw):
+        return False
+    try:
+        p = Path(audio_path).expanduser().resolve()
+    except OSError:
+        return False
+    name = str(p.name or "").lower()
+    return bool(name.endswith(".missing.txt"))
+
+
 def _ensure_gui_download_history_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS gui_download_history ("
@@ -208,14 +222,49 @@ def _ensure_gui_download_history_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE gui_download_history ADD COLUMN slot_track_id TEXT"
         )
+        cols.add("slot_track_id")
     if "release_album_id" not in cols:
         conn.execute(
             "ALTER TABLE gui_download_history ADD COLUMN release_album_id TEXT"
         )
+        cols.add("release_album_id")
     if "attach_search_eligible" not in cols:
         conn.execute(
             "ALTER TABLE gui_download_history ADD COLUMN attach_search_eligible INTEGER DEFAULT 0"
         )
+        cols.add("attach_search_eligible")
+    if "history_seq" not in cols:
+        conn.execute(
+            "ALTER TABLE gui_download_history ADD COLUMN history_seq INTEGER"
+        )
+        _backfill_gui_download_history_history_seq(conn)
+
+
+def _backfill_gui_download_history_history_seq(conn: sqlite3.Connection) -> None:
+    """Assign ``history_seq`` for rows missing it (migration: order ~ legacy ``updated_at``).
+
+    Afterwards only new inserts get new sequence numbers; lyric updates change ``updated_at`` only.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM gui_download_history WHERE history_seq IS NULL",
+    ).fetchone()
+    if not row or int(row[0] or 0) == 0:
+        return
+    base = conn.execute(
+        "SELECT COALESCE(MAX(history_seq), 0) FROM gui_download_history",
+    ).fetchone()
+    base_i = int(base[0] or 0) if base else 0
+    rows = conn.execute(
+        "SELECT audio_path FROM gui_download_history WHERE history_seq IS NULL "
+        "ORDER BY updated_at ASC, audio_path COLLATE NOCASE ASC",
+    ).fetchall()
+    seq = base_i + 1
+    for (ap,) in rows:
+        conn.execute(
+            "UPDATE gui_download_history SET history_seq=? WHERE audio_path=? AND history_seq IS NULL",
+            (seq, ap),
+        )
+        seq += 1
 
 
 def upsert_gui_download_history(
@@ -253,7 +302,10 @@ def upsert_gui_download_history(
             return
     else:
         p = _normalize_audio_path_key(audio_path)
-        if not p or not os.path.isfile(p):
+        if not p:
+            return
+        is_miss_ph = is_gui_missing_placeholder_audio_path(p)
+        if not is_miss_ph and not os.path.isfile(p):
             return
     dbp = get_qobuz_db_path()
     os.makedirs(os.path.dirname(dbp), exist_ok=True)
@@ -270,13 +322,17 @@ def upsert_gui_download_history(
     try:
         with sqlite3.connect(dbp) as conn:
             _ensure_gui_download_history_table(conn)
+            row = conn.execute(
+                "SELECT COALESCE(MAX(history_seq), 0) + 1 FROM gui_download_history",
+            ).fetchone()
+            next_hist = int(row[0]) if row and row[0] is not None else 1
             conn.execute(
                 "INSERT INTO gui_download_history ("
                 "audio_path, track_no, title, cover_url, lyric_artist, lyric_album, "
                 "duration_sec, track_explicit, download_status, download_detail, "
                 "lyric_type, lyric_provider, lyric_confidence, updated_at, "
-                "slot_track_id, release_album_id, attach_search_eligible"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "slot_track_id, release_album_id, attach_search_eligible, history_seq"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(audio_path) DO UPDATE SET "
                 "track_no=excluded.track_no, title=excluded.title, cover_url=excluded.cover_url, "
                 "lyric_artist=excluded.lyric_artist, lyric_album=excluded.lyric_album, "
@@ -305,6 +361,7 @@ def upsert_gui_download_history(
                     sid_col or None,
                     rid_col or None,
                     attach_eligible_int,
+                    next_hist,
                 ),
             )
             if cleanup:
@@ -367,7 +424,9 @@ def list_gui_download_history() -> list:
                 "duration_sec, track_explicit, download_status, download_detail, "
                 "lyric_type, lyric_provider, lyric_confidence, updated_at, "
                 "slot_track_id, release_album_id, attach_search_eligible "
-                "FROM gui_download_history ORDER BY updated_at ASC"
+                "FROM gui_download_history ORDER BY "
+                "(history_seq IS NULL) ASC, history_seq ASC, "
+                "audio_path COLLATE NOCASE ASC"
             ).fetchall()
             removed = 0
             for r in rows:

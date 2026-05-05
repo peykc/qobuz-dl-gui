@@ -236,6 +236,16 @@
                                 <line x1="6" y1="6" x2="18" y2="18" />
                             </svg>
                         </button>
+                        <button type="button" id="report-issue-btn" class="sidebar-icon-btn report-issue-btn"
+                            data-tip="Send feedback" aria-label="Send feedback">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M12 9v4" />
+                                <path d="M12 17h.01" />
+                                <path
+                                    d="M10.3 3.84 1.82 18a2 2 0 0 0 1.72 3h16.92a2 2 0 0 0 1.72-3L13.7 3.84a2 2 0 0 0-3.4 0z" />
+                            </svg>
+                        </button>
                         <button type="button" id="settings-gear-btn" class="sidebar-icon-btn settings-gear-btn"
                             data-tip="Settings">
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -246,8 +256,9 @@
                             </svg>
                         </button>
                     </div>
-                    <!-- ── Settings popover ── -->
-                    <div id="settings-popover" class="settings-popover hidden">
+                </div>
+                <!-- Popovers: positioned under .sidebar-logo (full row width) so wide panels are not clipped by .app overflow -->
+                <div id="settings-popover" class="settings-popover hidden">
                         <div class="settings-popover-header">
                             <span>Settings</span>
                             <button id="settings-popover-close" class="btn-ghost btn-sm">
@@ -292,7 +303,26 @@
                             <div id="settings-popover-feedback" class="feedback-msg hidden"></div>
                         </div>
                     </div>
-                </div>
+                    <div id="issue-report-popover" class="issue-report-popover hidden" role="dialog"
+                        aria-labelledby="issue-report-heading" aria-hidden="true">
+                        <div class="settings-popover-header">
+                            <span id="issue-report-heading">Send Feedback</span>
+                            <button id="issue-report-close" class="btn-ghost btn-sm" aria-label="Close issue report">
+                                ✕
+                            </button>
+                        </div>
+                        <div class="settings-section">
+                            <textarea id="issue-report-message" class="issue-report-textarea" rows="6"
+                                maxlength="2000" placeholder="Explain what happened..."></textarea>
+                            <div id="issue-report-feedback" class="feedback-msg hidden"></div>
+                        </div>
+                        <div class="issue-report-actions">
+                            <button id="issue-report-open" class="btn-primary btn-sm" type="button"
+                                disabled>
+                                Send
+                            </button>
+                        </div>
+                    </div>
             </div>
 
             <div class="sidebar-search">
@@ -1016,8 +1046,12 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                                 class="dl-history-segment-btn dl-history-segment-btn--all is-active"
                                 aria-selected="true" tabindex="0">Download history</button>
                             <button type="button" role="tab" id="dl-history-tab-errors"
-                                class="dl-history-segment-btn dl-history-segment-btn--errors"
-                                aria-selected="false" tabindex="-1">Error history</button>
+                                class="dl-history-segment-btn dl-history-segment-btn--errors dl-history-segment-split"
+                                aria-selected="false" tabindex="-1">
+                                <span class="dl-history-segment-body">Error history</span>
+                                <span id="dl-history-errors-count" class="dl-history-errors-count hidden"
+                                    aria-live="polite"></span>
+                            </button>
                         </div>
                         <div class="dl-clear-history-shell">
                             <button type="button" class="btn-ghost btn-sm" id="dl-clear-track-status"
@@ -1074,7 +1108,7 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                 <div class="lyric-search-head">
                     <h2 id="lyric-search-heading">Search lyrics</h2>
                     <button type="button" id="lyric-search-close" class="btn-ghost btn-sm lyric-search-close"
-                        aria-label="Close">×</button>
+                        aria-label="Close">✕</button>
                 </div>
                 <div class="lyric-search-body">
                     <div class="lyric-search-col lyric-search-col--form">
@@ -1123,7 +1157,7 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                         <span id="lyric-search-preview-dur" class="lyric-search-preview-time">0:00</span>
                     </div>
                     <button type="button" id="lyric-search-preview-close" class="btn-ghost btn-sm lyric-search-close"
-                        aria-label="Close lyric preview">×</button>
+                        aria-label="Close lyric preview">✕</button>
                 </div>
                 <audio id="lyric-search-preview-audio" class="hidden" preload="metadata"></audio>
                 <div id="lyric-search-preview" class="lyric-search-preview">
@@ -1140,7 +1174,7 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                 <div class="lyric-search-head">
                     <h2 id="attach-track-heading">Find track replacement</h2>
                     <button type="button" id="attach-track-close" class="btn-ghost btn-sm lyric-search-close"
-                        aria-label="Close">×</button>
+                        aria-label="Close">✕</button>
                 </div>
                 <div class="lyric-search-body attach-track-body">
                     <div class="lyric-search-col lyric-search-col--form">
@@ -1165,6 +1199,7 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
                 </div>
             </div>
         </div>
+    </div><!-- #app -->
 
         <!-- Global Tooltip -->
     <div id="global-tooltip" class="global-tooltip"></div>
