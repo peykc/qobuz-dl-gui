@@ -22,15 +22,267 @@ CHECK_INTERVAL_SEC = 24 * 3600
 
 
 def cleanup_stale_exe_backup() -> None:
-    """Remove leftover .old from a previous auto-update (Windows)."""
+    """Remove leftover .old from a previous auto-update (Windows) in a background thread."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return
-    old = os.path.abspath(sys.executable) + ".old"
-    if os.path.isfile(old):
+    current = os.path.abspath(sys.executable)
+    app_dir = os.path.dirname(current)
+    prefix = os.path.basename(current) + ".old"
+    old_paths = [
+        os.path.join(app_dir, name)
+        for name in os.listdir(app_dir)
+        if name == prefix or name.startswith(prefix + ".")
+    ]
+    if not old_paths:
+        return
+
+    def _wait_and_clean():
+        # The parent process takes a moment to exit. We retry indefinitely
+        # (every 3 seconds) until the lock is released or the file is gone.
+        while True:
+            time.sleep(3.0)
+            remaining = [path for path in old_paths if os.path.isfile(path)]
+            if not remaining:
+                break
+            for old in remaining:
+                try:
+                    os.remove(old)
+                    logging.info("Cleaned up stale update backup: %s", old)
+                except OSError:
+                    pass
+
+    threading.Thread(target=_wait_and_clean, daemon=True).start()
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _powershell_exe() -> str:
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    bundled = os.path.join(
+        system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+    )
+    if os.path.isfile(bundled):
+        return bundled
+    return "powershell.exe"
+
+
+def _write_windows_update_helper(current_exe: str, downloaded_exe: str) -> str:
+    """Create a hidden PowerShell helper that performs the update after exit."""
+    parent_pid = os.getpid()
+    fd, helper = tempfile.mkstemp(suffix=".ps1", prefix="qobuz_gui_update_")
+    os.close(fd)
+    helper_q = _ps_quote(helper)
+    current_q = _ps_quote(current_exe)
+    update_q = _ps_quote(downloaded_exe)
+    workdir_q = _ps_quote(os.path.dirname(current_exe) or os.getcwd())
+    log_q = _ps_quote(os.path.join(tempfile.gettempdir(), "qobuz_gui_update.log"))
+    script = [
+        "$ErrorActionPreference = 'Stop'",
+        f"$log = {log_q}",
+        "function Log([string]$Message) {",
+        "    $ts = [DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')",
+        "    Add-Content -LiteralPath $log -Value \"$ts $Message\" -Encoding UTF8",
+        "}",
+        "Log 'helper-start'",
+        "[Environment]::SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1', 'Process')",
+        f"$parentPid = {parent_pid}",
+        f"$exe = {current_q}",
+        f"$update = {update_q}",
+        f"$workdir = {workdir_q}",
+        "$backupBase = $exe + '.old'",
+        "Log \"waiting-for-parent pid=$parentPid\"",
+        "try {",
+        "    Wait-Process -Id $parentPid -Timeout 45 -ErrorAction SilentlyContinue",
+        "} catch {",
+        "    Log \"wait-error $($_.Exception.Message)\"",
+        "}",
+        "Start-Sleep -Milliseconds 300",
+        "Log \"paths exe=$exe update=$update backup=$backupBase\"",
+        "if (-not (Test-Path -LiteralPath $update)) {",
+        "    Log 'missing-update-file'",
+        f"    Remove-Item -LiteralPath {helper_q} -Force -ErrorAction SilentlyContinue",
+        "    exit 1",
+        "}",
+        "for ($i = 0; $i -lt 40 -and (Test-Path -LiteralPath $exe); $i++) {",
+        "    try {",
+        "        $stream = [System.IO.File]::Open($exe, 'Open', 'ReadWrite', 'None')",
+        "        $stream.Close()",
+        "        break",
+        "    } catch {",
+        "        Start-Sleep -Milliseconds 250",
+        "    }",
+        "}",
+        "if (Test-Path -LiteralPath $backupBase) {",
+        "    Log 'removing-stale-backup'",
+        "    Remove-Item -LiteralPath $backupBase -Force -ErrorAction SilentlyContinue",
+        "}",
+        "$backup = $backupBase",
+        "if (Test-Path -LiteralPath $backup) {",
+        "    $backup = $backupBase + '.' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()",
+        "    Log \"using-numbered-backup backup=$backup\"",
+        "}",
+        "$installed = $false",
+        "try {",
+        "    Log 'moving-current-to-backup'",
+        "    Move-Item -LiteralPath $exe -Destination $backup -Force",
+        "    Log 'moving-update-into-place'",
+        "    Move-Item -LiteralPath $update -Destination $exe -Force",
+        "    $installed = $true",
+        "    Log 'install-move-complete'",
+        "} catch {",
+        "    Log \"install-error $($_.Exception.Message)\"",
+        "    if ((-not (Test-Path -LiteralPath $exe)) -and (Test-Path -LiteralPath $backup)) {",
+        "        Log 'rolling-back-backup'",
+        "        Move-Item -LiteralPath $backup -Destination $exe -Force",
+        "    }",
+        "}",
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        "if ($installed) {",
+        "    Log 'starting-updated-app'",
+        "    Start-Process -FilePath $exe -WorkingDirectory $workdir",
+        "    for ($i = 0; $i -lt 80 -and (Test-Path -LiteralPath $backup); $i++) {",
+        "        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue",
+        "        if (Test-Path -LiteralPath $backup) { Start-Sleep -Milliseconds 250 }",
+        "    }",
+        "    if (Test-Path -LiteralPath $backup) { Log \"backup-still-present backup=$backup\" }",
+        "    else { Log 'backup-cleaned' }",
+        "} else {",
+        "    Log 'install-not-completed-cleaning-update'",
+        "    Remove-Item -LiteralPath $update -Force -ErrorAction SilentlyContinue",
+        "}",
+        "Log 'helper-end'",
+        f"Remove-Item -LiteralPath {helper_q} -Force -ErrorAction SilentlyContinue",
+    ]
+    with open(helper, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\r\n".join(script) + "\r\n")
+    return helper
+
+
+def _write_windows_restart_helper(current_exe: str, backup_exe: str | None) -> str:
+    """Create a hidden PowerShell helper for legacy already-swapped restarts."""
+    parent_pid = os.getpid()
+    fd, helper = tempfile.mkstemp(suffix=".ps1", prefix="qobuz_gui_restart_")
+    os.close(fd)
+    helper_q = _ps_quote(helper)
+    current_q = _ps_quote(current_exe)
+    workdir_q = _ps_quote(os.path.dirname(current_exe) or os.getcwd())
+    backup_q = _ps_quote(backup_exe) if backup_exe else "$null"
+    script = [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        "[Environment]::SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1', 'Process')",
+        f"$parentPid = {parent_pid}",
+        f"$exe = {current_q}",
+        f"$workdir = {workdir_q}",
+        f"$backup = {backup_q}",
+        "while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {",
+        "    Start-Sleep -Milliseconds 250",
+        "}",
+        "Start-Sleep -Milliseconds 300",
+        "Start-Process -FilePath $exe -WorkingDirectory $workdir",
+        "if ($backup) {",
+        "    for ($i = 0; $i -lt 80 -and (Test-Path -LiteralPath $backup); $i++) {",
+        "        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue",
+        "        if (Test-Path -LiteralPath $backup) { Start-Sleep -Milliseconds 250 }",
+        "    }",
+        "}",
+        f"Remove-Item -LiteralPath {helper_q} -Force -ErrorAction SilentlyContinue",
+    ]
+    with open(helper, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\r\n".join(script) + "\r\n")
+    return helper
+
+
+def _launch_hidden_powershell(helper: str, cwd: str | None = None) -> None:
+    creation = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creation |= subprocess.CREATE_NO_WINDOW
+
+    env = os.environ.copy()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    log_path = os.path.join(tempfile.gettempdir(), "qobuz_gui_update.log")
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} python-launch {helper}\n")
+    except OSError:
+        pass
+    proc = subprocess.Popen(
+        [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            helper,
+        ],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creation,
+        close_fds=True,
+        shell=False,
+    )
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} python-launched pid={proc.pid}\n")
+    except OSError:
+        pass
+
+
+def stage_update_and_exit(downloaded_exe: str) -> None:
+    """Hand update work to a detached helper, then exit to release file locks."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        raise RuntimeError("Auto-install is only for the frozen Windows EXE")
+
+    _verify_windows_pe(downloaded_exe)
+    current = os.path.abspath(sys.executable)
+    helper = _write_windows_update_helper(current, downloaded_exe)
+    if sys.platform == "win32":
         try:
-            os.remove(old)
-        except OSError:
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
             pass
+    _launch_hidden_powershell(helper, os.path.dirname(current) or None)
+    os._exit(0)
+
+
+def schedule_stage_update_and_exit(downloaded_exe: str, delay: float = 0.25) -> None:
+    """Let the HTTP response flush before handing off update work and exiting."""
+
+    def run():
+        time.sleep(delay)
+        try:
+            stage_update_and_exit(downloaded_exe)
+        except Exception as e:
+            logging.error("Update handoff failed: %s", e)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _windows_backup_path(current_exe: str) -> str:
+    old = current_exe + ".old"
+    if not os.path.exists(old):
+        return old
+    try:
+        os.remove(old)
+        return old
+    except OSError:
+        pass
+
+    base = f"{old}.{int(time.time())}"
+    for i in range(100):
+        candidate = base if i == 0 else f"{base}.{i}"
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(
+        "Could not prepare an update backup path. Close other instances and "
+        "remove stale .old files next to the application."
+    )
 
 
 def _releases_download_prefix(repo: str) -> str:
@@ -39,6 +291,10 @@ def _releases_download_prefix(repo: str) -> str:
 
 
 def is_safe_release_asset_url(url: str, repo: str) -> bool:
+    # TODO: REMOVE BEFORE PUSH TO MAIN
+    if os.environ.get("QOBUZ_TEST_UPDATE") == "1" and url.startswith("http://127.0.0.1:"):
+        return True
+
     if not url or not repo:
         return False
     u = url.strip().lower()
@@ -107,6 +363,22 @@ def fetch_latest_release(repo: str) -> dict:
 
 
 def check_for_update(config_dir: str, *, force: bool = False) -> dict:
+    # TODO: REMOVE BEFORE PUSH TO MAIN
+    if os.environ.get("QOBUZ_TEST_UPDATE") == "1":
+        return {
+            "ok": True,
+            "skipped": False,
+            "current_version": __version__,
+            "latest_version": "99.99.99",
+            "tag_name": "v99.99.99",
+            "update_available": True,
+            "release_page": "http://127.0.0.1:8000",
+            "download_url": "http://127.0.0.1:8000/test_update.exe",
+            "asset_name": "test_update.exe",
+            "can_auto_install": getattr(sys, "frozen", False) and os.name == "nt",
+            "frozen": getattr(sys, "frozen", False),
+        }
+
     repo = GITHUB_RELEASE_REPO.strip()
     if not repo or "/" not in repo:
         return {
@@ -213,13 +485,7 @@ def swap_windows_exe_inplace(downloaded_exe: str) -> tuple[str, str]:
     _verify_windows_pe(downloaded_exe)
 
     current = os.path.abspath(sys.executable)
-    old = current + ".old"
-
-    if os.path.isfile(old):
-        try:
-            os.remove(old)
-        except OSError:
-            pass
+    old = _windows_backup_path(current)
 
     try:
         os.rename(current, old)
@@ -251,7 +517,7 @@ def swap_windows_exe_inplace(downloaded_exe: str) -> tuple[str, str]:
 
 
 def restart_after_swap(current_exe: str, backup_exe: str | None) -> None:
-    """Start the new exe detached, pause, then terminate this process."""
+    """Restart after an in-place swap without launching the new app over the old one."""
     creation = 0
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         creation |= subprocess.CREATE_NO_WINDOW
@@ -262,8 +528,7 @@ def restart_after_swap(current_exe: str, backup_exe: str | None) -> None:
     # independently. Without this, the new exe may inherit _MEIPASS / DLL search
     # state and block cleanup — "[PYI-…] Failed to remove temporary directory".
     # https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html
-    env = os.environ.copy()
-    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     if sys.platform == "win32":
         try:
             ctypes.windll.kernel32.SetDllDirectoryW(None)
@@ -271,16 +536,40 @@ def restart_after_swap(current_exe: str, backup_exe: str | None) -> None:
             pass
 
     try:
-        subprocess.Popen(
-            [current_exe],
-            cwd=os.path.dirname(current_exe) or None,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creation,
-            shell=False,
-        )
+        if sys.platform == "win32":
+            helper = _write_windows_restart_helper(current_exe, backup_exe)
+            subprocess.Popen(
+                [
+                    _powershell_exe(),
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    helper,
+                ],
+                cwd=os.path.dirname(current_exe) or None,
+                env=os.environ.copy(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation,
+                close_fds=True,
+                shell=False,
+            )
+        else:
+            subprocess.Popen(
+                [current_exe],
+                cwd=os.path.dirname(current_exe) or None,
+                env=os.environ.copy(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation,
+                close_fds=True,
+                shell=False,
+            )
     except OSError as e:
         if backup_exe and os.path.isfile(backup_exe):
             try:
@@ -295,7 +584,6 @@ def restart_after_swap(current_exe: str, backup_exe: str | None) -> None:
                 )
         raise RuntimeError(f"Could not start updated application: {e}") from e
 
-    time.sleep(1.6)
     os._exit(0)
 
 

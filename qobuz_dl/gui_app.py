@@ -640,22 +640,7 @@ def api_update_install():
         logging.error("Update download failed: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    try:
-        current_exe, _old = updater.swap_windows_exe_inplace(path)
-    except Exception as e:
-        logging.error("Update install failed: %s", e)
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-
-    updater.schedule_restart_only(current_exe, _old)
+    updater.schedule_stage_update_and_exit(path)
     return jsonify({"ok": True, "restarting": True})
 
 

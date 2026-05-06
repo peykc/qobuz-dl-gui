@@ -2177,6 +2177,14 @@
       panel.classList.add("hidden");
       panel.setAttribute("aria-hidden", "true");
     }
+    if (_lyricSearchModalCtx) {
+      _lyricSearchModalCtx.previewingLrclibId = null;
+    }
+    document.querySelectorAll("#lyric-search-results .btn-ghost").forEach(btn => {
+      btn.classList.remove("is-previewing");
+      btn.textContent = "Preview";
+      btn.style.width = "";
+    });
   }
 
   function _closeLyricSearchModal() {
@@ -2349,6 +2357,7 @@
       div.classList.add("lyric-search-row--attached");
       div.setAttribute("data-lyric-attached", "1");
     }
+    div.dataset.rowId = String(row.id || "");
 
     const trackNameRaw = row.trackName || "";
     const albumRaw = row.albumName || "";
@@ -2419,6 +2428,7 @@
     prevBtn.className = "btn-ghost btn-sm";
     prevBtn.textContent = "Preview";
     const rid = row.id;
+    prevBtn.dataset.rid = String(rid);
     prevBtn.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -2702,6 +2712,12 @@
   }
 
   async function _previewLyricRow(id) {
+    if (_lyricSearchModalCtx && _lyricSearchModalCtx.previewingLrclibId === id) {
+      return;
+    }
+    if (_lyricSearchModalCtx) {
+      _lyricSearchModalCtx.previewingLrclibId = id;
+    }
     _teardownLyricPreviewPlayback();
     _lyricPreviewLastActiveIdx = -1;
     const panel = document.getElementById("lyric-search-preview-panel");
@@ -2726,6 +2742,24 @@
       panel.setAttribute("aria-hidden", "false");
       requestAnimationFrame(() => _positionLyricSearchPopover());
     }
+
+    // Highlight the button being previewed and show loading state
+    let currentPreviewBtn = null;
+    document.querySelectorAll("#lyric-search-results .btn-ghost").forEach(btn => {
+      if (btn.dataset.rid === String(id)) {
+        currentPreviewBtn = btn;
+        btn.classList.add("is-previewing");
+        // Lock width to prevent layout shift
+        const w = btn.offsetWidth;
+        if (w > 0) btn.style.width = w + "px";
+        btn.innerHTML = '<span class="spinner"></span>';
+      } else {
+        btn.classList.remove("is-previewing");
+        btn.textContent = "Preview";
+        btn.style.width = "";
+      }
+    });
+
     try {
       const res = await fetch(
         `/api/lyrics/fetch?id=${encodeURIComponent(id)}`,
@@ -2773,6 +2807,10 @@
     } catch (_) {
       _renderLyricPreviewPlainBody(body, "Network error.");
     } finally {
+      if (currentPreviewBtn && currentPreviewBtn.dataset.rid === String(id)) {
+        currentPreviewBtn.textContent = "Preview";
+        currentPreviewBtn.style.width = "";
+      }
       requestAnimationFrame(() => _positionLyricSearchPopover());
     }
   }
@@ -2887,6 +2925,7 @@
       durationSec,
       trackExplicit,
       attachedLrclibId: null,
+      previewingLrclibId: null,
       lastSearchResults: null,
       lyricSearchPagedShown: 0,
       anchorCard: card,

@@ -1737,6 +1737,15 @@ td.fmt-example {
     }
 }
 
+.btn-ghost .spinner {
+    border-color: rgba(255, 255, 255, 0.1);
+    border-top-color: var(--text-secondary);
+}
+
+.btn-ghost.is-previewing .spinner {
+    border-top-color: var(--accent);
+}
+
 /* ============================================================
    LOG CONSOLE
    ============================================================ */
@@ -2072,7 +2081,7 @@ td.fmt-example {
 
 .track-status-sub {
     font-size: 9px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
@@ -3373,7 +3382,7 @@ a.track-dl-btn.purchase-only:focus-visible {
 
 .queue-card-meta {
     font-size: 11px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -4364,6 +4373,9 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
     box-shadow: inset 0 0 0 1px rgba(110, 231, 247, 0.35);
 }
 
+/* (Row preview highlight removed per user request) */
+
+
 .lyric-search-row-line {
     display: flex;
     align-items: center;
@@ -4583,6 +4595,24 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
     justify-content: flex-end;
     gap: 8px;
     flex-shrink: 0;
+}
+
+.lyric-search-row-actions .btn-ghost {
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.lyric-search-row-actions .btn-ghost:hover {
+    color: var(--text);
+}
+
+.lyric-search-row-actions .btn-ghost.is-previewing {
+    background: var(--accent-dim);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 247, 0.25);
 }
 
 .lyric-search-preview {

@@ -119,6 +119,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # This creates the release but doesn't make it public yet
+          draft: true 
           files: |
             release-assets/Qobuz-DL-GUI-Windows-x64.exe
             release-assets/Qobuz-DL-GUI-Linux-x64
