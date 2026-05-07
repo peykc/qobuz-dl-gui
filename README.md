@@ -16,6 +16,8 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 | Linux | [![Download for Linux](https://img.shields.io/badge/DOWNLOAD-x64-f2c94c?style=for-the-badge&logo=linux&logoColor=111111)](https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Linux-x64) | Run `chmod +x Qobuz-DL-GUI-Linux-x64`. In-app updates are supported. |
 | macOS | [![Download for macOS](https://img.shields.io/badge/DOWNLOAD-x64-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-macOS-x64.zip) | Unzip and open the app. Unsigned builds may require right-click -> Open. |
 
+![Total Downloads](https://img.shields.io/github/downloads/peykc/qobuz-dl-gui/total)
+
 Older builds and release notes are available on [GitHub Releases](https://github.com/peykc/qobuz-dl-gui/releases).
 
 ## What It Does
