@@ -5896,14 +5896,16 @@
       banner.classList.add("hidden");
       return;
     }
-    try {
-      const dismissed = sessionStorage.getItem("qobuz-dl-update-dismiss");
-      if (dismissed && dismissed === String(data.latest_version)) {
-        banner.classList.add("hidden");
-        return;
+    if (!data.test_mode) {
+      try {
+        const dismissed = sessionStorage.getItem("qobuz-dl-update-dismiss");
+        if (dismissed && dismissed === String(data.latest_version)) {
+          banner.classList.add("hidden");
+          return;
+        }
+      } catch (e) {
+        /* ignore */
       }
-    } catch (e) {
-      /* ignore */
     }
     let msg =
       "Version " +
@@ -5913,6 +5915,10 @@
       ").";
     if (!data.download_url) {
       msg += " Download the new build from the release page.";
+    } else if (!data.can_auto_install) {
+      msg += data.frozen
+        ? " Automatic install is not available for this platform yet."
+        : " Automatic install only works in the packaged desktop build.";
     }
     textEl.textContent = msg;
     if (data.release_page) {
@@ -6130,9 +6136,15 @@
           } else if (!data.ok) {
             showFeedback(updFeedback, data.error || "Check failed", false);
           } else if (data.update_available) {
+            let updateMsg = "Update available: v" + data.latest_version;
+            if (data.download_url && !data.can_auto_install) {
+              updateMsg += data.frozen
+                ? " (manual install on this platform)"
+                : " (run the packaged desktop build to auto-install)";
+            }
             showFeedback(
               updFeedback,
-              "Update available: v" + data.latest_version,
+              updateMsg,
               true,
             );
           } else {

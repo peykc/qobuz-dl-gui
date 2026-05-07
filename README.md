@@ -100,9 +100,9 @@ The GUI uses [pywebview](https://github.com/r0x0r/pywebview) (on Windows, **Edge
 
 | Platform | Artifact | Notes |
 |----------|----------|--------|
-| **Windows** | `Qobuz-DL-GUI-Windows-x64.exe` | No Python install. [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if the shell does not render. In-app updates expect this asset name pattern. |
-| **Linux** | `Qobuz-DL-GUI-Linux-x64` | `chmod +x`. Needs WebKitGTK/GTK per [pywebview Linux notes](https://pywebview.flowrl.com/guide/installation.html#linux). |
-| **macOS** | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip and open `Qobuz-DL-GUI.app`. Unsigned: right-click → **Open** if Gatekeeper warns. |
+| **Windows** | `Qobuz-DL-GUI-Windows-x64.exe` | No Python install. [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if the shell does not render. In-app updates can replace this EXE automatically. |
+| **Linux** | `Qobuz-DL-GUI-Linux-x64` | `chmod +x`. Uses pywebview when GTK/WebKitGTK is available; otherwise opens the GUI in your system browser. In-app updates can replace this binary automatically. |
+| **macOS** | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip and open `Qobuz-DL-GUI.app`. Unsigned: right-click → **Open** if Gatekeeper warns. In-app checks link to the correct release asset; auto-install is not enabled yet. |
 
 Pushing a Git tag `v*` runs [.github/workflows/build-desktop.yml](.github/workflows/build-desktop.yml) and attaches builds to that release. **Actions → Build desktop → Run workflow** produces the same artifacts without a release.
 
@@ -123,4 +123,3 @@ The original terminal workflow is still shipped for scripting and automation.
 
 **CLI upstream (PayPal)**  
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VZWSWVGZGJRMU&source=url)
-

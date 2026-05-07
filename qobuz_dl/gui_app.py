@@ -627,11 +627,12 @@ def api_update_install():
     url = (data.get("download_url") or "").strip()
     if not updater.is_safe_release_asset_url(url, GITHUB_RELEASE_REPO.strip()):
         return jsonify({"ok": False, "error": "Invalid or untrusted download URL"}), 400
-    if not getattr(sys, "frozen", False) or os.name != "nt":
+    auto_platform = os.name == "nt" or sys.platform.startswith("linux")
+    if not getattr(sys, "frozen", False) or not auto_platform:
         return jsonify(
             {
                 "ok": False,
-                "error": "Automatic install is only available for the Windows portable EXE.",
+                "error": "Automatic install is only available for Windows and Linux frozen builds.",
             }
         ), 400
     try:
@@ -2631,17 +2632,23 @@ def main():
     threading.Thread(target=run_flask, daemon=True).start()
     _wait_for_port("127.0.0.1", port)
 
-    # Open at minimum width; min height is slightly taller than before for usability.
-    _win_min_w, _win_min_h = 880, 650
-    webview.create_window(
-        "Qobuz-DL",
-        url,
-        width=1030,
-        height=684,
-        min_size=(_win_min_w, _win_min_h),
-        text_select=True,
-    )
-    webview.start(debug=False)
+    try:
+        # Open at minimum width; min height is slightly taller than before for usability.
+        _win_min_w, _win_min_h = 880, 650
+        webview.create_window(
+            "Qobuz-DL",
+            url,
+            width=1030,
+            height=684,
+            min_size=(_win_min_w, _win_min_h),
+            text_select=True,
+        )
+        webview.start(debug=False)
+    except Exception as e:
+        logging.error("pywebview failed; opening system browser instead: %s", e)
+        threading.Thread(target=open_browser_soon, daemon=True).start()
+        while True:
+            time.sleep(3600)
     os._exit(0)
 
 if __name__ == "__main__":

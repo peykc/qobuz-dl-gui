@@ -194,6 +194,85 @@ def _write_windows_restart_helper(current_exe: str, backup_exe: str | None) -> s
     return helper
 
 
+def _sh_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _write_linux_update_helper(current_exe: str, downloaded_exe: str) -> str:
+    """Create a shell helper that performs the update after the Linux app exits."""
+    parent_pid = os.getpid()
+    fd, helper = tempfile.mkstemp(suffix=".sh", prefix="qobuz_gui_update_")
+    os.close(fd)
+    log_path = os.path.join(tempfile.gettempdir(), "qobuz_gui_update.log")
+    script = [
+        "#!/usr/bin/env sh",
+        "set +e",
+        f"LOG={_sh_quote(log_path)}",
+        "log() { printf '%s %s\\n' \"$(date '+%Y-%m-%d %H:%M:%S %z')\" \"$1\" >> \"$LOG\"; }",
+        "log helper-start",
+        f"PARENT_PID={parent_pid}",
+        f"EXE={_sh_quote(current_exe)}",
+        f"UPDATE={_sh_quote(downloaded_exe)}",
+        'BACKUP="$EXE.old"',
+        "log \"waiting-for-parent pid=$PARENT_PID\"",
+        "i=0",
+        "while kill -0 \"$PARENT_PID\" 2>/dev/null && [ \"$i\" -lt 180 ]; do",
+        "  i=$((i + 1))",
+        "  sleep 0.25",
+        "done",
+        "sleep 0.3",
+        "log \"paths exe=$EXE update=$UPDATE backup=$BACKUP\"",
+        "if [ ! -f \"$UPDATE\" ]; then",
+        "  log missing-update-file",
+        "  rm -f \"$0\"",
+        "  exit 1",
+        "fi",
+        "chmod +x \"$UPDATE\" 2>/dev/null",
+        "if [ -e \"$BACKUP\" ]; then",
+        "  log removing-stale-backup",
+        "  rm -f \"$BACKUP\" 2>/dev/null",
+        "fi",
+        "if [ -e \"$BACKUP\" ]; then",
+        '  BACKUP="$BACKUP.$(date +%s)"',
+        "  log \"using-numbered-backup backup=$BACKUP\"",
+        "fi",
+        "log moving-current-to-backup",
+        "mv \"$EXE\" \"$BACKUP\"",
+        "if [ \"$?\" -ne 0 ]; then",
+        "  log install-error-move-current",
+        "  rm -f \"$UPDATE\"",
+        "  rm -f \"$0\"",
+        "  exit 1",
+        "fi",
+        "log moving-update-into-place",
+        "mv \"$UPDATE\" \"$EXE\"",
+        "if [ \"$?\" -ne 0 ]; then",
+        "  log install-error-move-update",
+        "  if [ ! -e \"$EXE\" ] && [ -e \"$BACKUP\" ]; then mv \"$BACKUP\" \"$EXE\"; fi",
+        "  rm -f \"$0\"",
+        "  exit 1",
+        "fi",
+        "chmod +x \"$EXE\" 2>/dev/null",
+        "log install-move-complete",
+        "log starting-updated-app",
+        'cd "$(dirname "$EXE")" 2>/dev/null',
+        'PYINSTALLER_RESET_ENVIRONMENT=1 nohup "$EXE" >/dev/null 2>&1 &',
+        "i=0",
+        "while [ -e \"$BACKUP\" ] && [ \"$i\" -lt 80 ]; do",
+        "  rm -f \"$BACKUP\" 2>/dev/null",
+        "  [ -e \"$BACKUP\" ] && sleep 0.25",
+        "  i=$((i + 1))",
+        "done",
+        "if [ -e \"$BACKUP\" ]; then log \"backup-still-present backup=$BACKUP\"; else log backup-cleaned; fi",
+        "log helper-end",
+        "rm -f \"$0\"",
+    ]
+    with open(helper, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(script) + "\n")
+    os.chmod(helper, 0o700)
+    return helper
+
+
 def _launch_hidden_powershell(helper: str, cwd: str | None = None) -> None:
     creation = 0
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -234,20 +313,51 @@ def _launch_hidden_powershell(helper: str, cwd: str | None = None) -> None:
         pass
 
 
+def _launch_linux_helper(helper: str, cwd: str | None = None) -> None:
+    log_path = os.path.join(tempfile.gettempdir(), "qobuz_gui_update.log")
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} python-launch {helper}\n")
+    except OSError:
+        pass
+    env = os.environ.copy()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    proc = subprocess.Popen(
+        ["/bin/sh", helper],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} python-launched pid={proc.pid}\n")
+    except OSError:
+        pass
+
+
 def stage_update_and_exit(downloaded_exe: str) -> None:
     """Hand update work to a detached helper, then exit to release file locks."""
-    if os.name != "nt" or not getattr(sys, "frozen", False):
-        raise RuntimeError("Auto-install is only for the frozen Windows EXE")
+    if not getattr(sys, "frozen", False):
+        raise RuntimeError("Auto-install is only for frozen desktop builds")
 
-    _verify_windows_pe(downloaded_exe)
+    _verify_update_file(downloaded_exe)
     current = os.path.abspath(sys.executable)
-    helper = _write_windows_update_helper(current, downloaded_exe)
     if sys.platform == "win32":
+        helper = _write_windows_update_helper(current, downloaded_exe)
         try:
             ctypes.windll.kernel32.SetDllDirectoryW(None)
         except Exception:
             pass
-    _launch_hidden_powershell(helper, os.path.dirname(current) or None)
+        _launch_hidden_powershell(helper, os.path.dirname(current) or None)
+    elif sys.platform.startswith("linux"):
+        helper = _write_linux_update_helper(current, downloaded_exe)
+        _launch_linux_helper(helper, os.path.dirname(current) or None)
+    else:
+        raise RuntimeError("Automatic install is not available for this platform yet.")
     os._exit(0)
 
 
@@ -290,6 +400,29 @@ def _releases_download_prefix(repo: str) -> str:
     return f"https://github.com/{r}/releases/download/".lower()
 
 
+def _asset_allowed_suffixes() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        return (".exe",)
+    if sys.platform == "darwin":
+        return (".zip",)
+    if sys.platform.startswith("linux"):
+        return ("", ".appimage")
+    return ()
+
+
+def _asset_matches_platform(name: str) -> bool:
+    n = (name or "").lower().replace("_", "-")
+    if "qobuz-dl-gui" not in n:
+        return False
+    if sys.platform == "win32":
+        return n.endswith(".exe") and ("windows" in n or "win" in n)
+    if sys.platform == "darwin":
+        return n.endswith(".zip") and ("macos" in n or "darwin" in n or "mac" in n)
+    if sys.platform.startswith("linux"):
+        return "linux" in n and (not n.endswith(".zip")) and (not n.endswith(".exe"))
+    return False
+
+
 def is_safe_release_asset_url(url: str, repo: str) -> bool:
     # TODO: REMOVE BEFORE PUSH TO MAIN
     if os.environ.get("QOBUZ_TEST_UPDATE") == "1" and url.startswith("http://127.0.0.1:"):
@@ -298,12 +431,18 @@ def is_safe_release_asset_url(url: str, repo: str) -> bool:
     if not url or not repo:
         return False
     u = url.strip().lower()
-    if not u.endswith(".exe"):
+    suffixes = _asset_allowed_suffixes()
+    if not suffixes:
+        return False
+    asset_name = u.rstrip("/").rsplit("/", 1)[-1]
+    if sys.platform.startswith("linux") and not _asset_matches_platform(asset_name):
+        return False
+    if "" not in suffixes and not u.endswith(suffixes):
         return False
     return u.startswith(_releases_download_prefix(repo))
 
 
-def pick_exe_asset(assets: list, repo: str) -> tuple[str | None, str | None]:
+def pick_platform_asset(assets: list, repo: str) -> tuple[str | None, str | None]:
     prefix = _releases_download_prefix(repo)
     candidates: list[tuple[str, str]] = []
     for a in assets or []:
@@ -311,15 +450,16 @@ def pick_exe_asset(assets: list, repo: str) -> tuple[str | None, str | None]:
         name = a.get("name") or ""
         if not url.lower().startswith(prefix):
             continue
-        if not name.lower().endswith(".exe"):
+        if not _asset_matches_platform(name):
             continue
         candidates.append((url, name))
-    for url, name in candidates:
-        if "qobuz-dl-gui" in name.lower().replace("_", "-"):
-            return url, name
     if candidates:
         return candidates[0]
     return None, None
+
+
+def pick_exe_asset(assets: list, repo: str) -> tuple[str | None, str | None]:
+    return pick_platform_asset(assets, repo)
 
 
 def tag_to_version(tag: str) -> str:
@@ -375,8 +515,10 @@ def check_for_update(config_dir: str, *, force: bool = False) -> dict:
             "release_page": "http://127.0.0.1:8000",
             "download_url": "http://127.0.0.1:8000/test_update.exe",
             "asset_name": "test_update.exe",
-            "can_auto_install": getattr(sys, "frozen", False) and os.name == "nt",
+            "can_auto_install": getattr(sys, "frozen", False)
+            and os.name == "nt",
             "frozen": getattr(sys, "frozen", False),
+            "test_mode": True,
         }
 
     repo = GITHUB_RELEASE_REPO.strip()
@@ -413,11 +555,21 @@ def check_for_update(config_dir: str, *, force: bool = False) -> dict:
     except Exception:
         update_available = latest_ver != __version__
 
-    dl_url, asset_name = pick_exe_asset(data.get("assets") or [], repo)
+    dl_url, asset_name = pick_platform_asset(data.get("assets") or [], repo)
     html_url = data.get("html_url") or ""
 
     frozen_win = bool(getattr(sys, "frozen", False) and os.name == "nt")
-    can_auto = bool(update_available and dl_url and frozen_win)
+    frozen_linux = bool(getattr(sys, "frozen", False) and sys.platform.startswith("linux"))
+    can_auto = bool(update_available and dl_url and (frozen_win or frozen_linux))
+    platform_name = (
+        "windows"
+        if sys.platform == "win32"
+        else "macos"
+        if sys.platform == "darwin"
+        else "linux"
+        if sys.platform.startswith("linux")
+        else sys.platform
+    )
 
     return {
         "ok": True,
@@ -431,6 +583,8 @@ def check_for_update(config_dir: str, *, force: bool = False) -> dict:
         "asset_name": asset_name,
         "can_auto_install": can_auto,
         "frozen": getattr(sys, "frozen", False),
+        "platform": platform_name,
+        "test_mode": False,
     }
 
 
@@ -453,18 +607,52 @@ def _verify_windows_pe(path: str) -> None:
         raise RuntimeError("Downloaded file is not a valid Windows executable (missing MZ header).")
 
 
+def _verify_linux_executable(path: str) -> None:
+    try:
+        sz = os.path.getsize(path)
+    except OSError as e:
+        raise RuntimeError(f"Cannot read downloaded update: {e}") from e
+    if sz < 512 * 1024:
+        raise RuntimeError(
+            f"Downloaded file is too small ({sz} bytes) to be a valid Linux build."
+        )
+    try:
+        with open(path, "rb") as f:
+            sig = f.read(4)
+    except OSError as e:
+        raise RuntimeError(f"Cannot read downloaded update: {e}") from e
+    if sig != b"\x7fELF" and sig != b"AI\x02\x00":
+        raise RuntimeError("Downloaded file is not a valid Linux executable/AppImage.")
+
+
+def _verify_update_file(path: str) -> None:
+    if sys.platform == "win32":
+        _verify_windows_pe(path)
+    elif sys.platform.startswith("linux"):
+        _verify_linux_executable(path)
+    elif sys.platform == "darwin":
+        try:
+            if os.path.getsize(path) < 512 * 1024:
+                raise RuntimeError("Downloaded macOS update is too small to be valid.")
+        except OSError as e:
+            raise RuntimeError(f"Cannot read downloaded update: {e}") from e
+    else:
+        raise RuntimeError("Unsupported update platform.")
+
+
 def download_update_to_temp(url: str) -> str:
     headers = {"User-Agent": f"Qobuz-DL-GUI/{__version__}"}
     with requests.get(url, headers=headers, timeout=180, stream=True) as r:
         r.raise_for_status()
-        fd, path = tempfile.mkstemp(suffix=".exe", prefix="qobuz_gui_upd_")
+        suffix = ".exe" if sys.platform == "win32" else ".zip" if sys.platform == "darwin" else ""
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix="qobuz_gui_upd_")
         os.close(fd)
         try:
             with open(path, "wb") as f:
                 for chunk in r.iter_content(65536):
                     if chunk:
                         f.write(chunk)
-            _verify_windows_pe(path)
+            _verify_update_file(path)
             return path
         except Exception:
             try:
