@@ -8,6 +8,20 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 
 [View the full visual feature guide](docs/FEATURES.md)
 
+## Download Latest
+
+<p>
+  <a href="https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Windows-x64.exe">
+    <img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%20x64-2f80ed?style=for-the-badge&logo=windows&logoColor=white">
+  </a>
+  <a href="https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Linux-x64">
+    <img alt="Download for Linux" src="https://img.shields.io/badge/Download-Linux%20x64-f2c94c?style=for-the-badge&logo=linux&logoColor=111111">
+  </a>
+  <a href="https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-macOS-x64.zip">
+    <img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%20x64-111111?style=for-the-badge&logo=apple&logoColor=white">
+  </a>
+</p>
+
 ## What It Does
 
 **Search and queue quickly.** Find music in Qobuz, paste URLs, or drag releases from the Qobuz website into the app.
