@@ -8,15 +8,13 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 
 [View the full visual feature guide](docs/FEATURES.md)
 
-## Built For
+## What It Does
 
-| Workflow | What you get |
-| --- | --- |
-| Fast queue building | Search Qobuz, drag links from the website, or paste URLs into one download queue. |
-| Clean library output | Lossless and Hi-Res downloads with artwork, Qobuz metadata, naming templates, and duplicate awareness. |
-| Lyrics that match | Find, preview, and attach synced LRCLIB lyrics while listening against the downloaded track. |
-| Imperfect releases | Replace unavailable tracks or create clear `.missing.txt` placeholders when Qobuz marks songs purchase-only. |
-| Day-to-day maintenance | OAuth login, in-app update checks, settings tooltips, and built-in feedback reporting. |
+**Search and queue quickly.** Find music in Qobuz, paste URLs, or drag releases from the Qobuz website into the app.
+
+**Download cleanly.** Save lossless and Hi-Res audio with artwork, metadata, naming templates, and duplicate awareness.
+
+**Handle the messy parts.** Preview synced lyrics, replace unavailable tracks, or create `.missing.txt` placeholders for purchase-only songs.
 
 ## Download
 
