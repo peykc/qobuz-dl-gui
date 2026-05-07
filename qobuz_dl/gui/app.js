@@ -6235,6 +6235,9 @@
     initSearch();
     initSettings();
     initUpdateBanner();
+    setTimeout(() => {
+      void refreshUpdateCheck(true);
+    }, 800);
 
     const status = await checkStatus();
     if (status && (status.ready || status.has_config)) {
@@ -6254,7 +6257,6 @@
         }
       }
       await loadSettingsIntoForm();
-      refreshUpdateCheck(false);
     } else {
       showSetup();
     }
