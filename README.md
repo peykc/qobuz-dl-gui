@@ -8,14 +8,6 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 
 [View the full visual feature guide](docs/FEATURES.md)
 
-## What It Does
-
-**Search and queue quickly.** Find music in Qobuz, paste URLs, or drag releases from the Qobuz website into the app.
-
-**Download cleanly.** Save lossless and Hi-Res audio with artwork, metadata, naming templates, and duplicate awareness.
-
-**Handle the messy parts.** Preview synced lyrics, replace unavailable tracks, or create `.missing.txt` placeholders for purchase-only songs.
-
 ## Download Latest
 
 | Platform | File | Notes |
@@ -25,6 +17,15 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 | macOS | [![Download for macOS](https://img.shields.io/badge/DOWNLOAD-x64-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-macOS-x64.zip) | Unzip and open the app. Unsigned builds may require right-click -> Open. |
 
 Older builds and release notes are available on [GitHub Releases](https://github.com/peykc/qobuz-dl-gui/releases).
+
+## What It Does
+
+**Search and queue quickly.** Find music in Qobuz, paste URLs, or drag releases from the Qobuz website into the app.
+
+**Download cleanly.** Save lossless and Hi-Res audio with artwork, metadata, naming templates, and duplicate awareness.
+
+**Handle the messy parts.** Preview synced lyrics, replace unavailable tracks, or create `.missing.txt` placeholders for purchase-only songs.
+
 
 ## Product Tour
 
