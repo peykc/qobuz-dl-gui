@@ -424,10 +424,6 @@ def _asset_matches_platform(name: str) -> bool:
 
 
 def is_safe_release_asset_url(url: str, repo: str) -> bool:
-    # TODO: REMOVE BEFORE PUSH TO MAIN
-    if os.environ.get("QOBUZ_TEST_UPDATE") == "1" and url.startswith("http://127.0.0.1:"):
-        return True
-
     if not url or not repo:
         return False
     u = url.strip().lower()
@@ -503,24 +499,6 @@ def fetch_latest_release(repo: str) -> dict:
 
 
 def check_for_update(config_dir: str, *, force: bool = False) -> dict:
-    # TODO: REMOVE BEFORE PUSH TO MAIN
-    if os.environ.get("QOBUZ_TEST_UPDATE") == "1":
-        return {
-            "ok": True,
-            "skipped": False,
-            "current_version": __version__,
-            "latest_version": "99.99.99",
-            "tag_name": "v99.99.99",
-            "update_available": True,
-            "release_page": "http://127.0.0.1:8000",
-            "download_url": "http://127.0.0.1:8000/test_update.exe",
-            "asset_name": "test_update.exe",
-            "can_auto_install": getattr(sys, "frozen", False)
-            and os.name == "nt",
-            "frozen": getattr(sys, "frozen", False),
-            "test_mode": True,
-        }
-
     repo = GITHUB_RELEASE_REPO.strip()
     if not repo or "/" not in repo:
         return {

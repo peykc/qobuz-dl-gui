@@ -46,8 +46,6 @@ When a release has an unavailable track, search for a streamable replacement or 
 
 ![Replace an unavailable track](assets/replace.gif)
 
-More workflows are covered in the [feature guide](docs/FEATURES.md).
-
 ## Documentation
 
 - [Feature guide](docs/FEATURES.md)
