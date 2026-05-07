@@ -8,6 +8,3 @@ colorama
 flask
 pywebview>=5.0
 packaging>=21.0
-PyQtWebEngine
-PyQt5
-qtpy

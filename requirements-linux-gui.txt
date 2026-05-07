@@ -1,0 +1,6 @@
+# Linux-only GUI backend for packaged desktop builds.
+# Keep this out of the shared requirements file so Windows/macOS builds do not
+# bundle Qt WebEngine.
+PyQtWebEngine
+PyQt5
+qtpy
