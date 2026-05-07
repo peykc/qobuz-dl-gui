@@ -1667,6 +1667,24 @@ td.fmt-example {
     border-color: #3a3a3a;
 }
 
+.btn-secondary.settings-check-updates-btn--ok,
+.btn-secondary.settings-check-updates-btn--ok:hover,
+.btn-secondary.settings-check-updates-btn--ok:disabled {
+    background: var(--success-dim);
+    color: var(--success);
+    border-color: rgba(77, 255, 145, 0.32);
+    opacity: 1;
+}
+
+.btn-secondary.settings-check-updates-btn--err,
+.btn-secondary.settings-check-updates-btn--err:hover,
+.btn-secondary.settings-check-updates-btn--err:disabled {
+    background: var(--danger-dim);
+    color: var(--danger);
+    border-color: rgba(255, 77, 77, 0.32);
+    opacity: 1;
+}
+
 .btn-ghost {
     background: none;
     border: none;

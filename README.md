@@ -1,125 +1,84 @@
-# Qobuz-DL-GUI: modern search, queue, and download
+# Qobuz-DL-GUI
 
-**Version 1.2.0** · Desktop app for lossless and Hi-Res downloads from Qobuz: rich metadata, OAuth login, synced lyrics, queue track replacement, and a dense UI built for real libraries.
+Search, queue, and download music from Qobuz in a desktop app built for library management, metadata, synced lyrics, and repeatable workflows.
 
----
+> **Requires an active Qobuz streaming subscription.** Free accounts, region-locked content, and purchase-only releases may not be streamable or downloadable.
 
-## Disclaimer
+![Search, queue, and download albums](assets/main.gif)
 
-- For educational use. Respect the [Qobuz API Terms of Use](https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf).
-- **qobuz-dl** / **Qobuz-DL-GUI** are not affiliated with Qobuz.
+[View the full visual feature guide](docs/FEATURES.md)
 
----
+## Built For
 
-## Main: search and download in the app
+| Workflow | What you get |
+| --- | --- |
+| Fast queue building | Search Qobuz, drag links from the website, or paste URLs into one download queue. |
+| Clean library output | Lossless and Hi-Res downloads with artwork, Qobuz metadata, naming templates, and duplicate awareness. |
+| Lyrics that match | Find, preview, and attach synced LRCLIB lyrics while listening against the downloaded track. |
+| Imperfect releases | Replace unavailable tracks or create clear `.missing.txt` placeholders when Qobuz marks songs purchase-only. |
+| Day-to-day maintenance | OAuth login, in-app update checks, settings tooltips, and built-in feedback reporting. |
 
-Use the sidebar search to find albums and tracks, inspect quality and metadata, add releases to the queue, and run downloads while watching progress and download history inside the app.
+## Download
 
-![Search, queue, and download in Qobuz-DL-GUI](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/main.gif)
+Get the latest build from [GitHub Releases](https://github.com/peykc/qobuz-dl-gui/releases).
 
----
+| Platform | File | Notes |
+| --- | --- | --- |
+| Windows | `Qobuz-DL-GUI-Windows-x64.exe` | Portable EXE. In-app updates are supported. |
+| Linux | `Qobuz-DL-GUI-Linux-x64` | Run `chmod +x Qobuz-DL-GUI-Linux-x64`. In-app updates are supported. |
+| macOS | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip and open the app. Unsigned builds may require right-click -> Open. |
 
-## Drag: queue from the browser
+## Product Tour
 
-Drag album or track URLs from the Qobuz web player (or tabs) into the app to mass-queue links without copy-paste, ideal when you are browsing and want to batch everything into one session.
+### Queue From Qobuz
 
-![Drag URLs from the browser into the app for mass queueing](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/drag.gif)
+Drag albums or tracks from the Qobuz website directly into the app.
 
----
+![Drag Qobuz albums into the app](assets/drag.gif)
 
-## Settings: configuration tour
+### Synced Lyrics
 
-Open settings to walk quality tiers, folder/track naming templates, duplicate checks, synced lyrics options, and other behavior so your library layout and tags stay consistent release after release.
+Download a track, find synced lyrics, preview them against audio playback, and attach the result.
 
-![Tour of settings and configuration](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/settings.gif)
+![Find and preview synced lyrics](assets/lyric.gif)
 
----
+### Replacement Tracks
 
-## Lyrics: download → match → preview
+When a release has an unavailable track, search for a streamable replacement or create a `.missing.txt` placeholder.
 
-After tracks download, open lyric search (LRCLIB), review matches, attach `.lrc` sidecars next to your files, and preview synced playback so you know what hits your folder before you leave the app.
+![Replace an unavailable track](assets/replace.gif)
 
-![From download through lyric search and lyric playback](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/lyric.gif)
+More workflows are covered in the [feature guide](docs/FEATURES.md).
 
----
+## Documentation
 
-## Replace: swap a queued track from search
+- [Feature guide](docs/FEATURES.md)
+- [Desktop install and build notes](docs/DESKTOP.md)
+- [Command line interface](CLI.md)
 
-When a release in your queue has a purchase-only or wrong edition slot, pick a substitute track from sidebar search and attach it so the download uses streamable audio while keeping album layout and tags consistent.
-
-![Replace a queued track using search](https://raw.githubusercontent.com/peykc/qobuz-dl-gui/master/assets/replace.gif)
-
----
-
-## Highlights
-
-- **High-density visuals:** Album art, explicit tags, Hi-Res cues, and technical detail from the Qobuz API on results and queue rows.
-- **Unified queue:** Multiple URLs and releases with live status (bit depth, sample rate, tracks, year).
-- **OAuth:** Sign in through the official Qobuz site; no manual token hunting.
-- **Naming templates:** Folder and track patterns with variables such as `{artist}`, `{album}`, `{year}`, `{bit_depth}`.
-- **Library database:** Optional duplicate awareness so you do not re-grab the same rips blindly.
-- **Synced lyrics:** Optional `.lrc` via the public [LRCLIB](https://lrclib.net) API (`/api/get`, `/api/search`).
-- **Track replacement:** Attach a streamable track from search to a queue slot (e.g. purchase-only rows) without rebuilding the whole queue.
-- **Lucky queue:** Pick how many releases to add at random from search, then start when you are ready (no separate GIF; use it from the search panel).
-
----
-
-## Getting started
-
-### Install
+## Install From Source
 
 ```bash
 pip install git+https://github.com/peykc/qobuz-dl-gui.git
-```
-
-Or from PyPI when published:
-
-```bash
-pip install --upgrade qobuz-dl
-```
-
-### Launch
-
-**Windows:** run `launch_gui.bat`, or:
-
-```bash
 qobuz-dl-gui
 ```
 
-**Linux / macOS:**
+The desktop GUI uses pywebview when available. To open in your system browser instead:
 
 ```bash
-./launch_gui.sh
-# or
-qobuz-dl-gui
+QOBUZ_DL_GUI_BROWSER=1 qobuz-dl-gui
 ```
 
-The GUI uses [pywebview](https://github.com/r0x0r/pywebview) (on Windows, **Edge WebView2**). Set `QOBUZ_DL_GUI_BROWSER=1` to open in your system browser at `http://127.0.0.1` instead.
+## Disclaimer
 
-### Pre-built binaries ([Releases](https://github.com/peykc/qobuz-dl-gui/releases))
+Qobuz-DL-GUI is not affiliated with Qobuz. Use it responsibly and respect the [Qobuz API Terms of Use](https://static.qobuz.com/apps/api/QobuzAPI-TermsofUse.pdf).
 
-| Platform | Artifact | Notes |
-|----------|----------|--------|
-| **Windows** | `Qobuz-DL-GUI-Windows-x64.exe` | No Python install. [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if the shell does not render. In-app updates can replace this EXE automatically. |
-| **Linux** | `Qobuz-DL-GUI-Linux-x64` | `chmod +x`. Uses pywebview when GTK/WebKitGTK is available; otherwise opens the GUI in your system browser. In-app updates can replace this binary automatically. |
-| **macOS** | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip and open `Qobuz-DL-GUI.app`. Unsigned: right-click → **Open** if Gatekeeper warns. In-app checks link to the correct release asset; auto-install is not enabled yet. |
+## Support
 
-Pushing a Git tag `v*` runs [.github/workflows/build-desktop.yml](.github/workflows/build-desktop.yml) and attaches builds to that release. **Actions → Build desktop → Run workflow** produces the same artifacts without a release.
+**GUI development (Monero)**
 
----
-
-## CLI
-
-The original terminal workflow is still shipped for scripting and automation.
-
-[CLI documentation](CLI.md)
-
----
-
-### Support
-
-**GUI (Monero)**  
 [![Donate Monero](https://img.shields.io/badge/Donate-Monero-orange.svg)](https://peykc.github.io/pktree/?pay=monero)
 
-**CLI upstream (PayPal)**  
+**Original CLI project (PayPal)**
+
 [![Donate PayPal](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=VZWSWVGZGJRMU&source=url)

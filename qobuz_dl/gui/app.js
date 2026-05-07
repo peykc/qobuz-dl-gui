@@ -5826,6 +5826,7 @@
   }
 
   let _updateInfo = null;
+  let _settingsUpdateBtnResetTimer = null;
 
   function initUpdateBanner() {
     const banner = document.getElementById("update-banner");
@@ -5885,6 +5886,15 @@
     return await res.json();
   }
 
+  function updateReleaseNotesUrl(data) {
+    const rawTag = String(
+      (data && data.tag_name) || (data && data.latest_version) || "",
+    ).trim();
+    if (!rawTag) return "";
+    const tag = /^v/i.test(rawTag) ? rawTag : "v" + rawTag;
+    return `https://github.com/peykc/qobuz-dl-gui/releases/tag/${encodeURIComponent(tag)}`;
+  }
+
   function showUpdateBannerIfNeeded(data) {
     const banner = document.getElementById("update-banner");
     const textEl = document.getElementById("update-banner-text");
@@ -5921,8 +5931,9 @@
         : " Automatic install only works in the packaged desktop build.";
     }
     textEl.textContent = msg;
-    if (data.release_page) {
-      linkEl.href = data.release_page;
+    const releaseNotesUrl = updateReleaseNotesUrl(data);
+    if (releaseNotesUrl) {
+      linkEl.href = releaseNotesUrl;
       linkEl.classList.remove("hidden");
     } else {
       linkEl.classList.add("hidden");
@@ -6122,19 +6133,23 @@
     const updFeedback = document.getElementById("settings-update-feedback");
     if (checkUpdBtn && updFeedback) {
       checkUpdBtn.addEventListener("click", async () => {
+        const originalText = checkUpdBtn.dataset.defaultText || checkUpdBtn.textContent;
+        checkUpdBtn.dataset.defaultText = originalText;
         checkUpdBtn.disabled = true;
         updFeedback.className = "feedback-msg hidden";
+        checkUpdBtn.classList.remove("settings-check-updates-btn--ok", "settings-check-updates-btn--err");
+        checkUpdBtn.textContent = "Checking...";
         try {
           const data = await refreshUpdateCheck(true);
           if (!data) throw new Error("Network error");
           if (data.skipped && data.reason === "repo_not_configured") {
-            showFeedback(
-              updFeedback,
+            showButtonFeedback(
+              checkUpdBtn,
               "Update source not configured (see qobuz_dl/version.py).",
               false,
             );
           } else if (!data.ok) {
-            showFeedback(updFeedback, data.error || "Check failed", false);
+            showButtonFeedback(checkUpdBtn, data.error || "Check failed", false);
           } else if (data.update_available) {
             let updateMsg = "Update available: v" + data.latest_version;
             if (data.download_url && !data.can_auto_install) {
@@ -6142,18 +6157,20 @@
                 ? " (manual install on this platform)"
                 : " (run the packaged desktop build to auto-install)";
             }
-            showFeedback(
-              updFeedback,
-              updateMsg,
-              true,
-            );
+            showButtonFeedback(checkUpdBtn, updateMsg, true);
           } else {
-            showFeedback(updFeedback, "You're on the latest version.", true);
+            showButtonFeedback(checkUpdBtn, "You're on the latest version.", true);
           }
         } catch (e) {
-          showFeedback(updFeedback, e.message || "Check failed", false);
+          showButtonFeedback(checkUpdBtn, e.message || "Check failed", false);
         } finally {
-          checkUpdBtn.disabled = false;
+          if (
+            !checkUpdBtn.classList.contains("settings-check-updates-btn--ok") &&
+            !checkUpdBtn.classList.contains("settings-check-updates-btn--err")
+          ) {
+            checkUpdBtn.disabled = false;
+            checkUpdBtn.textContent = originalText;
+          }
         }
       });
     }
@@ -6184,6 +6201,26 @@
     el.className = "feedback-msg " + (ok ? "ok" : "err");
     setTimeout(() => {
       el.className = "feedback-msg hidden";
+    }, 3500);
+  }
+
+  function showButtonFeedback(btn, msg, ok) {
+    if (!btn) return;
+    const originalText = btn.dataset.defaultText || btn.textContent;
+    btn.dataset.defaultText = originalText;
+    if (_settingsUpdateBtnResetTimer) {
+      clearTimeout(_settingsUpdateBtnResetTimer);
+      _settingsUpdateBtnResetTimer = null;
+    }
+    btn.textContent = msg;
+    btn.disabled = true;
+    btn.classList.toggle("settings-check-updates-btn--ok", !!ok);
+    btn.classList.toggle("settings-check-updates-btn--err", !ok);
+    _settingsUpdateBtnResetTimer = setTimeout(() => {
+      btn.textContent = btn.dataset.defaultText || "Check for updates";
+      btn.disabled = false;
+      btn.classList.remove("settings-check-updates-btn--ok", "settings-check-updates-btn--err");
+      _settingsUpdateBtnResetTimer = null;
     }, 3500);
   }
 
