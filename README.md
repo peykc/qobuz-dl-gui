@@ -8,24 +8,6 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 
 [View the full visual feature guide](docs/FEATURES.md)
 
-## Download Latest
-
-<p>
-  <a href="https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Windows-x64.exe">
-    <img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%20x64-2f80ed?style=for-the-badge&logo=windows&logoColor=white">
-  </a>
-</p>
-<p>
-  <a href="https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Linux-x64">
-    <img alt="Download for Linux" src="https://img.shields.io/badge/Download-Linux%20x64-f2c94c?style=for-the-badge&logo=linux&logoColor=111111">
-  </a>
-</p>
-<p>
-  <a href="https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-macOS-x64.zip">
-    <img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%20x64-111111?style=for-the-badge&logo=apple&logoColor=white">
-  </a>
-</p>
-
 ## What It Does
 
 **Search and queue quickly.** Find music in Qobuz, paste URLs, or drag releases from the Qobuz website into the app.
@@ -34,15 +16,15 @@ Search, queue, and download music from Qobuz in a desktop app built for library 
 
 **Handle the messy parts.** Preview synced lyrics, replace unavailable tracks, or create `.missing.txt` placeholders for purchase-only songs.
 
-## Download
-
-Get the latest build from [GitHub Releases](https://github.com/peykc/qobuz-dl-gui/releases).
+## Download Latest
 
 | Platform | File | Notes |
 | --- | --- | --- |
-| Windows | `Qobuz-DL-GUI-Windows-x64.exe` | Portable EXE. In-app updates are supported. |
-| Linux | `Qobuz-DL-GUI-Linux-x64` | Run `chmod +x Qobuz-DL-GUI-Linux-x64`. In-app updates are supported. |
-| macOS | `Qobuz-DL-GUI-macOS-x64.zip` | Unzip and open the app. Unsigned builds may require right-click -> Open. |
+| Windows | [![Download for Windows](https://img.shields.io/badge/Download-Windows%20x64-2f80ed?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Windows-x64.exe) | Portable EXE. In-app updates are supported. |
+| Linux | [![Download for Linux](https://img.shields.io/badge/Download-Linux%20x64-f2c94c?style=for-the-badge&logo=linux&logoColor=111111)](https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-Linux-x64) | Run `chmod +x Qobuz-DL-GUI-Linux-x64`. In-app updates are supported. |
+| macOS | [![Download for macOS](https://img.shields.io/badge/Download-macOS%20x64-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/peykc/qobuz-dl-gui/releases/latest/download/Qobuz-DL-GUI-macOS-x64.zip) | Unzip and open the app. Unsigned builds may require right-click -> Open. |
+
+Older builds and release notes are available on [GitHub Releases](https://github.com/peykc/qobuz-dl-gui/releases).
 
 ## Product Tour
 
