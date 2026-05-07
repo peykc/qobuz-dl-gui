@@ -1,13 +1,16 @@
 import os
-import sys
+import re
 
 from setuptools import find_packages, setup
 
 # Single source of truth for version (also used by in-app updater)
 _root = os.path.dirname(os.path.abspath(__file__))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
-from qobuz_dl.version import __version__ as pkg_version
+with open(os.path.join(_root, "qobuz_dl", "version.py"), "r", encoding="utf-8") as f:
+    _version_text = f.read()
+_version_match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', _version_text, re.M)
+if not _version_match:
+    raise RuntimeError("Could not find __version__ in qobuz_dl/version.py")
+pkg_version = _version_match.group(1)
 
 pkg_name = "qobuz-dl"
 
