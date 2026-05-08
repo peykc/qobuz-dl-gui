@@ -1,12 +1,13 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 echo Starting Qobuz-DL GUI...
 
-where qobuz-dl-gui >nul 2>&1
+where python >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
-    qobuz-dl-gui
-) else (
     python -m qobuz_dl.gui_app
+) else (
+    py -m qobuz_dl.gui_app
 )
 
 if %ERRORLEVEL% NEQ 0 (

@@ -5,7 +5,7 @@
 (function () {
   "use strict";
 
-  /** Matches ``qobuz_dl.db.GUI_PENDING_TRACK_PREFIX`` — pending DB rows have no local file. */
+  /** Matches ``qobuz_dl.db.GUI_PENDING_TRACK_PREFIX``, pending DB rows have no local file. */
   const _GUI_PENDING_AUDIO_PREFIX = "__GUI_PENDING__:slot:";
   let _sse = null;
   let _trackStatusMap = new Map();
@@ -29,7 +29,7 @@
   let _tsActiveDlKeys = new Set();
   /** audio_path → lyric_album (avoids scanning hundreds of DOM nodes). */
   let _tsAudioPathAlbum = new Map();
-  /** `"all"` | `"errors"` — error view shows purchase-only, failed, pending slots, lyric errors. */
+  /** `"all"` | `"errors"`, error view shows purchase-only, failed, pending slots, lyric errors. */
   let _tsHistoryFilterMode = "all";
   /** Skip redundant filter passes while bulk-loading history from DB. */
   let _tsSkipHistoryFilterApply = false;
@@ -181,7 +181,7 @@
 
   /**
    * One pass over `_tsActiveDlKeys` / mounted rows to classify history keys for Error tab churn.
-   * `unsettledStems`: download active or lyric refetch (`loading`) — row outcome not final for UI yet.
+   * `unsettledStems`: download active or lyric refetch (`loading`), row outcome not final for UI yet.
    * `dlTerminalErrStems`: a mounted row for that stem shows purchase-only / download-failed chip.
    * Stale hydrate `.lyrics-chip.error` alone must NOT qualify during unsettled work (fixes flicker).
    */
@@ -858,9 +858,9 @@
     const tier = String(t.quality_tier || "LOSSLESS").toUpperCase();
     const specs = _attachQualitySpecsTooltip(t);
     const tipHires =
-      "Hi-Res lossless on Qobuz | above CD quality; up to 24-bit / 192 kHz.";
+      "Hi-Res lossless on Qobuz, above CD quality; up to 24-bit / 192 kHz.";
     const tipLossless =
-      "CD-quality lossless on Qobuz | 16-bit / 44.1 kHz FLAC.";
+      "CD-quality lossless on Qobuz, 16-bit / 44.1 kHz FLAC.";
     const tipMp3 = "Lossy stream (e.g. ~320 kbps), not lossless.";
     const tipSuffix = specs ? `\n${specs} (catalog max)` : "";
 
@@ -1201,7 +1201,7 @@
     if (!sid) {
       if (statusEl) {
         statusEl.textContent =
-          "No queued track linked — use a purchase/failed queue row.";
+          "No queued track linked, use a purchase/failed queue row.";
         statusEl.classList.remove("hidden");
       }
       clearBusy();
@@ -1277,7 +1277,7 @@
     if (sb) {
       sb.classList.toggle("track-resolution-active", resolvedBy === "search");
       if (resolvedBy === "search") {
-        sb.setAttribute("data-tip", "Downloaded replacement — click to search again");
+        sb.setAttribute("data-tip", "Downloaded replacement, click to search again");
       } else {
         sb.setAttribute("data-tip", "Search to replace track with similar");
       }
@@ -1285,7 +1285,7 @@
     if (pb) {
       pb.classList.toggle("track-resolution-active", resolvedBy === "placeholder");
       if (resolvedBy === "placeholder") {
-        pb.setAttribute("data-tip", "Placeholder .missing.txt written — click to switch to search replacement");
+        pb.setAttribute("data-tip", "Placeholder .missing.txt written, click to switch to search replacement");
       } else {
         pb.setAttribute("data-tip", _MISSING_PLACEHOLDER_BTN_TIP);
       }
@@ -1433,7 +1433,7 @@
         delete card.dataset.resolvedBy;
       }
 
-      // If previously resolved by search, just write the placeholder — no
+      // If previously resolved by search, just write the placeholder, no
       // audio file to delete (the substitute is a real downloaded track the
       // user may want to keep; only the resolution *label* switches).
       void _writeAttachMissingPlaceholder(card, mp);
@@ -3865,7 +3865,7 @@
     if (!addBtn) return;
     addBtn.classList.toggle("result-add-btn--queued", !!inQueue);
     if (inQueue) {
-      addBtn.setAttribute("aria-label", "In download queue — activate to remove");
+      addBtn.setAttribute("aria-label", "In download queue, activate to remove");
       addBtn.setAttribute("data-tip", _TIP_SEARCH_QUEUED_IDLE);
       addBtn.innerHTML = _RESULT_ADD_BTN_HTML_CHECK;
     } else {
@@ -4716,7 +4716,7 @@
     const DL_TIP_PURCHASE_QUEUE =
       "Open album on Qobuz to purchase (full album required for these tracks)";
     const DL_TIP_NOT_STREAMABLE =
-      "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted) | open it on Qobuz to check.";
+      "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted), open it on Qobuz to check.";
 
     function _findCardByUrl(url) {
       const cards = document.querySelectorAll("#dl-queue .queue-card");
@@ -5459,9 +5459,9 @@
 
   function _buildSearchResultRow(r, i) {
     const tipHires =
-      "Hi-Res lossless on Qobuz | above CD quality; up to 24-bit / 192 kHz.";
+      "Hi-Res lossless on Qobuz, above CD quality; up to 24-bit / 192 kHz.";
     const tipLossless =
-      "CD-quality lossless on Qobuz | 16-bit / 44.1 kHz FLAC.";
+      "CD-quality lossless on Qobuz, 16-bit / 44.1 kHz FLAC.";
     const tipMp3 = "Lossy stream (e.g. ~320 kbps), not lossless.";
     const tipExplicit = "Explicit release on Qobuz.";
 
@@ -5866,7 +5866,7 @@
         } catch {
           throw new Error(
             res.ok
-              ? "Invalid response from server—try again or install from GitHub Releases."
+              ? "Invalid response from server, try again or install from GitHub Releases."
               : `Install failed (HTTP ${res.status}).`,
           );
         }
