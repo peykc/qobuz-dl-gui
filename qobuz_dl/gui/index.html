@@ -864,6 +864,14 @@
                                         Synced Lyrics (.lrc)
                                     </label>
                                     <label class="toggle-label"
+                                        data-tip="Fetch synchronized lyrics from LRCLIB (lrclib.net) and embed them inside each audio file's metadata.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-lyrics-embed-metadata" />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Embedded Lyrics
+                                    </label>
+                                    <label class="toggle-label"
                                         data-tip="Writes Digital Booklet.txt in each album folder: editorial text, credits/copyright when present, and a full track list (separate from any PDF booklet download).">
                                         <span class="toggle-switch">
                                             <input type="checkbox" id="dl-digital-booklet" checked />
@@ -1107,6 +1115,24 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
             <div class="lyric-search-popover-inner">
                 <div class="lyric-search-head">
                     <h2 id="lyric-search-heading">Search lyrics</h2>
+                    <div class="lyric-output-toggles" aria-label="Lyric output options">
+                        <label class="lyric-output-toggle"
+                            data-tip="Save attached lyrics as a .lrc sidecar next to the audio file. Mirrors Download settings.">
+                            <span class="toggle-switch lyric-output-switch">
+                                <input type="checkbox" id="lyric-output-lrc" />
+                                <span class="toggle-knob"></span>
+                            </span>
+                            .lrc
+                        </label>
+                        <label class="lyric-output-toggle"
+                            data-tip="Embed attached lyrics inside the audio file metadata. Mirrors Download settings.">
+                            <span class="toggle-switch lyric-output-switch">
+                                <input type="checkbox" id="lyric-output-metadata" />
+                                <span class="toggle-knob"></span>
+                            </span>
+                            Embed
+                        </label>
+                    </div>
                     <button type="button" id="lyric-search-close" class="btn-ghost btn-sm lyric-search-close"
                         aria-label="Close">✕</button>
                 </div>

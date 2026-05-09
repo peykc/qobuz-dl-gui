@@ -214,6 +214,7 @@ def _ensure_gui_download_history_table(conn: sqlite3.Connection) -> None:
         "lyric_type TEXT,"
         "lyric_provider TEXT,"
         "lyric_confidence TEXT,"
+        "lyric_destination TEXT,"
         "updated_at REAL NOT NULL)"
     )
     cur = conn.execute("PRAGMA table_info(gui_download_history)")
@@ -238,6 +239,11 @@ def _ensure_gui_download_history_table(conn: sqlite3.Connection) -> None:
             "ALTER TABLE gui_download_history ADD COLUMN history_seq INTEGER"
         )
         _backfill_gui_download_history_history_seq(conn)
+    if "lyric_destination" not in cols:
+        conn.execute(
+            "ALTER TABLE gui_download_history ADD COLUMN lyric_destination TEXT"
+        )
+        cols.add("lyric_destination")
 
 
 def _backfill_gui_download_history_history_seq(conn: sqlite3.Connection) -> None:
@@ -282,6 +288,7 @@ def upsert_gui_download_history(
     lyric_type: str = "",
     lyric_provider: str = "",
     lyric_confidence: str = "",
+    lyric_destination: str = "",
     slot_track_id: str = "",
     release_album_id: str = "",
     pending_slot_cleanup_id: str = "",
@@ -330,16 +337,17 @@ def upsert_gui_download_history(
                 "INSERT INTO gui_download_history ("
                 "audio_path, track_no, title, cover_url, lyric_artist, lyric_album, "
                 "duration_sec, track_explicit, download_status, download_detail, "
-                "lyric_type, lyric_provider, lyric_confidence, updated_at, "
+                "lyric_type, lyric_provider, lyric_confidence, lyric_destination, updated_at, "
                 "slot_track_id, release_album_id, attach_search_eligible, history_seq"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(audio_path) DO UPDATE SET "
                 "track_no=excluded.track_no, title=excluded.title, cover_url=excluded.cover_url, "
                 "lyric_artist=excluded.lyric_artist, lyric_album=excluded.lyric_album, "
                 "duration_sec=excluded.duration_sec, track_explicit=excluded.track_explicit, "
                 "download_status=excluded.download_status, download_detail=excluded.download_detail, "
                 "lyric_type=excluded.lyric_type, lyric_provider=excluded.lyric_provider, "
-                "lyric_confidence=excluded.lyric_confidence, updated_at=excluded.updated_at, "
+                "lyric_confidence=excluded.lyric_confidence, "
+                "lyric_destination=excluded.lyric_destination, updated_at=excluded.updated_at, "
                 "slot_track_id=excluded.slot_track_id, "
                 "release_album_id=excluded.release_album_id, "
                 "attach_search_eligible=excluded.attach_search_eligible",
@@ -357,6 +365,7 @@ def upsert_gui_download_history(
                     lyric_type,
                     lyric_provider,
                     lyric_confidence,
+                    lyric_destination,
                     now,
                     sid_col or None,
                     rid_col or None,
@@ -381,6 +390,7 @@ def update_gui_download_history_lyrics(
     lyric_type: str,
     lyric_provider: str = "",
     lyric_confidence: str = "",
+    lyric_destination: str = "",
 ) -> None:
     import time
 
@@ -396,11 +406,12 @@ def update_gui_download_history_lyrics(
             _ensure_gui_download_history_table(conn)
             conn.execute(
                 "UPDATE gui_download_history SET lyric_type=?, lyric_provider=?, "
-                "lyric_confidence=?, updated_at=? WHERE audio_path=?",
+                "lyric_confidence=?, lyric_destination=?, updated_at=? WHERE audio_path=?",
                 (
                     lyric_type,
                     lyric_provider,
                     lyric_confidence,
+                    lyric_destination,
                     now,
                     p,
                 ),
@@ -422,7 +433,7 @@ def list_gui_download_history() -> list:
             rows = conn.execute(
                 "SELECT audio_path, track_no, title, cover_url, lyric_artist, lyric_album, "
                 "duration_sec, track_explicit, download_status, download_detail, "
-                "lyric_type, lyric_provider, lyric_confidence, updated_at, "
+                "lyric_type, lyric_provider, lyric_confidence, lyric_destination, updated_at, "
                 "slot_track_id, release_album_id, attach_search_eligible "
                 "FROM gui_download_history ORDER BY "
                 "(history_seq IS NULL) ASC, history_seq ASC, "
@@ -433,9 +444,9 @@ def list_gui_download_history() -> list:
                 ap = r[0]
                 if ap and is_gui_pending_track_key(ap):
                     tex = r[7]
-                    sid_db = (r[14] or "").strip() if len(r) > 14 else ""
-                    rid_db = (r[15] or "").strip() if len(r) > 15 else ""
-                    attach_eligible = bool(int(r[16] or 0)) if len(r) > 16 else False
+                    sid_db = (r[15] or "").strip() if len(r) > 15 else ""
+                    rid_db = (r[16] or "").strip() if len(r) > 16 else ""
+                    attach_eligible = bool(int(r[17] or 0)) if len(r) > 17 else False
                     if not sid_db:
                         sid_db = ap[len(GUI_PENDING_TRACK_PREFIX) :].strip()
                     out.append(
@@ -455,7 +466,8 @@ def list_gui_download_history() -> list:
                             "lyric_type": r[10] or "",
                             "lyric_provider": r[11] or "",
                             "lyric_confidence": r[12] or "",
-                            "updated_at": r[13],
+                            "lyric_destination": r[13] or "",
+                            "updated_at": r[14],
                             "slot_track_id": sid_db,
                             "release_album_id": rid_db,
                             "attach_search_eligible": attach_eligible,
@@ -470,9 +482,9 @@ def list_gui_download_history() -> list:
                     removed += 1
                     continue
                 tex = r[7]
-                sid_db = (r[14] or "").strip() if len(r) > 14 else ""
-                rid_db = (r[15] or "").strip() if len(r) > 15 else ""
-                attach_eligible = bool(int(r[16] or 0)) if len(r) > 16 else False
+                sid_db = (r[15] or "").strip() if len(r) > 15 else ""
+                rid_db = (r[16] or "").strip() if len(r) > 16 else ""
+                attach_eligible = bool(int(r[17] or 0)) if len(r) > 17 else False
                 out.append(
                     {
                         "audio_path": ap,
@@ -490,7 +502,8 @@ def list_gui_download_history() -> list:
                         "lyric_type": r[10] or "",
                         "lyric_provider": r[11] or "",
                         "lyric_confidence": r[12] or "",
-                        "updated_at": r[13],
+                        "lyric_destination": r[13] or "",
+                        "updated_at": r[14],
                         "slot_track_id": sid_db,
                         "release_album_id": rid_db,
                         "attach_search_eligible": attach_eligible,

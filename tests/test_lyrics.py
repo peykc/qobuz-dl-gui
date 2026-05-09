@@ -351,9 +351,10 @@ class LyricsTests(unittest.TestCase):
             "lyrics_type": "synced",
             "confidence": 95.0,
         }
-        with patch("qobuz_dl.lyrics.fetch_synced_lyrics", return_value=strict), patch(
-            "qobuz_dl.lyrics.lrclib_search_candidates_for_ui"
-        ) as m_search:
+        with patch(
+            "qobuz_dl.lyrics._fetch_lrclib_result_and_rows",
+            return_value=(strict, []),
+        ), patch("qobuz_dl.lyrics._lrclib_search_raw") as m_search:
             out = lyrics.fetch_synced_lyrics_with_search_fallback(
                 track, prefer_explicit=False, timeout_sec=2.0
             )
@@ -369,16 +370,31 @@ class LyricsTests(unittest.TestCase):
             "explicit": True,
         }
         rows = [
-            {"id": 10, "confidence": 99.8, "kind": "synced", "delta_sec": 0},
-            {"id": 11, "confidence": 95.2, "kind": "synced", "delta_sec": 1},
+            {
+                "id": 10,
+                "trackName": "Song Name",
+                "artistName": "Artist A",
+                "albumName": "Album Name",
+                "duration": 200,
+            },
+            {
+                "id": 11,
+                "trackName": "Song Name",
+                "artistName": "Artist A",
+                "albumName": "Album Name",
+                "duration": 201,
+            },
         ]
         detail = {
             "syncedLyrics": "[00:01.00]line one\n[00:04.00]line two\n",
             "plainLyrics": "",
         }
-        with patch("qobuz_dl.lyrics.fetch_synced_lyrics", return_value=None), patch(
-            "qobuz_dl.lyrics.lrclib_search_candidates_for_ui", return_value=rows
-        ), patch("qobuz_dl.lyrics.lrclib_get_by_id", return_value=detail) as m_get:
+        with patch(
+            "qobuz_dl.lyrics._fetch_lrclib_result_and_rows",
+            return_value=(None, []),
+        ), patch("qobuz_dl.lyrics._lrclib_search_raw", return_value=rows), patch(
+            "qobuz_dl.lyrics.lrclib_get_by_id", return_value=detail
+        ) as m_get:
             out = lyrics.fetch_synced_lyrics_with_search_fallback(
                 track, prefer_explicit=True, timeout_sec=2.0, max_fallback_candidates=3
             )
@@ -396,18 +412,63 @@ class LyricsTests(unittest.TestCase):
             "duration": 200,
             "explicit": False,
         }
-        rows = [{"id": 10, "confidence": 100.0, "kind": "synced", "delta_sec": 0}]
+        rows = [
+            {
+                "id": 10,
+                "trackName": "Song Name",
+                "artistName": "Artist A",
+                "albumName": "Album Name",
+                "duration": 200,
+            }
+        ]
         detail = {
             "syncedLyrics": "[00:01.00]what the fuck\n[00:04.00]line two\n",
             "plainLyrics": "",
         }
-        with patch("qobuz_dl.lyrics.fetch_synced_lyrics", return_value=None), patch(
-            "qobuz_dl.lyrics.lrclib_search_candidates_for_ui", return_value=rows
-        ), patch("qobuz_dl.lyrics.lrclib_get_by_id", return_value=detail):
+        with patch(
+            "qobuz_dl.lyrics._fetch_lrclib_result_and_rows",
+            return_value=(None, []),
+        ), patch("qobuz_dl.lyrics._lrclib_search_raw", return_value=rows), patch(
+            "qobuz_dl.lyrics.lrclib_get_by_id", return_value=detail
+        ):
             out = lyrics.fetch_synced_lyrics_with_search_fallback(
                 track, prefer_explicit=False, timeout_sec=2.0, max_fallback_candidates=3
             )
         self.assertIsNone(out)
+
+    def test_fetch_with_search_fallback_reuses_strict_search_rows(self):
+        track = {
+            "title": "Song Name",
+            "performer": {"name": "Artist A"},
+            "album": {"title": "Album Name"},
+            "duration": 200,
+            "explicit": True,
+        }
+        strict_rows = [
+            {
+                "id": 10,
+                "trackName": "Song Name",
+                "artistName": "Artist A",
+                "albumName": "Album Name",
+                "duration": 200,
+                "syncedLyrics": "[00:01.00]line one\n[00:04.00]line two\n",
+                "plainLyrics": "",
+            }
+        ]
+        with patch(
+            "qobuz_dl.lyrics._fetch_lrclib_result_and_rows",
+            return_value=(None, strict_rows),
+        ), patch("qobuz_dl.lyrics._lrclib_search_raw") as m_search, patch(
+            "qobuz_dl.lyrics.lrclib_get_by_id"
+        ) as m_get:
+            out = lyrics.fetch_synced_lyrics_with_search_fallback(
+                track, prefer_explicit=True, timeout_sec=2.0, max_fallback_candidates=3
+            )
+        self.assertIsNotNone(out)
+        self.assertEqual((out or {}).get("lrclib_id"), 10)
+        self.assertTrue(bool((out or {}).get("search_fallback_used")))
+        m_search.assert_not_called()
+        m_get.assert_not_called()
 
     def test_lrclib_search_best_prefers_relevance_not_merge_order(self):
         """The correct UTOPIA row must be considered even if API merge order places it after index 20."""
@@ -510,6 +571,89 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual((out or {}).get("lyrics_type"), "plain")
         self.assertNotIn("[00:01.00]", (out or {}).get("lyrics", ""))
         self.assertEqual((out or {}).get("lrclib_id"), 101)
+
+    def test_lrclib_search_rejects_unversioned_row_for_versioned_qobuz_title(self):
+        """Auto attach should prefer no lyrics over a same-duration row for a different version."""
+        track = {
+            "title": "The Damage You've Done (Alternate Version, 1987)",
+            "performer": {"name": "Tom Petty & The Heartbreakers"},
+            "album": {"title": "An American Treasure (Deluxe)"},
+            "duration": 247,
+        }
+        wrong_version = {
+            "id": 303,
+            "trackName": "The Damage You've Done",
+            "artistName": "Tom Petty & The Heartbreakers",
+            "albumName": "An American Treasure (2)",
+            "duration": 247,
+            "syncedLyrics": "[00:01.00]one\n[00:05.00]two\n[00:09.00]three\n",
+            "plainLyrics": "",
+        }
+        with patch("qobuz_dl.lyrics._lrclib_search_raw", return_value=[wrong_version]):
+            out = lyrics._lrclib_search_best(track, timeout_sec=2.0)
+        self.assertIsNone(out)
+
+    def test_lrclib_search_allows_matching_version_qualifier(self):
+        track = {
+            "title": "The Damage You've Done (Alternate Version, 1987)",
+            "performer": {"name": "Tom Petty & The Heartbreakers"},
+            "album": {"title": "An American Treasure (Deluxe)"},
+            "duration": 247,
+        }
+        right_version = {
+            "id": 304,
+            "trackName": "The Damage You've Done (Alternate Version)",
+            "artistName": "Tom Petty & The Heartbreakers",
+            "albumName": "An American Treasure (Deluxe)",
+            "duration": 247,
+            "syncedLyrics": "[00:01.00]one\n[00:05.00]two\n[00:09.00]three\n",
+            "plainLyrics": "",
+        }
+        with patch("qobuz_dl.lyrics._lrclib_search_raw", return_value=[right_version]):
+            out = lyrics._lrclib_search_best(track, timeout_sec=2.0)
+        self.assertIsNotNone(out)
+        self.assertEqual((out or {}).get("lrclib_id"), 304)
+
+    def test_lrclib_search_rejects_generic_version_overlap_only(self):
+        track = {
+            "title": "The Damage You've Done (Alternate Version, 1987)",
+            "performer": {"name": "Tom Petty & The Heartbreakers"},
+            "album": {"title": "An American Treasure (Deluxe)"},
+            "duration": 247,
+        }
+        wrong_version = {
+            "id": 306,
+            "trackName": "The Damage You've Done (Live Version)",
+            "artistName": "Tom Petty & The Heartbreakers",
+            "albumName": "An American Treasure (Deluxe)",
+            "duration": 247,
+            "syncedLyrics": "[00:01.00]one\n[00:05.00]two\n[00:09.00]three\n",
+            "plainLyrics": "",
+        }
+        with patch("qobuz_dl.lyrics._lrclib_search_raw", return_value=[wrong_version]):
+            out = lyrics._lrclib_search_best(track, timeout_sec=2.0)
+        self.assertIsNone(out)
+
+    def test_lrclib_search_still_ignores_feat_parenthetical(self):
+        track = {
+            "title": "Best Mode (feat. Guest)",
+            "performer": {"name": "Artist"},
+            "album": {"title": "Album"},
+            "duration": 200,
+        }
+        row = {
+            "id": 305,
+            "trackName": "Best Mode",
+            "artistName": "Artist",
+            "albumName": "Album",
+            "duration": 200,
+            "syncedLyrics": "[00:01.00]one\n[00:05.00]two\n[00:09.00]three\n",
+            "plainLyrics": "",
+        }
+        with patch("qobuz_dl.lyrics._lrclib_search_raw", return_value=[row]):
+            out = lyrics._lrclib_search_best(track, timeout_sec=2.0)
+        self.assertIsNotNone(out)
+        self.assertEqual((out or {}).get("lrclib_id"), 305)
 
     def test_lrclib_search_hydrates_via_get_when_search_omits_lyrics(self):
         """Search JSON can lack bodies; GET /api/get/{{id}} must still supply LRC text."""

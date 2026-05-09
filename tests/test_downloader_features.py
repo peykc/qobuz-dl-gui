@@ -117,6 +117,7 @@ class DownloaderFeatureTests(unittest.TestCase):
     def test_track_dict_for_lrclib_fills_missing_nested_album(self):
         track = {
             "title": "Song",
+            "version": "Alternate Version, 1987",
             "track_number": 1,
             "performer": {"name": "Artist"},
             "duration": 200,
@@ -127,8 +128,23 @@ class DownloaderFeatureTests(unittest.TestCase):
             "parental_warning": True,
         }
         out = _track_dict_for_lrclib(track, release)
+        self.assertEqual(out["title"], "Song (Alternate Version, 1987)")
         self.assertEqual(out["album"]["title"], "Album Name")
         self.assertTrue(out["album"].get("explicit"))
+
+    def test_track_dict_for_lrclib_preserves_full_title_with_existing_album(self):
+        track = {
+            "title": "The Damage You've Done",
+            "version": "Alternate Version, 1987",
+            "performer": {"name": "Tom Petty & The Heartbreakers"},
+            "duration": 247,
+            "album": {"title": "An American Treasure (Deluxe)"},
+        }
+        out = _track_dict_for_lrclib(track, None)
+        self.assertEqual(
+            out["title"], "The Damage You've Done (Alternate Version, 1987)"
+        )
+        self.assertEqual(out["album"]["title"], "An American Treasure (Deluxe)")
 
     def test_stream_abort_falls_back_to_cancel_event(self):
         import tempfile
@@ -179,6 +195,86 @@ class DownloaderFeatureTests(unittest.TestCase):
         ce.set()
         self.assertTrue(d._cooperative_stop_is_set())
         self.assertFalse(d._stream_abort_is_set())
+
+    def test_album_track_defers_lyrics_sidecar_when_executor_is_provided(self):
+        from unittest.mock import MagicMock
+
+        class FakeExecutor:
+            def __init__(self):
+                import concurrent.futures
+
+                self.future = concurrent.futures.Future()
+                self.future.set_result(None)
+                self.submitted = None
+
+            def submit(self, fn, *args, **kwargs):
+                self.submitted = (fn, args, kwargs)
+                return self.future
+
+        track = {
+            "id": 123,
+            "title": "Track Name",
+            "track_number": 1,
+            "performer": {"name": "Artist"},
+            "duration": 180,
+        }
+        album = {
+            "id": 999,
+            "title": "Album Name",
+            "artist": {"name": "Artist"},
+        }
+        fake_fetch_ex = FakeExecutor()
+        fake_sidecar_ex = FakeExecutor()
+        pending = []
+        client = MagicMock()
+        d = Download(client, "999", tempfile.gettempdir(), 6, lyrics_enabled=True)
+
+        def fake_tag(_tmp, _root, final_file, *_args, **_kwargs):
+            with open(final_file, "wb") as f:
+                f.write(b"audio")
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "qobuz_dl.downloader.tqdm_download"
+        ), patch("qobuz_dl.downloader.metadata.tag_flac", side_effect=fake_tag), patch.object(
+            d, "_write_track_lyrics_sidecar"
+        ) as m_write:
+            d._download_and_tag(
+                tmp,
+                1,
+                {"url": "https://example.invalid/audio.flac"},
+                track,
+                album,
+                False,
+                False,
+                lyrics_executor=fake_fetch_ex,
+                lyrics_sidecar_executor=fake_sidecar_ex,
+                lyrics_pending=pending,
+            )
+
+        m_write.assert_not_called()
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0].done())
+        self.assertIsNotNone(fake_fetch_ex.submitted)
+        self.assertIsNotNone(fake_sidecar_ex.submitted)
+        _fn, args, kwargs = fake_sidecar_ex.submitted
+        self.assertEqual(args[0], os.path.join(tmp, "01 - Track Name.flac"))
+        self.assertEqual(args[1], track)
+        self.assertEqual(args[2], album)
+        self.assertIs(kwargs["lyrics_fetch_future"], fake_fetch_ex.future)
+
+    def test_drain_deferred_lyrics_waits_for_pending_jobs(self):
+        import concurrent.futures
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        d = Download(client, "999", tempfile.gettempdir(), 6, lyrics_enabled=True)
+        future = concurrent.futures.Future()
+        future.set_result(None)
+        pending = [future]
+        d._drain_deferred_lyrics(pending)
+
+        self.assertEqual(pending, [])
+        self.assertTrue(future.done())
 
 
 if __name__ == "__main__":

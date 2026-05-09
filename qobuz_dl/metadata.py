@@ -368,6 +368,36 @@ def set_itunes_explicit_from_lyrics_content(audio_path: str, lyrics_text: str) -
     return _set_audio_itunes_explicit_one(audio_path)
 
 
+def write_lyrics_metadata(audio_path: str, lyrics_text: str) -> bool:
+    """Embed lyric text in the audio file metadata.
+
+    FLAC/Vorbis uses ``LYRICS``. MP3/ID3 uses ``USLT`` and keeps LRC timestamps
+    in the text so synced lyric-capable players can still parse them.
+    """
+    body = (lyrics_text or "").strip()
+    if not body:
+        return False
+    ext = os.path.splitext(audio_path or "")[1].lower()
+    try:
+        if ext == ".flac":
+            audio = FLAC(audio_path)
+            audio["LYRICS"] = body
+            audio.save()
+            return True
+        if ext == ".mp3":
+            try:
+                audio = id3.ID3(audio_path)
+            except ID3NoHeaderError:
+                audio = id3.ID3()
+            audio.delall("USLT")
+            audio.add(id3.USLT(encoding=3, lang="eng", desc="", text=body))
+            audio.save(audio_path, v2_version=3)
+            return True
+    except Exception as e:
+        logger.warning("Could not write embedded lyrics metadata: %s", e)
+    return False
+
+
 def _set_audio_itunes_explicit_one(audio_path: str) -> bool:
     ext = os.path.splitext(audio_path)[1].lower()
     try:

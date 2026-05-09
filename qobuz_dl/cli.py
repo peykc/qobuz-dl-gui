@@ -55,6 +55,7 @@ def _reset_config(config_file):
     config["DEFAULT"]["og_cover"] = "false"
     config["DEFAULT"]["embed_art"] = "false"
     config["DEFAULT"]["lyrics_enabled"] = "false"
+    config["DEFAULT"]["lyrics_embed_metadata"] = "false"
     config["DEFAULT"]["no_cover"] = "false"
     config["DEFAULT"]["no_database"] = "false"
     logging.info(f"{YELLOW}Getting tokens. Please wait...")
@@ -164,6 +165,9 @@ def main():
         embed_art = config.getboolean("DEFAULT", "embed_art")
         no_cover = config.getboolean("DEFAULT", "no_cover")
         lyrics_enabled = config.getboolean("DEFAULT", "lyrics_enabled", fallback=False)
+        lyrics_embed_metadata = config.getboolean(
+            "DEFAULT", "lyrics_embed_metadata", fallback=False
+        )
         no_database = config.getboolean("DEFAULT", "no_database")
         app_id = config["DEFAULT"]["app_id"]
         smart_discography = config.getboolean("DEFAULT", "smart_discography")
@@ -278,6 +282,7 @@ def main():
         cover_og_quality=arguments.og_cover or og_cover,
         no_cover=arguments.no_cover or no_cover,
         lyrics_enabled=arguments.lyrics or lyrics_enabled,
+        lyrics_embed_metadata=lyrics_embed_metadata,
         downloads_db=None if no_database or arguments.no_db else QOBUZ_DB,
         folder_format=arguments.folder_format or folder_format,
         track_format=arguments.track_format or track_format,

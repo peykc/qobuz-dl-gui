@@ -176,6 +176,7 @@ class _QueueHandler(logging.Handler):
                 )
                 confidence = parts[4] if len(parts) >= 5 else ""
                 audio_path_lyrics = parts[5].strip() if len(parts) >= 6 else ""
+                lyric_destination = parts[6].strip() if len(parts) >= 7 else ""
                 ev_ly = {
                     "type": "track_lyrics",
                     "track_no": track_no,
@@ -186,6 +187,8 @@ class _QueueHandler(logging.Handler):
                 }
                 if audio_path_lyrics:
                     ev_ly["audio_path"] = audio_path_lyrics
+                if lyric_destination:
+                    ev_ly["lyric_destination"] = lyric_destination
                 _emit_event(ev_ly)
             return
 
@@ -316,6 +319,10 @@ def _build_qobuz_from_config(cfg, overrides=None):
         o.get("lyrics_enabled"),
         cfg.getboolean("DEFAULT", "lyrics_enabled", fallback=False),
     )
+    lyrics_embed_metadata = _as_bool(
+        o.get("lyrics_embed_metadata"),
+        cfg.getboolean("DEFAULT", "lyrics_embed_metadata", fallback=False),
+    )
     no_database = _as_bool(
         o.get("no_db"), cfg.getboolean("DEFAULT", "no_database", fallback=True)
     )
@@ -390,6 +397,7 @@ def _build_qobuz_from_config(cfg, overrides=None):
         cover_og_quality=og_cover,
         no_cover=no_cover,
         lyrics_enabled=lyrics_enabled,
+        lyrics_embed_metadata=lyrics_embed_metadata,
         downloads_db=None if no_database else QOBUZ_DB,
         folder_format=folder_format,
         track_format=track_format,
@@ -515,6 +523,7 @@ def api_status():
                 "embed_art": cfg["DEFAULT"].get("embed_art", "false"),
                 "no_cover": cfg["DEFAULT"].get("no_cover", "false"),
                 "lyrics_enabled": cfg["DEFAULT"].get("lyrics_enabled", "false"),
+                "lyrics_embed_metadata": cfg["DEFAULT"].get("lyrics_embed_metadata", "false"),
                 "no_database": cfg["DEFAULT"].get("no_database", "false"),
                 "smart_discography": cfg["DEFAULT"].get("smart_discography", "false"),
                 "fix_md5s": cfg["DEFAULT"].get("fix_md5s", "false"),
@@ -681,6 +690,7 @@ def api_setup():
         cfg["DEFAULT"]["og_cover"] = "false"
         cfg["DEFAULT"]["embed_art"] = "false"
         cfg["DEFAULT"]["lyrics_enabled"] = "false"
+        cfg["DEFAULT"]["lyrics_embed_metadata"] = "false"
         cfg["DEFAULT"]["no_cover"] = "false"
         cfg["DEFAULT"]["no_database"] = "true"
         cfg["DEFAULT"]["app_id"] = app_id
@@ -904,6 +914,7 @@ def api_oauth_start():
                     "og_cover",
                     "embed_art",
                     "lyrics_enabled",
+                    "lyrics_embed_metadata",
                     "no_cover",
                     "no_database",
                     "folder_format",
@@ -949,6 +960,7 @@ def api_oauth_start():
                             "og_cover": "false",
                             "embed_art": "false",
                             "lyrics_enabled": "false",
+                            "lyrics_embed_metadata": "false",
                             "no_cover": "false",
                             "no_database": "true",
                             "folder_format": "{artist}/{album}",
@@ -1045,6 +1057,7 @@ def api_token_login():
         cfg["DEFAULT"]["og_cover"] = "false"
         cfg["DEFAULT"]["embed_art"] = "false"
         cfg["DEFAULT"]["lyrics_enabled"] = "false"
+        cfg["DEFAULT"]["lyrics_embed_metadata"] = "false"
         cfg["DEFAULT"]["no_cover"] = "false"
         cfg["DEFAULT"]["no_database"] = "true"
         cfg["DEFAULT"]["app_id"] = app_id
@@ -1473,6 +1486,7 @@ def api_download_attach_track():
                 tag_title_from_track_format=tmp.tag_title_from_track_format,
                 tag_album_from_folder_format=tmp.tag_album_from_folder_format,
                 native_lang=bool(tmp.native_lang),
+                lyrics_embed_metadata=tmp.lyrics_embed_metadata,
             )
             dloader.download_substitute_for_slot(album_meta, slot_final, sub_id)
         except Exception as e:
@@ -1506,6 +1520,7 @@ def api_write_missing_track_placeholder():
         tmp = _build_qobuz_from_config(cfg)
         if skip_lyrics:
             tmp.lyrics_enabled = False
+            tmp.lyrics_embed_metadata = False
         tmp.client = qobuz.client
         tmp.client.set_language_headers(tmp.native_lang)
 
@@ -1546,6 +1561,7 @@ def api_write_missing_track_placeholder():
             tag_title_from_track_format=tmp.tag_title_from_track_format,
             tag_album_from_folder_format=tmp.tag_album_from_folder_format,
             native_lang=bool(tmp.native_lang),
+            lyrics_embed_metadata=tmp.lyrics_embed_metadata,
         )
         ok, detail = dloader.write_missing_track_placeholder(
             album_meta,
@@ -1727,6 +1743,7 @@ def api_download():
         "directory": data.get("directory"),
         "embed_art": data.get("embed_art", False),
         "lyrics_enabled": data.get("lyrics_enabled", False),
+        "lyrics_embed_metadata": data.get("lyrics_embed_metadata", False),
         "albums_only": data.get("albums_only", False),
         "no_m3u": data.get("no_m3u", False),
         "no_fallback": data.get("no_fallback", False),
@@ -2157,6 +2174,7 @@ def api_download_history_upsert():
         lyric_type=str(data.get("lyric_type") or ""),
         lyric_provider=str(data.get("lyric_provider") or ""),
         lyric_confidence=str(data.get("lyric_confidence") or ""),
+        lyric_destination=str(data.get("lyric_destination") or ""),
         slot_track_id=str(data.get("slot_track_id") or ""),
         release_album_id=str(data.get("release_album_id") or ""),
         pending_slot_cleanup_id=str(data.get("pending_slot_cleanup_id") or ""),
@@ -2183,6 +2201,7 @@ def api_download_history_lyrics():
         lyric_type=lyric_type,
         lyric_provider=str(data.get("lyric_provider") or ""),
         lyric_confidence=str(data.get("lyric_confidence") or ""),
+        lyric_destination=str(data.get("lyric_destination") or ""),
     )
     return jsonify({"ok": True})
 
@@ -2266,6 +2285,38 @@ def api_lyrics_fetch():
     )
 
 
+@app.route("/api/lyrics/local", methods=["GET"])
+def api_lyrics_local():
+    from qobuz_dl import lyrics as lyrics_mod
+
+    audio_path = (request.args.get("audio_path") or "").strip()
+    if not audio_path:
+        return jsonify({"ok": False, "error": "audio_path required"}), 400
+    if not _audio_path_allowed_for_lyrics_attach(audio_path):
+        return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
+    p = Path(audio_path).expanduser().resolve()
+    lrc_path = p.with_suffix(".lrc")
+    if not lrc_path.is_file():
+        return jsonify({"ok": False, "error": "local lyrics not found"}), 404
+    try:
+        body = lrc_path.read_text(encoding="utf-8-sig").strip()
+    except UnicodeDecodeError:
+        body = lrc_path.read_text(encoding="utf-8", errors="replace").strip()
+    lyrics_explicit = lyrics_mod.lyrics_text_indicates_explicit(body) if body else False
+    is_synced = lyrics_mod._is_synced_lrc(body)
+    return jsonify(
+        {
+            "ok": True,
+            "record": {
+                "syncedLyrics": body if is_synced else "",
+                "plainLyrics": "" if is_synced else body,
+            },
+            "lyrics_explicit": lyrics_explicit,
+            "source": "local",
+        }
+    )
+
+
 @app.route("/api/lyrics/attach", methods=["POST"])
 def api_lyrics_attach():
     from qobuz_dl import lyrics as lyrics_mod
@@ -2278,23 +2329,38 @@ def api_lyrics_attach():
         return jsonify({"ok": False, "error": "lrclib_id required"}), 400
     if not _audio_path_allowed_for_lyrics_attach(audio_path):
         return jsonify({"ok": False, "error": "invalid or disallowed audio path"}), 400
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_FILE)
+    write_sidecar = _as_bool(
+        data.get("write_sidecar"),
+        cfg.getboolean("DEFAULT", "lyrics_enabled", fallback=False),
+    )
+    write_metadata = _as_bool(
+        data.get("write_metadata"),
+        cfg.getboolean("DEFAULT", "lyrics_embed_metadata", fallback=False),
+    )
+    if not write_sidecar and not write_metadata:
+        return jsonify({"ok": False, "error": "enable .lrc or embedded lyrics first"}), 400
     try:
-        out, lyrics_explicit, tag_applied = lyrics_mod.attach_lrclib_id_to_audio(
+        out, lyrics_explicit, tag_applied, metadata_written = lyrics_mod.attach_lrclib_id_to_audio(
             audio_path,
             lrclib_id,
             overwrite=True,
             timeout_sec=18.0,
             update_explicit_tag=_lyrics_explicit_tag_enabled_from_config(),
+            write_sidecar=write_sidecar,
+            write_metadata=write_metadata,
         )
     except Exception as e:
         logging.error("Lyrics attach error: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
-    if not out:
+    if not out and not metadata_written:
         return jsonify({"ok": False, "error": "no lyrics to write"}), 400
     return jsonify(
         {
             "ok": True,
             "lrc_path": out,
+            "metadata_written": metadata_written,
             "lyrics_explicit": lyrics_explicit,
             "explicit_tag_updated": tag_applied,
         }

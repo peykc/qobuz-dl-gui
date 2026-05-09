@@ -1193,17 +1193,17 @@ td.fmt-example {
     position: fixed;
     z-index: 100000;
     max-width: min(300px, calc(100vw - 20px));
-    background: #111111;
+    background: var(--card);
     border: 1px solid var(--border);
-    color: var(--text-secondary);
+    color: var(--text);
     font-size: 11px;
-    font-weight: 400;
-    line-height: 1.55;
-    padding: 8px 11px;
-    border-radius: 6px;
+    font-weight: 500;
+    line-height: 1.45;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
     white-space: pre-wrap;
     word-wrap: break-word;
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.12s ease;
@@ -2014,8 +2014,6 @@ td.fmt-example {
     margin-bottom: 6px;
     min-width: 0;
     box-sizing: border-box;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 52px;
 }
 
 .track-status-card.lyric-search-anchor {
@@ -2069,7 +2067,6 @@ td.fmt-example {
     left: 0;
     right: 0;
     width: auto;
-    margin-bottom: 0;
     box-sizing: border-box;
 }
 
@@ -4213,12 +4210,16 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
 
 .lyric-search-preview-panel .lyric-search-preview-flag {
     flex-shrink: 0;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
 }
 
 .lyric-search-preview-panel .lyric-search-preview-body {
     flex-shrink: 1;
     margin: 0;
-    padding: 10px 12px;
+    padding: 8px 12px 10px;
     box-sizing: border-box;
     min-height: 7.5rem;
     /* Visible preview (~200px target) but never taller than remaining viewport */
@@ -4230,7 +4231,7 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
 
 .lyric-search-head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     margin-bottom: 10px;
@@ -4239,6 +4240,58 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
 
 .lyric-search-head h2 {
     margin-bottom: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.lyric-output-toggles {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex: 0 0 auto;
+    height: 20px;
+}
+
+.lyric-output-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    white-space: nowrap;
+    height: 20px;
+}
+
+.lyric-output-toggle:hover {
+    color: var(--text);
+}
+
+.lyric-output-switch {
+    display: inline-block;
+    flex: 0 0 30px;
+    width: 30px;
+    height: 16px;
+}
+
+.lyric-output-switch .toggle-knob {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.lyric-output-switch .toggle-knob::after {
+    width: 12px;
+    height: 12px;
+    top: 1px;
+    left: 1px;
+}
+
+.lyric-output-switch input:checked + .toggle-knob::after {
+    transform: translateX(14px);
 }
 
 
@@ -4573,14 +4626,13 @@ body:has(#dl-smart-discography:checked) .dynamic-filter[data-sd]::before {
 }
 
 .lyric-search-preview-flag {
-    padding: 8px 12px;
+    padding: 7px 12px;
     font-size: 12px;
     font-weight: 500;
     border-bottom: 1px solid var(--border);
 }
 
 .lyric-search-preview-flag--explicit {
-    display: flex;
     align-items: center;
     gap: 8px;
     background: transparent;

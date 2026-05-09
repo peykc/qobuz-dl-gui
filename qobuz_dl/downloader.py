@@ -3,6 +3,7 @@ import os
 import re
 import concurrent.futures
 import subprocess
+import threading
 import time
 from html import unescape
 from typing import Optional, Tuple
@@ -390,6 +391,7 @@ def _emit_lyrics_marker(
     provider: str,
     confidence=None,
     audio_path: str = "",
+    lyric_destination: str = "",
 ):
     num = f"{int(track_num):02d}" if str(track_num).isdigit() else _safe_marker_value(track_num)
     conf = (
@@ -404,6 +406,9 @@ def _emit_lyrics_marker(
     )
     if ap:
         line += f"|{ap}"
+        dest = _safe_marker_value(lyric_destination) if (lyric_destination or "").strip() else ""
+        if dest:
+            line += f"|{dest}"
     logger.info(line)
     lt = str(lyric_type or "").strip().lower()
     ap_raw = str(audio_path or "").strip()
@@ -420,6 +425,7 @@ def _emit_lyrics_marker(
             lyric_type=lt,
             lyric_provider=str(provider or ""),
             lyric_confidence=conf_str,
+            lyric_destination=str(lyric_destination or ""),
         )
 
 
@@ -513,6 +519,7 @@ class Download:
         tag_title_from_track_format: bool = True,
         tag_album_from_folder_format: bool = True,
         native_lang: bool = False,
+        lyrics_embed_metadata: bool = False,
     ):
         self.client = client
         self.item_id = item_id
@@ -523,7 +530,9 @@ class Download:
         self.downgrade_quality = downgrade_quality
         self.cover_og_quality = cover_og_quality
         self.no_cover = no_cover
-        self.lyrics_enabled = lyrics_enabled
+        self.lyrics_enabled = bool(lyrics_enabled)
+        self.lyrics_embed_metadata = bool(lyrics_embed_metadata)
+        self.lyrics_any_enabled = self.lyrics_enabled or self.lyrics_embed_metadata
         self.folder_format = folder_format or DEFAULT_FOLDER
         self.track_format = track_format or DEFAULT_TRACK
         self.cancel_event = cancel_event
@@ -663,35 +672,67 @@ class Download:
                 OFF,
             )
 
-        if active_workers > 1 and len(tracks) > 1:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=active_workers) as ex:
-                futures = []
-                for i in tracks:
-                    tmp_count = count
-                    count += 1
-                    futures.append(
-                        ex.submit(
-                            self._download_release_track,
-                            dirn,
-                            tmp_count,
-                            i,
-                            meta,
-                            is_multiple,
-                            True,
+        album_lyrics_ex: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        album_lyrics_sidecar_ex: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        album_lyrics_pending = []
+        album_lyrics_lock = threading.Lock()
+        if self.lyrics_any_enabled and tracks:
+            album_lyrics_ex = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, active_workers)
+            )
+            album_lyrics_sidecar_ex = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, active_workers)
+            )
+
+        try:
+            if active_workers > 1 and len(tracks) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=active_workers) as ex:
+                    futures = []
+                    for i in tracks:
+                        tmp_count = count
+                        count += 1
+                        futures.append(
+                            ex.submit(
+                                self._download_release_track,
+                                dirn,
+                                tmp_count,
+                                i,
+                                meta,
+                                is_multiple,
+                                True,
+                                lyrics_executor=album_lyrics_ex,
+                                lyrics_sidecar_executor=album_lyrics_sidecar_ex,
+                                lyrics_pending=album_lyrics_pending,
+                                lyrics_pending_lock=album_lyrics_lock,
+                            )
                         )
+                    for fut in concurrent.futures.as_completed(futures):
+                        failed = fut.result()
+                        if failed:
+                            failed_tracks.append(failed)
+            else:
+                for i in tracks:
+                    failed = self._download_release_track(
+                        dirn,
+                        count,
+                        i,
+                        meta,
+                        is_multiple,
+                        False,
+                        lyrics_executor=album_lyrics_ex,
+                        lyrics_sidecar_executor=album_lyrics_sidecar_ex,
+                        lyrics_pending=album_lyrics_pending,
+                        lyrics_pending_lock=album_lyrics_lock,
                     )
-                for fut in concurrent.futures.as_completed(futures):
-                    failed = fut.result()
                     if failed:
                         failed_tracks.append(failed)
-        else:
-            for i in tracks:
-                failed = self._download_release_track(
-                    dirn, count, i, meta, is_multiple, False
-                )
-                if failed:
-                    failed_tracks.append(failed)
-                count += 1
+                    count += 1
+        finally:
+            self._drain_deferred_lyrics(album_lyrics_pending, album_lyrics_lock)
+            if album_lyrics_ex is not None:
+                album_lyrics_ex.shutdown(wait=True)
+            if album_lyrics_sidecar_ex is not None:
+                album_lyrics_sidecar_ex.shutdown(wait=True)
 
         if failed_tracks:
             logger.warning(
@@ -708,6 +749,11 @@ class Download:
         album_meta: dict,
         is_multiple: bool,
         parallel_mode: bool,
+        *,
+        lyrics_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None,
+        lyrics_sidecar_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None,
+        lyrics_pending: Optional[list] = None,
+        lyrics_pending_lock=None,
     ):
         # Cooperative pause/cancel: do not begin a new track's URL resolution / FLAC job
         # (in-flight byte streams check _stream_abort_is_set in tqdm / _dl_* only).
@@ -788,6 +834,10 @@ class Download:
                 False,
                 is_mp3,
                 track_meta.get("media_number") if is_multiple else None,
+                lyrics_executor=lyrics_executor,
+                lyrics_sidecar_executor=lyrics_sidecar_executor,
+                lyrics_pending=lyrics_pending,
+                lyrics_pending_lock=lyrics_pending_lock,
             )
         except Exception as exc:
             logger.error(f"{RED}Failed to download {track_title}: {exc}")
@@ -1195,6 +1245,7 @@ class Download:
                                     "already-exists",
                                     conf,
                                     missing_abs,
+                                    "lrc",
                                 )
                             else:
                                 lid = result.get("lrclib_id")
@@ -1217,6 +1268,7 @@ class Download:
                                     provider,
                                     conf,
                                     missing_abs,
+                                    "lrc",
                                 )
                 except Exception as le:
                     logger.warning(
@@ -1368,6 +1420,10 @@ class Download:
         *,
         stream_track_id=None,
         lyrics_track_meta=None,
+        lyrics_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None,
+        lyrics_sidecar_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None,
+        lyrics_pending: Optional[list] = None,
+        lyrics_pending_lock=None,
     ):
         if self._stream_abort_is_set():
             return
@@ -1453,7 +1509,10 @@ class Download:
         lyrics_ex: Optional[concurrent.futures.ThreadPoolExecutor] = None
         lyrics_fut: Optional[concurrent.futures.Future] = None
         _t_lrc_start: Optional[float] = None
-        if self.lyrics_enabled:
+        defer_lyrics_sidecar = (
+            lyrics_sidecar_executor is not None and lyrics_pending is not None
+        )
+        if self.lyrics_any_enabled:
             l_meta = lyrics_track_meta or track_metadata
             try:
                 lyrics_ui_title_pre = _get_title(l_meta)
@@ -1485,8 +1544,11 @@ class Download:
                 "[LRC_TIMING] sidecar FETCH_START title=%s (parallel with download)",
                 lyrics_ui_title_pre,
             )
-            lyrics_ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            lyrics_fut = lyrics_ex.submit(
+            run_lyrics_ex = lyrics_executor
+            if run_lyrics_ex is None:
+                lyrics_ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                run_lyrics_ex = lyrics_ex
+            lyrics_fut = run_lyrics_ex.submit(
                 lyrics.fetch_synced_lyrics_with_search_fallback,
                 track_for_lyrics,
                 prefer_explicit=explicit_pre,
@@ -1594,17 +1656,113 @@ class Download:
                 album_release_id="" if is_track else str(self.item_id),
                 substitute_attach=bool(stream_track_id),
             )
-            self._write_track_lyrics_sidecar(
-                final_file,
-                track_metadata,
-                lyrics_release_album,
-                lyrics_fetch_future=lyrics_fut,
-                lyrics_fetch_started_at=_t_lrc_start,
-                lyrics_track_meta=lyrics_track_meta,
-            )
+            if lyrics_fut is not None and defer_lyrics_sidecar:
+                sidecar_fut = self._schedule_deferred_lyrics_sidecar(
+                    lyrics_sidecar_executor,
+                    final_file,
+                    track_metadata,
+                    lyrics_release_album,
+                    lyrics_fut,
+                    _t_lrc_start,
+                    lyrics_track_meta,
+                )
+                if lyrics_pending_lock is not None:
+                    with lyrics_pending_lock:
+                        lyrics_pending.append(sidecar_fut)
+                else:
+                    lyrics_pending.append(sidecar_fut)
+            else:
+                self._write_track_lyrics_sidecar(
+                    final_file,
+                    track_metadata,
+                    lyrics_release_album,
+                    lyrics_fetch_future=lyrics_fut,
+                    lyrics_fetch_started_at=_t_lrc_start,
+                    lyrics_track_meta=lyrics_track_meta,
+                )
         finally:
             if lyrics_ex is not None:
                 lyrics_ex.shutdown(wait=True)
+
+    def _schedule_deferred_lyrics_sidecar(
+        self,
+        sidecar_executor: concurrent.futures.ThreadPoolExecutor,
+        final_file,
+        track_metadata,
+        release_album_meta,
+        lyrics_fetch_future: concurrent.futures.Future,
+        lyrics_fetch_started_at,
+        lyrics_track_meta,
+    ) -> concurrent.futures.Future:
+        done_future: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _copy_sidecar_result(sidecar_future: concurrent.futures.Future) -> None:
+            try:
+                sidecar_future.result()
+            except Exception as exc:
+                if not done_future.done():
+                    done_future.set_exception(exc)
+            else:
+                if not done_future.done():
+                    done_future.set_result(None)
+
+        def _submit_sidecar(_fetch_future: concurrent.futures.Future) -> None:
+            if done_future.done():
+                return
+            try:
+                sidecar_future = sidecar_executor.submit(
+                    self._write_track_lyrics_sidecar,
+                    final_file,
+                    track_metadata,
+                    release_album_meta,
+                    lyrics_fetch_future=_fetch_future,
+                    lyrics_fetch_started_at=lyrics_fetch_started_at,
+                    lyrics_track_meta=lyrics_track_meta,
+                )
+            except Exception as exc:
+                if not done_future.done():
+                    done_future.set_exception(exc)
+                return
+            sidecar_future.add_done_callback(_copy_sidecar_result)
+
+        lyrics_fetch_future.add_done_callback(_submit_sidecar)
+        return done_future
+
+    def _drain_deferred_lyrics(self, pending_lyrics, pending_lock=None):
+        if not pending_lyrics:
+            return
+        if pending_lock is not None:
+            with pending_lock:
+                jobs = list(pending_lyrics)
+                pending_lyrics.clear()
+        else:
+            jobs = list(pending_lyrics)
+            pending_lyrics.clear()
+        if not jobs:
+            return
+        waiting = [fut for fut in jobs if not fut.done()]
+        if waiting:
+            logger.info(
+                "%sFinishing album lyrics (%s pending)%s",
+                YELLOW,
+                len(waiting),
+                OFF,
+            )
+        logger.info(
+            "[LRC_TIMING] album lyrics DRAIN_START pending=%s total=%s",
+            len(waiting),
+            len(jobs),
+        )
+        for fut in concurrent.futures.as_completed(jobs):
+            try:
+                fut.result()
+            except Exception as exc:
+                logger.warning("%sLyrics sidecar job failed: %s", YELLOW, exc)
+        logger.info(
+            "[LRC_TIMING] album lyrics DRAIN_DONE pending=%s total=%s",
+            0,
+            len(jobs),
+        )
 
     def _write_track_lyrics_sidecar(
         self,
@@ -1616,7 +1774,7 @@ class Download:
         lyrics_fetch_started_at: Optional[float] = None,
         lyrics_track_meta: Optional[dict] = None,
     ):
-        if not self.lyrics_enabled:
+        if not self.lyrics_any_enabled:
             return
         # Finish lyrics for this file even if the user cancelled the queue: the
         # track is already saved, so skipping here would leave .lrc missing when
@@ -1744,14 +1902,28 @@ class Download:
                     final_file,
                 )
                 return
-            out = lyrics.write_lrc_sidecar(
-                final_file,
-                result["lyrics"],
-                overwrite=False,
+            out = None
+            metadata_written = False
+            if self.lyrics_enabled:
+                out = lyrics.write_lrc_sidecar(
+                    final_file,
+                    lyrics_body,
+                    overwrite=False,
+                )
+            if self.lyrics_embed_metadata:
+                metadata_written = metadata.write_lyrics_metadata(final_file, lyrics_body)
+            dest_code = (
+                "both"
+                if self.lyrics_enabled and self.lyrics_embed_metadata
+                else "lrc"
+                if self.lyrics_enabled
+                else "embed"
+                if self.lyrics_embed_metadata
+                else ""
             )
-            if not out:
+            if not out and not metadata_written:
                 logger.info(
-                    f"{OFF}Lyrics sidecar already exists for {track_metadata.get('title', 'track')}"
+                    f"{OFF}Lyrics already attached or no lyric destination written for {track_metadata.get('title', 'track')}"
                 )
                 _emit_lyrics_marker(
                     track_metadata.get("track_number"),
@@ -1760,6 +1932,7 @@ class Download:
                     "already-exists",
                     conf,
                     final_file,
+                    dest_code,
                 )
                 return
             lid = result.get("lrclib_id")
@@ -1769,21 +1942,27 @@ class Download:
                 except (TypeError, ValueError, OSError):
                     pass
             provider = result.get("provider", "provider")
+            dest = []
+            if out:
+                dest.append(os.path.basename(out))
+            if metadata_written:
+                dest.append("metadata")
+            dest_label = " + ".join(dest) if dest else "lyrics"
             if lyric_type == "instrumental":
                 logger.info(
-                    f"{GREEN}Instrumental sidecar saved via {provider}: {os.path.basename(out)}"
+                    f"{GREEN}Instrumental lyrics saved via {provider}: {dest_label}"
                 )
             elif result.get("search_fallback_used"):
                 logger.info(
-                    f"{YELLOW}Synced lyrics saved via {provider} (search fallback): {os.path.basename(out)}"
+                    f"{YELLOW}Synced lyrics saved via {provider} (search fallback): {dest_label}"
                 )
             elif result.get("fallback_used"):
                 logger.info(
-                    f"{YELLOW}Synced lyrics saved via {provider} (explicit fallback used): {os.path.basename(out)}"
+                    f"{YELLOW}Synced lyrics saved via {provider} (explicit fallback used): {dest_label}"
                 )
             else:
                 logger.info(
-                    f"{GREEN}Synced lyrics saved via {provider}: {os.path.basename(out)}"
+                    f"{GREEN}Synced lyrics saved via {provider}: {dest_label}"
                 )
             _emit_lyrics_marker(
                 track_metadata.get("track_number"),
@@ -1792,6 +1971,7 @@ class Download:
                 provider,
                 conf,
                 final_file,
+                dest_code,
             )
         except Exception as e:
             logger.warning(
@@ -2412,18 +2592,25 @@ def _track_dict_for_lrclib(
     search runs album-less (neutral album score) and the UI shows a different
     percentage than the downloader.
     """
+    out = dict(track)
+    try:
+        full_track_title = _get_title(track)
+    except (KeyError, TypeError):
+        full_track_title = str(track.get("title") or "").strip()
+    if full_track_title:
+        out["title"] = full_track_title
+
     alb = track.get("album")
     if isinstance(alb, dict) and (alb.get("title") or "").strip():
-        return track
+        return out
     if not release_album_meta or not isinstance(release_album_meta, dict):
-        return track
+        return out
     try:
         title = _get_title(release_album_meta)
     except (KeyError, TypeError):
-        return track
+        return out
     if not (title or "").strip():
-        return track
-    out = dict(track)
+        return out
     base = dict(alb) if isinstance(alb, dict) else {}
     base["title"] = title
     for key in ("parental_warning", "parental_advisory", "explicit"):

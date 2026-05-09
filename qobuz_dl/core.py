@@ -59,6 +59,7 @@ class QobuzDL:
         cover_og_quality=False,
         no_cover=False,
         lyrics_enabled=False,
+        lyrics_embed_metadata=False,
         downloads_db=None,
         folder_format="{artist}/{album}",
         track_format="{tracknumber} - {tracktitle}",
@@ -104,6 +105,7 @@ class QobuzDL:
         self.cover_og_quality = cover_og_quality
         self.no_cover = no_cover
         self.lyrics_enabled = lyrics_enabled
+        self.lyrics_embed_metadata = bool(lyrics_embed_metadata)
         self.downloads_db = create_db(downloads_db) if downloads_db else None
         self.folder_format = folder_format
         self.track_format = track_format
@@ -221,6 +223,7 @@ class QobuzDL:
                 tag_title_from_track_format=self.tag_title_from_track_format,
                 tag_album_from_folder_format=self.tag_album_from_folder_format,
                 native_lang=self.native_lang,
+                lyrics_embed_metadata=self.lyrics_embed_metadata,
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)
