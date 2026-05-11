@@ -865,7 +865,7 @@ select {
 .format-tooltip {
     display: none;
     position: fixed;
-    z-index: 9999;
+    z-index: 2147483640;
     width: 400px;
     max-width: calc(100vw - 16px);
     max-height: 80vh;
@@ -1503,7 +1503,7 @@ td.fmt-example {
     z-index: 1;
 }
 
-/* Above .settings-wrapper (110) so format-tooltips (inside this card) aren’t covered by the sidebar icons */
+/* Above .settings-wrapper (110) so the expanded options sheet stays over sidebar icons. */
 #tab-download .dl-options-card:has(#dl-options-body:not(.hidden)) {
     z-index: 125;
     /* Flush horizontal edges so panel borders line up with the card outline; inset handled on children. */

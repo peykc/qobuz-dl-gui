@@ -6666,6 +6666,8 @@
       const tip = document.getElementById(tooltipId);
       if (!trigger || !tip) return;
 
+      // Keep format popovers out of the download/settings stacking contexts.
+      if (tip.parentNode !== document.body) document.body.appendChild(tip);
       bindTemplatePreviews(tip);
 
       function toggleFromTrigger(e) {
