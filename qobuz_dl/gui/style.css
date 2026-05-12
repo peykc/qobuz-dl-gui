@@ -3592,6 +3592,19 @@ a.track-dl-btn.purchase-only:focus-visible {
     letter-spacing: 0.04em;
 }
 
+/* Queue cards: center status chips under metadata (not streamable, purchase-only count, etc.) */
+.queue-card .queue-card-info > .dl-error-badge {
+    align-self: center;
+    margin-top: 0px;
+    margin-left: 0;
+    margin-right: 0;
+    text-align: center;
+}
+
+.queue-card .queue-card-info > .dl-error-badge + .dl-error-badge {
+    margin-top: 4px;
+}
+
 /* ============================================================
    DOWNLOAD PROGRESS BAR
    ============================================================ */

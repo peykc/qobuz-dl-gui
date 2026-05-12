@@ -593,6 +593,11 @@ class Download:
             return
 
         if not meta.get("streamable"):
+            import qobuz_dl.core as _qcore
+
+            note = getattr(_qcore, "note_streaming_blocked_release", None)
+            if callable(note):
+                note()
             raise NonStreamable("This release is not streamable")
 
         if self.albums_only and (

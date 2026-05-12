@@ -217,9 +217,8 @@ def _emit_event(event_data: dict):
                 pass
 
 
-# Inject into core to allow it to update the UI
+# Import core for monkey-patched GUI hooks (see assignments after URL context helpers).
 import qobuz_dl.core
-qobuz_dl.core.ui_emitter = _emit_event
 
 
 # ---------------------------------------------------------------------------
@@ -234,13 +233,18 @@ _abort_byte_streams = (
 _download_active = False  # True while a download thread is running
 _graceful_dl_stop: Optional[str] = None  # "pause" | "cancel" while stop requested; unset at run start/end
 _url_ctx_lock = threading.Lock()
-_url_ctx = {"tracking": False, "had_error": False}  # cross-thread URL error tracking
+_url_ctx = {
+    "tracking": False,
+    "had_error": False,
+    "url_error_detail": None,
+}  # cross-thread URL error tracking
 
 
 def _ctx_start_url():
     with _url_ctx_lock:
         _url_ctx["tracking"] = True
         _url_ctx["had_error"] = False
+        _url_ctx["url_error_detail"] = None
 
 
 def _ctx_mark_error():
@@ -249,12 +253,25 @@ def _ctx_mark_error():
             _url_ctx["had_error"] = True
 
 
-def _ctx_finish_url() -> bool:
+def _ctx_finish_url() -> tuple[bool, Optional[str]]:
     with _url_ctx_lock:
         had_error = bool(_url_ctx["had_error"])
+        detail = _url_ctx.get("url_error_detail")
         _url_ctx["tracking"] = False
         _url_ctx["had_error"] = False
-        return had_error
+        _url_ctx["url_error_detail"] = None
+        return had_error, detail if isinstance(detail, str) and detail else None
+
+
+def _note_streaming_blocked_release():
+    """Downloader hook: album metadata marks the release as not streamable on Qobuz."""
+    with _url_ctx_lock:
+        if _url_ctx["tracking"]:
+            _url_ctx["url_error_detail"] = "non_streamable"
+
+
+qobuz_dl.core.ui_emitter = _emit_event
+qobuz_dl.core.note_streaming_blocked_release = _note_streaming_blocked_release
 
 
 def _get_qobuz():
@@ -1816,13 +1833,16 @@ def api_download():
                 except Exception as e:
                     logging.error(f"Error downloading {url}: {e}")
                     _ctx_mark_error()
-                had_error = _ctx_finish_url()
+                had_error, url_err_detail = _ctx_finish_url()
                 # If the user cancelled mid-item, don't mark it done or errored | leave the
                 # card in its current state; dl_complete will clean up.
                 if _cancel_download.is_set():
                     break
                 if had_error:
-                    _emit_event({"type": "url_error", "url": url})
+                    ev_ue = {"type": "url_error", "url": url}
+                    if url_err_detail:
+                        ev_ue["detail"] = url_err_detail
+                    _emit_event(ev_ue)
                 else:
                     _emit_event({"type": "url_done", "url": url})
             if not _cancel_download.is_set():

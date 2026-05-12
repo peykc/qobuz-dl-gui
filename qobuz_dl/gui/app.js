@@ -4181,6 +4181,11 @@
     }
     // Info
     const info = card.querySelector(".queue-card-info");
+    if (!info) return;
+    /** Preserved across innerHTML rebuild — `_refreshAlbumQueueCardMetas` runs often and must not drop error UX. */
+    const preservedErrorBadges = Array.from(
+      info.querySelectorAll(".dl-error-badge"),
+    );
 
     // === Type badge ===
     const typeBadge = r.type
@@ -4254,6 +4259,7 @@
       </span>
       <span class="queue-card-bottom-row">${qualityHtml}${explicitIcon}${metaRow}</span>
     `;
+    preservedErrorBadges.forEach((badge) => info.appendChild(badge));
     if (window._updateQueueBadge) window._updateQueueBadge();
     const qEl = document.getElementById("dl-queue");
     if (qEl) {
@@ -4828,6 +4834,8 @@
       "Open album on Qobuz to purchase (full album required for these tracks)";
     const DL_TIP_NOT_STREAMABLE =
       "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted), open it on Qobuz to check.";
+    const DL_TIP_QUEUE_URL_ERROR_GENERIC =
+      "This queue item did not finish successfully. Check the activity log for details — causes include network errors, quality restrictions, or tracks that could not be downloaded.";
 
     function _findCardByUrl(url) {
       const cards = document.querySelectorAll("#dl-queue .queue-card");
@@ -5236,9 +5244,16 @@
               badge.className = "dl-error-badge dl-url-failed-badge";
               info.appendChild(badge);
             }
-            badge.textContent = "⚠ Issue";
-            badge.setAttribute("data-tip", DL_TIP_NOT_STREAMABLE);
-            badge.setAttribute("aria-label", DL_TIP_NOT_STREAMABLE);
+            const detail = String(ev.detail || "").trim();
+            const isNonStream = detail === "non_streamable";
+            const tip = isNonStream
+              ? DL_TIP_NOT_STREAMABLE
+              : DL_TIP_QUEUE_URL_ERROR_GENERIC;
+            badge.textContent = isNonStream
+              ? "⚠ Not streamable"
+              : "⚠ Download issue";
+            badge.setAttribute("data-tip", tip);
+            badge.setAttribute("aria-label", tip);
             badge.removeAttribute("title");
           }
         }
