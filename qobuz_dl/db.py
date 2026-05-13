@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from qobuz_dl.color import YELLOW, RED
+from qobuz_dl.config_paths import get_config_path, get_qobuz_db_path as _config_db_path
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +50,11 @@ def handle_download_id(db_path, item_id, add_id=False):
 
 def get_qobuz_config_dir() -> str:
     """Same directory as ``config.ini`` / ``qobuz_dl.db`` (mirrors gui_app / cli)."""
-    if os.name == "nt":
-        base = os.environ.get("APPDATA") or ""
-    else:
-        base = os.path.join(os.environ.get("HOME", ""), ".config")
-    return os.path.join(base, "qobuz-dl")
+    return get_config_path()
 
 
 def get_qobuz_db_path() -> str:
-    return os.path.join(get_qobuz_config_dir(), "qobuz_dl.db")
+    return _config_db_path()
 
 
 def _ensure_lrclib_by_audio_table(conn: sqlite3.Connection) -> None:

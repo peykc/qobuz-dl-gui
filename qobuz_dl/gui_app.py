@@ -22,19 +22,14 @@ from typing import Optional
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
-# ---------------------------------------------------------------------------
-# Paths (mirrors cli.py)
-# ---------------------------------------------------------------------------
-if os.name == "nt":
-    OS_CONFIG = os.environ.get("APPDATA")
-else:
-    OS_CONFIG = os.path.join(os.environ["HOME"], ".config")
-
-CONFIG_PATH = os.path.join(OS_CONFIG, "qobuz-dl")
-CONFIG_FILE = os.path.join(CONFIG_PATH, "config.ini")
-QOBUZ_DB = os.path.join(CONFIG_PATH, "qobuz_dl.db")
-DOWNLOAD_QUEUE_JSON = os.path.join(CONFIG_PATH, "download_queue.json")
-GUI_FEEDBACK_HISTORY_JSON = os.path.join(CONFIG_PATH, "gui_feedback_history.json")
+from qobuz_dl.config_defaults import apply_common_defaults
+from qobuz_dl.config_paths import (
+    CONFIG_FILE,
+    CONFIG_PATH,
+    DOWNLOAD_QUEUE_JSON,
+    GUI_FEEDBACK_HISTORY_JSON,
+    QOBUZ_DB,
+)
 
 
 def _gui_static_dir():
@@ -780,57 +775,12 @@ def api_setup():
         cfg["DEFAULT"]["password"] = hashlib.md5(password.encode("utf-8")).hexdigest()
         cfg["DEFAULT"]["default_folder"] = folder
         cfg["DEFAULT"]["default_quality"] = str(quality)
-        cfg["DEFAULT"]["default_limit"] = "20"
-        cfg["DEFAULT"]["no_m3u"] = "false"
-        cfg["DEFAULT"]["albums_only"] = "false"
-        cfg["DEFAULT"]["no_fallback"] = "false"
-        cfg["DEFAULT"]["og_cover"] = "false"
-        cfg["DEFAULT"]["embed_art"] = "false"
-        cfg["DEFAULT"]["lyrics_enabled"] = "false"
-        cfg["DEFAULT"]["lyrics_embed_metadata"] = "false"
-        cfg["DEFAULT"]["no_cover"] = "false"
-        cfg["DEFAULT"]["no_database"] = "true"
         cfg["DEFAULT"]["app_id"] = app_id
         cfg["DEFAULT"]["secrets"] = secrets
         cfg["DEFAULT"]["private_key"] = bundle.get_private_key() or ""
         cfg["DEFAULT"]["user_id"] = ""
         cfg["DEFAULT"]["user_auth_token"] = ""
-        cfg["DEFAULT"]["folder_format"] = "{artist}/{album}"
-        cfg["DEFAULT"]["track_format"] = "{tracknumber} - {tracktitle}"
-        cfg["DEFAULT"]["smart_discography"] = "false"
-        cfg["DEFAULT"]["fix_md5s"] = "false"
-        cfg["DEFAULT"]["multiple_disc_prefix"] = "Disc"
-        cfg["DEFAULT"]["multiple_disc_one_dir"] = "false"
-        cfg["DEFAULT"]["multiple_disc_track_format"] = (
-            "{disc_number_unpadded}{track_number} - {tracktitle}"
-        )
-        cfg["DEFAULT"]["max_workers"] = "1"
-        cfg["DEFAULT"]["delay_seconds"] = "0"
-        cfg["DEFAULT"]["segmented_fallback"] = "true"
-        cfg["DEFAULT"]["no_credits"] = "false"
-        cfg["DEFAULT"]["native_lang"] = "false"
-        for key in (
-            "no_album_artist_tag",
-            "no_album_title_tag",
-            "no_track_artist_tag",
-            "no_track_title_tag",
-            "no_release_date_tag",
-            "no_media_type_tag",
-            "no_genre_tag",
-            "no_track_number_tag",
-            "no_track_total_tag",
-            "no_disc_number_tag",
-            "no_disc_total_tag",
-            "no_composer_tag",
-            "no_explicit_tag",
-            "no_copyright_tag",
-            "no_label_tag",
-            "no_upc_tag",
-            "no_isrc_tag",
-        ):
-            cfg["DEFAULT"][key] = "false"
-        cfg["DEFAULT"]["tag_title_from_track_format"] = "true"
-        cfg["DEFAULT"]["tag_album_from_folder_format"] = "true"
+        apply_common_defaults(cfg["DEFAULT"], no_database="true")
 
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)

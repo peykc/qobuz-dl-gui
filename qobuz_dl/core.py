@@ -10,6 +10,7 @@ from pathvalidate import sanitize_filename
 from qobuz_dl import downloader, qopy
 from qobuz_dl.bundle import Bundle
 from qobuz_dl.color import CYAN, DF, OFF, RED, RESET, YELLOW
+from qobuz_dl.config_paths import CONFIG_FILE
 from qobuz_dl.db import create_db, handle_download_id
 from qobuz_dl.exceptions import NonStreamable
 from qobuz_dl.utils import (
@@ -20,12 +21,6 @@ from qobuz_dl.utils import (
     make_m3u,
     smart_discography_filter,
 )
-
-if os.name == "nt":
-    _OS_CONFIG = os.environ.get("APPDATA", "")
-else:
-    _OS_CONFIG = os.path.join(os.environ.get("HOME", ""), ".config")
-CONFIG_FILE = os.path.join(_OS_CONFIG, "qobuz-dl", "config.ini")
 
 WEB_URL = "https://play.qobuz.com/"
 ARTISTS_SELECTOR = "td.chartlist-artist > a"

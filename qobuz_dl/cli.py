@@ -8,27 +8,14 @@ import sys
 from qobuz_dl.bundle import Bundle
 from qobuz_dl.color import GREEN, RED, YELLOW
 from qobuz_dl.commands import qobuz_dl_args
+from qobuz_dl.config_defaults import apply_common_defaults
+from qobuz_dl.config_paths import CONFIG_FILE, CONFIG_PATH, QOBUZ_DB
 from qobuz_dl.core import QobuzDL
-from qobuz_dl.downloader import (
-    DEFAULT_FOLDER,
-    DEFAULT_MULTIPLE_DISC_TRACK,
-    DEFAULT_TRACK,
-)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
 )
-
-if os.name == "nt":
-    OS_CONFIG = os.environ.get("APPDATA")
-else:
-    OS_CONFIG = os.path.join(os.environ["HOME"], ".config")
-
-CONFIG_PATH = os.path.join(OS_CONFIG, "qobuz-dl")
-CONFIG_FILE = os.path.join(CONFIG_PATH, "config.ini")
-QOBUZ_DB = os.path.join(CONFIG_PATH, "qobuz_dl.db")
-
 
 def _reset_config(config_file):
     logging.info(f"{YELLOW}Creating config file: {config_file}")
@@ -48,54 +35,11 @@ def _reset_config(config_file):
         )
         or "6"
     )
-    config["DEFAULT"]["default_limit"] = "20"
-    config["DEFAULT"]["no_m3u"] = "false"
-    config["DEFAULT"]["albums_only"] = "false"
-    config["DEFAULT"]["no_fallback"] = "false"
-    config["DEFAULT"]["og_cover"] = "false"
-    config["DEFAULT"]["embed_art"] = "false"
-    config["DEFAULT"]["lyrics_enabled"] = "false"
-    config["DEFAULT"]["lyrics_embed_metadata"] = "false"
-    config["DEFAULT"]["no_cover"] = "false"
-    config["DEFAULT"]["no_database"] = "false"
     logging.info(f"{YELLOW}Getting tokens. Please wait...")
     bundle = Bundle()
     config["DEFAULT"]["app_id"] = str(bundle.get_app_id())
     config["DEFAULT"]["secrets"] = ",".join(bundle.get_secrets().values())
-    config["DEFAULT"]["folder_format"] = DEFAULT_FOLDER
-    config["DEFAULT"]["track_format"] = DEFAULT_TRACK
-    config["DEFAULT"]["smart_discography"] = "false"
-    config["DEFAULT"]["fix_md5s"] = "false"
-    config["DEFAULT"]["multiple_disc_prefix"] = "Disc"
-    config["DEFAULT"]["multiple_disc_one_dir"] = "false"
-    config["DEFAULT"]["multiple_disc_track_format"] = DEFAULT_MULTIPLE_DISC_TRACK
-    config["DEFAULT"]["max_workers"] = "1"
-    config["DEFAULT"]["delay_seconds"] = "0"
-    config["DEFAULT"]["segmented_fallback"] = "true"
-    config["DEFAULT"]["no_credits"] = "false"
-    config["DEFAULT"]["native_lang"] = "false"
-    for key in (
-        "no_album_artist_tag",
-        "no_album_title_tag",
-        "no_track_artist_tag",
-        "no_track_title_tag",
-        "no_release_date_tag",
-        "no_media_type_tag",
-        "no_genre_tag",
-        "no_track_number_tag",
-        "no_track_total_tag",
-        "no_disc_number_tag",
-        "no_disc_total_tag",
-        "no_composer_tag",
-        "no_explicit_tag",
-        "no_copyright_tag",
-        "no_label_tag",
-        "no_upc_tag",
-        "no_isrc_tag",
-    ):
-        config["DEFAULT"][key] = "false"
-    config["DEFAULT"]["tag_title_from_track_format"] = "true"
-    config["DEFAULT"]["tag_album_from_folder_format"] = "true"
+    apply_common_defaults(config["DEFAULT"], no_database="false")
     with open(config_file, "w") as configfile:
         config.write(configfile)
     logging.info(

@@ -5,3 +5,4 @@ dist/
 *.egg-info/
 gui-dev/node_modules/
 gui-dev/dist/
+SMOKE_TEST_NOTES.md
