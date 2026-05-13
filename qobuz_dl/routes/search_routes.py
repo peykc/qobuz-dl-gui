@@ -239,3 +239,90 @@ def register_search_routes(app, *, get_qobuz) -> None:
         except Exception as e:
             logging.error("Search error: %s", e)
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/check_discography", methods=["POST"])
+    def api_check_discography():
+        qobuz = get_qobuz()
+        if not qobuz or not qobuz.client:
+            return jsonify({"ok": False, "error": "Not connected."}), 400
+
+        data = request.json or {}
+        url = data.get("url", "")
+        try:
+            from qobuz_dl.core import get_url_info
+            from qobuz_dl.utils import smart_discography_filter
+
+            url_type, item_id = get_url_info(url)
+            if url_type != "artist":
+                return jsonify({"ok": False, "error": "URL is not an artist"}), 400
+
+            content = list(qobuz.client.get_artist_meta(item_id))
+            all_albums_raw = []
+            raw_albums = 0
+            raw_tracks = 0
+            for item in content:
+                albums_chunk = item.get("albums", {}).get("items", [])
+                all_albums_raw.extend(albums_chunk)
+                raw_albums += len(albums_chunk)
+                for album in albums_chunk:
+                    raw_tracks += album.get("tracks_count", 0)
+
+            if all_albums_raw:
+                print(
+                    f"ALBUM DUMP [{all_albums_raw[0].get('title')}]: "
+                    f"{all_albums_raw[0]}",
+                    flush=True,
+                )
+
+            def calc_stats(album_list):
+                return len(album_list), sum(
+                    a.get("tracks_count", 0) for a in album_list
+                )
+
+            sd_items = smart_discography_filter(
+                content,
+                save_space=True,
+                skip_extras=True,
+            )
+            sd_albums, sd_tracks = calc_stats(sd_items)
+
+            ao_items = [
+                a
+                for a in all_albums_raw
+                if a.get("release_type") == "album"
+                and a.get("artist", {}).get("name") != "Various Artists"
+            ]
+            ao_albums, ao_tracks = calc_stats(ao_items)
+
+            both_items = [
+                a
+                for a in sd_items
+                if a.get("release_type") == "album"
+                and a.get("artist", {}).get("name") != "Various Artists"
+            ]
+            both_albums, both_tracks = calc_stats(both_items)
+
+            return jsonify(
+                {
+                    "ok": True,
+                    "result": {
+                        "raw_albums": raw_albums,
+                        "raw_tracks": raw_tracks,
+                        "sd_filtered_albums": sd_albums,
+                        "sd_filtered_tracks": sd_tracks,
+                        "ao_filtered_albums": ao_albums,
+                        "ao_filtered_tracks": ao_tracks,
+                        "both_filtered_albums": both_albums,
+                        "both_filtered_tracks": both_tracks,
+                        "diff_sd": raw_albums - sd_albums,
+                        "diff_ao": raw_albums - ao_albums,
+                        "diff_both": raw_albums - both_albums,
+                    },
+                }
+            )
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            logging.error("check_discography failed: %s", e)
+            return jsonify({"ok": False, "error": str(e)}), 500

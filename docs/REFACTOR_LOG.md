@@ -95,3 +95,25 @@ Commit: pending
 - Endpoint paths and response shapes were preserved.
 - No UI behavior or copy was changed.
 - No `qobuz_dl/downloader.py` internals were changed.
+
+## Checkpoint 5 - Discography Check Route Move
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Moved `/api/check_discography` from `qobuz_dl/gui_app.py` into `qobuz_dl/routes/search_routes.py`.
+- Kept the existing artist discography count response shape unchanged.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/gui_app.py qobuz_dl/routes/search_routes.py` passed.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- Endpoint paths and response shapes were preserved.
+- No UI behavior or copy was changed.
+- No download semantics were changed.
