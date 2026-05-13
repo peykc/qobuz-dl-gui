@@ -29,6 +29,7 @@ from qobuz_dl.config_paths import (
     QOBUZ_DB,
 )
 from qobuz_dl.routes.config_routes import register_config_routes
+from qobuz_dl.routes.download_routes import register_download_routes
 from qobuz_dl.routes.feedback_routes import register_feedback_routes
 from qobuz_dl.routes.history_routes import register_history_routes
 from qobuz_dl.routes.lyrics_routes import register_lyrics_routes
@@ -92,6 +93,7 @@ _abort_byte_streams = (
 )  # cancel-only — interrupt FLAC/cover HTTP chunks (pause lets bytes finish)
 _download_active = False  # True while a download thread is running
 _graceful_dl_stop: Optional[str] = None  # "pause" | "cancel" while stop requested; unset at run start/end
+_download_state = {"download_active": False, "graceful_stop": None}
 _url_ctx_lock = threading.Lock()
 _url_ctx = {
     "tracking": False,
@@ -609,180 +611,6 @@ register_search_routes(app, get_qobuz=_get_qobuz)
 # ---------------------------------------------------------------------------
 # API: download (background thread)
 # ---------------------------------------------------------------------------
-@app.route("/api/download", methods=["POST"])
-def api_download():
-    global _download_active
-    qobuz = _get_qobuz()
-    if not qobuz:
-        return jsonify(
-            {"ok": False, "error": "Not connected. Please set up or connect first."}
-        ), 400
-    if _download_active:
-        return jsonify({"ok": False, "error": "A download is already running."}), 400
-
-    data = request.json or {}
-    raw_urls = data.get("urls", "")
-    urls = [u.strip() for u in raw_urls.splitlines() if u.strip()]
-    if not urls:
-        return jsonify({"ok": False, "error": "No URLs provided"}), 400
-
-    overrides = {
-        "quality": data.get("quality"),
-        "directory": data.get("directory"),
-        "embed_art": data.get("embed_art", False),
-        "lyrics_enabled": data.get("lyrics_enabled", False),
-        "lyrics_embed_metadata": data.get("lyrics_embed_metadata", False),
-        "albums_only": data.get("albums_only", False),
-        "no_m3u": data.get("no_m3u", False),
-        "no_fallback": data.get("no_fallback", False),
-        "og_cover": data.get("og_cover", False),
-        "no_cover": data.get("no_cover", False),
-        "no_db": data.get("no_db", False),
-        "smart_discography": data.get("smart_discography", False),
-        "folder_format": data.get("folder_format"),
-        "track_format": data.get("track_format"),
-        "fix_md5s": data.get("fix_md5s", False),
-        "multiple_disc_prefix": data.get("multiple_disc_prefix"),
-        "multiple_disc_one_dir": data.get("multiple_disc_one_dir", False),
-        "multiple_disc_track_format": data.get("multiple_disc_track_format"),
-        "max_workers": data.get("max_workers"),
-        "delay_seconds": data.get("delay_seconds"),
-        "segmented_fallback": data.get("segmented_fallback", True),
-        "no_credits": data.get("no_credits", False),
-        "native_lang": data.get("native_lang", False),
-        "no_album_artist_tag": data.get("no_album_artist_tag", False),
-        "no_album_title_tag": data.get("no_album_title_tag", False),
-        "no_track_artist_tag": data.get("no_track_artist_tag", False),
-        "no_track_title_tag": data.get("no_track_title_tag", False),
-        "no_release_date_tag": data.get("no_release_date_tag", False),
-        "no_media_type_tag": data.get("no_media_type_tag", False),
-        "no_genre_tag": data.get("no_genre_tag", False),
-        "no_track_number_tag": data.get("no_track_number_tag", False),
-        "no_track_total_tag": data.get("no_track_total_tag", False),
-        "no_disc_number_tag": data.get("no_disc_number_tag", False),
-        "no_disc_total_tag": data.get("no_disc_total_tag", False),
-        "no_composer_tag": data.get("no_composer_tag", False),
-        "no_explicit_tag": data.get("no_explicit_tag", False),
-        "no_copyright_tag": data.get("no_copyright_tag", False),
-        "no_label_tag": data.get("no_label_tag", False),
-        "no_upc_tag": data.get("no_upc_tag", False),
-        "no_isrc_tag": data.get("no_isrc_tag", False),
-        "tag_title_from_track_format": data.get(
-            "tag_title_from_track_format", True
-        ),
-        "tag_album_from_folder_format": data.get(
-            "tag_album_from_folder_format", True
-        ),
-    }
-
-    def run():
-        global _download_active, _graceful_dl_stop
-        _download_active = True
-        _cancel_download.clear()
-        _abort_byte_streams.clear()
-        _graceful_dl_stop = None
-        cfg = configparser.ConfigParser()
-        cfg.read(CONFIG_FILE)
-        try:
-            _update_session_download_root(cfg, overrides)
-            tmp = _build_qobuz_from_config(cfg, overrides)
-            with _client_lock:
-                tmp.client = qobuz.client
-            tmp.client.set_language_headers(tmp.native_lang)
-            print(f"DEBUG: Worker thread starting. cancel_event id={id(_cancel_download)}")
-            tmp.cancel_event = _cancel_download
-            tmp.abort_stream_event = _abort_byte_streams
-            logging.info(f"Starting download of {len(urls)} URL(s)…")
-            for url in urls:
-                if _cancel_download.is_set():
-                    logging.info("Download cancelled by user.")
-                    break
-                _emit_event({"type": "url_start", "url": url})
-                _ctx_start_url()
-                try:
-                    tmp.handle_url(url)
-                except Exception as e:
-                    logging.error(f"Error downloading {url}: {e}")
-                    _ctx_mark_error()
-                had_error, url_err_detail = _ctx_finish_url()
-                # If the user cancelled mid-item, don't mark it done or errored | leave the
-                # card in its current state; dl_complete will clean up.
-                if _cancel_download.is_set():
-                    break
-                if had_error:
-                    ev_ue = {"type": "url_error", "url": url}
-                    if url_err_detail:
-                        ev_ue["detail"] = url_err_detail
-                    _emit_event(ev_ue)
-                else:
-                    _emit_event({"type": "url_done", "url": url})
-            if not _cancel_download.is_set():
-                logging.info("All downloads complete.")
-        except Exception as e:
-            logging.error(f"Download error: {e}")
-        finally:
-            was_stop = _cancel_download.is_set()
-            mode = _graceful_dl_stop
-            paused = was_stop and mode == "pause"
-            cancelled = was_stop and mode != "pause"
-            _emit_event(
-                {
-                    "type": "dl_complete",
-                    "cancelled": cancelled,
-                    "paused": paused,
-                }
-            )
-            _graceful_dl_stop = None
-            _download_active = False
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    return jsonify({"ok": True, "queued": len(urls)})
-
-
-# ---------------------------------------------------------------------------
-# API: cancel download
-# ---------------------------------------------------------------------------
-@app.route("/api/cancel", methods=["POST"])
-def api_cancel():
-    global _graceful_dl_stop
-    if _download_active:
-        print(f"DEBUG: api_cancel hit. setting id={id(_cancel_download)}")
-        sys.stdout.flush()
-        _graceful_dl_stop = "cancel"
-        _cancel_download.set()
-        _abort_byte_streams.set()
-        logging.info("Cancelling | current item will finish then stop…")
-        
-        def purge():
-            _event_hub.drain_queues()
-        
-        # Immediate purge
-        purge()
-        
-        # Second purge after a small delay to catch any lingering logs from the worker thread
-        def delayed_purge():
-            time.sleep(0.5)
-            purge()
-
-        threading.Thread(target=delayed_purge, daemon=True).start()
-
-    return jsonify({"ok": True})
-
-
-# ---------------------------------------------------------------------------
-# API: pause download (graceful stop like cancel — tracks on disk kept; resume = Start again)
-# ---------------------------------------------------------------------------
-@app.route("/api/pause", methods=["POST"])
-def api_pause():
-    global _graceful_dl_stop
-    if _download_active:
-        _graceful_dl_stop = "pause"
-        _cancel_download.set()
-        logging.info("Pause requested | in-flight downloads will finish then worker stops.")
-    return jsonify({"ok": True})
-
-
 def _config_download_root_resolved() -> Path:
     folder = "Qobuz Downloads"
     if os.path.isfile(CONFIG_FILE):
@@ -902,43 +730,22 @@ register_lyrics_routes(
 )
 
 
-# ---------------------------------------------------------------------------
-# API: lucky download
-# ---------------------------------------------------------------------------
-@app.route("/api/lucky", methods=["POST"])
-def api_lucky():
-    qobuz = _get_qobuz()
-    if not qobuz:
-        return jsonify({"ok": False, "error": "Not connected"}), 400
-
-    data = request.json or {}
-    query = data.get("query", "").strip()
-    lucky_type = data.get("type", "album")
-    number = int(data.get("number", 1))
-
-    if len(query) < 3:
-        return jsonify({"ok": False, "error": "Query too short"}), 400
-
-    def run():
-        try:
-            cfg = configparser.ConfigParser()
-            cfg.read(CONFIG_FILE)
-            tmp = _build_qobuz_from_config(cfg)
-            with _client_lock:
-                tmp.client = qobuz.client
-            tmp.cancel_event = _cancel_download
-            tmp.abort_stream_event = _abort_byte_streams
-            tmp.lucky_type = lucky_type
-            tmp.lucky_limit = number
-            logging.info(f'Lucky download: "{query}" ({lucky_type}, top {number})')
-            tmp.lucky_mode(query)
-            logging.info("Lucky download complete.")
-        except Exception as e:
-            logging.error(f"Lucky error: {e}")
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    return jsonify({"ok": True})
+register_download_routes(
+    app,
+    get_qobuz=_get_qobuz,
+    config_file=lambda: CONFIG_FILE,
+    build_qobuz_from_config=_build_qobuz_from_config,
+    client_lock=_client_lock,
+    cancel_event=_cancel_download,
+    abort_stream_event=_abort_byte_streams,
+    state=_download_state,
+    event_hub=_event_hub,
+    update_session_download_root=_update_session_download_root,
+    emit_event=_emit_event,
+    ctx_start_url=_ctx_start_url,
+    ctx_mark_error=_ctx_mark_error,
+    ctx_finish_url=_ctx_finish_url,
+)
 
 
 def _pick_free_port() -> int:

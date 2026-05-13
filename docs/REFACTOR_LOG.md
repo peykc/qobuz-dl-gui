@@ -117,3 +117,26 @@ Commit: pending
 - Endpoint paths and response shapes were preserved.
 - No UI behavior or copy was changed.
 - No download semantics were changed.
+
+## Checkpoint 6 - Download Control Route Move
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/routes/download_routes.py`.
+- Moved `/api/download`, `/api/cancel`, `/api/pause`, and `/api/lucky` out of `qobuz_dl/gui_app.py`.
+- Passed download state, events, config helpers, and URL context hooks into the route module explicitly.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/gui_app.py qobuz_dl/routes/download_routes.py` passed.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- Endpoint paths and response shapes were preserved.
+- No UI behavior or copy was changed.
+- No `qobuz_dl/downloader.py` internals were changed.
