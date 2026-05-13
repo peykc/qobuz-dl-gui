@@ -7,7 +7,6 @@ import configparser
 import hashlib
 import json
 import logging
-import shutil
 import threading
 import time
 import socket
@@ -30,7 +29,9 @@ from qobuz_dl.config_paths import (
     GUI_FEEDBACK_HISTORY_JSON,
     QOBUZ_DB,
 )
+from qobuz_dl.routes.config_routes import register_config_routes
 from qobuz_dl.routes.queue_routes import register_queue_routes
+from qobuz_dl.routes.status_routes import register_status_routes
 from qobuz_dl.services.qobuz_session import (
     as_bool as _as_bool,
     as_int as _as_int,
@@ -153,122 +154,11 @@ def gui_static(filename):
     return send_from_directory(GUI_DIR, filename)
 
 
-# ---------------------------------------------------------------------------
-# API: status
-# ---------------------------------------------------------------------------
-@app.route("/api/status")
-def api_status():
-    has_config = os.path.isfile(CONFIG_FILE)
-    ready = _qobuz_client is not None
-    config_data = {}
-    if has_config:
-        cfg = configparser.ConfigParser()
-        cfg.read(CONFIG_FILE)
-        try:
-            config_data = {
-                "email": cfg["DEFAULT"].get("email", ""),
-                "default_folder": cfg["DEFAULT"].get(
-                    "default_folder", "Qobuz Downloads"
-                ),
-                "default_quality": cfg["DEFAULT"].get("default_quality", "27"),
-                "no_m3u": cfg["DEFAULT"].get("no_m3u", "false"),
-                "albums_only": cfg["DEFAULT"].get("albums_only", "false"),
-                "no_fallback": cfg["DEFAULT"].get("no_fallback", "false"),
-                "og_cover": cfg["DEFAULT"].get("og_cover", "false"),
-                "embed_art": cfg["DEFAULT"].get("embed_art", "false"),
-                "no_cover": cfg["DEFAULT"].get("no_cover", "false"),
-                "lyrics_enabled": cfg["DEFAULT"].get("lyrics_enabled", "false"),
-                "lyrics_embed_metadata": cfg["DEFAULT"].get("lyrics_embed_metadata", "false"),
-                "no_database": cfg["DEFAULT"].get("no_database", "false"),
-                "smart_discography": cfg["DEFAULT"].get("smart_discography", "false"),
-                "fix_md5s": cfg["DEFAULT"].get("fix_md5s", "false"),
-                "multiple_disc_prefix": cfg["DEFAULT"].get(
-                    "multiple_disc_prefix", "Disc"
-                ),
-                "multiple_disc_one_dir": cfg["DEFAULT"].get(
-                    "multiple_disc_one_dir", "false"
-                ),
-                "multiple_disc_track_format": cfg["DEFAULT"].get(
-                    "multiple_disc_track_format",
-                    "{disc_number_unpadded}{track_number} - {tracktitle}",
-                ),
-                "max_workers": cfg["DEFAULT"].get("max_workers", "1"),
-                "delay_seconds": cfg["DEFAULT"].get("delay_seconds", "0"),
-                "segmented_fallback": cfg["DEFAULT"].get(
-                    "segmented_fallback", "true"
-                ),
-                "no_credits": cfg["DEFAULT"].get("no_credits", "false"),
-                "native_lang": cfg["DEFAULT"].get("native_lang", "false"),
-                "folder_format": cfg["DEFAULT"].get(
-                    "folder_format",
-                    "{artist}/{album}",
-                ),
-                "track_format": cfg["DEFAULT"].get(
-                    "track_format", "{tracknumber} - {tracktitle}"
-                ),
-                "no_album_artist_tag": cfg["DEFAULT"].get(
-                    "no_album_artist_tag", "false"
-                ),
-                "no_album_title_tag": cfg["DEFAULT"].get(
-                    "no_album_title_tag", "false"
-                ),
-                "no_track_artist_tag": cfg["DEFAULT"].get(
-                    "no_track_artist_tag", "false"
-                ),
-                "no_track_title_tag": cfg["DEFAULT"].get(
-                    "no_track_title_tag", "false"
-                ),
-                "no_release_date_tag": cfg["DEFAULT"].get(
-                    "no_release_date_tag", "false"
-                ),
-                "no_media_type_tag": cfg["DEFAULT"].get(
-                    "no_media_type_tag", "false"
-                ),
-                "no_genre_tag": cfg["DEFAULT"].get("no_genre_tag", "false"),
-                "no_track_number_tag": cfg["DEFAULT"].get(
-                    "no_track_number_tag", "false"
-                ),
-                "no_track_total_tag": cfg["DEFAULT"].get(
-                    "no_track_total_tag", "false"
-                ),
-                "no_disc_number_tag": cfg["DEFAULT"].get(
-                    "no_disc_number_tag", "false"
-                ),
-                "no_disc_total_tag": cfg["DEFAULT"].get(
-                    "no_disc_total_tag", "false"
-                ),
-                "no_composer_tag": cfg["DEFAULT"].get("no_composer_tag", "false"),
-                "no_explicit_tag": cfg["DEFAULT"].get("no_explicit_tag", "false"),
-                "no_copyright_tag": cfg["DEFAULT"].get(
-                    "no_copyright_tag", "false"
-                ),
-                "no_label_tag": cfg["DEFAULT"].get("no_label_tag", "false"),
-                "no_upc_tag": cfg["DEFAULT"].get("no_upc_tag", "false"),
-                "no_isrc_tag": cfg["DEFAULT"].get("no_isrc_tag", "false"),
-                "tag_title_from_track_format": cfg["DEFAULT"].get(
-                    "tag_title_from_track_format", "true"
-                ),
-                "tag_album_from_folder_format": cfg["DEFAULT"].get(
-                    "tag_album_from_folder_format", "true"
-                ),
-            }
-        except Exception:
-            pass
-    from qobuz_dl.version import __version__ as app_ver
-
-    return jsonify(
-        {
-            "has_config": has_config,
-            "ready": ready,
-            "config": config_data,
-            "app_version": app_ver,
-            "frozen": getattr(sys, "frozen", False),
-            "capabilities": {
-                "flac_cli": bool(shutil.which("flac")),
-                "ffmpeg_cli": bool(shutil.which("ffmpeg")),
-            },
-        }
-    )
+register_status_routes(
+    app,
+    config_file=lambda: CONFIG_FILE,
+    ready=lambda: _qobuz_client is not None,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -813,45 +703,11 @@ def api_browse_folder():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ---------------------------------------------------------------------------
-# API: config GET/POST
-# ---------------------------------------------------------------------------
-@app.route("/api/config", methods=["GET", "POST"])
-def api_config():
-    if not os.path.isfile(CONFIG_FILE):
-        return jsonify({"ok": False, "error": "No config file"}), 400
-
-    cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_FILE)
-
-    if request.method == "GET":
-        return jsonify(
-            {
-                "ok": True,
-                "config": {
-                    k: v
-                    for k, v in cfg["DEFAULT"].items()
-                    if k != "genius_token"
-                },
-            }
-        )
-
-    data = request.json or {}
-    data.pop("genius_token", None)
-    for key, val in data.items():
-        if key == "new_password":
-            if val:
-                cfg["DEFAULT"]["password"] = hashlib.md5(
-                    val.encode("utf-8")
-                ).hexdigest()
-        else:
-            cfg["DEFAULT"][key] = str(val)
-    if cfg.has_option("DEFAULT", "genius_token"):
-        cfg.remove_option("DEFAULT", "genius_token")
-    with open(CONFIG_FILE, "w") as f:
-        cfg.write(f)
-    _update_session_download_root(cfg)
-    return jsonify({"ok": True})
+register_config_routes(
+    app,
+    config_file=lambda: CONFIG_FILE,
+    on_config_updated=lambda cfg: _update_session_download_root(cfg),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1666,7 +1522,11 @@ def api_reveal_in_folder():
 # ---------------------------------------------------------------------------
 # API: download URL queue (persisted across GUI restarts)
 # ---------------------------------------------------------------------------
-register_queue_routes(app, config_path=CONFIG_PATH, queue_json=DOWNLOAD_QUEUE_JSON)
+register_queue_routes(
+    app,
+    config_path=lambda: CONFIG_PATH,
+    queue_json=lambda: DOWNLOAD_QUEUE_JSON,
+)
 
 
 # ---------------------------------------------------------------------------

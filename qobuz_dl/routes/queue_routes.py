@@ -10,13 +10,19 @@ from qobuz_dl.services.queue_service import (
 )
 
 
+def _resolve(value):
+    return value() if callable(value) else value
+
+
 def register_queue_routes(app, *, config_path: str, queue_json: str) -> None:
     @app.route("/api/download-queue", methods=["GET", "POST"])
     def api_download_queue():
-        os.makedirs(config_path, exist_ok=True)
+        config_path_value = _resolve(config_path)
+        queue_json_value = _resolve(queue_json)
+        os.makedirs(config_path_value, exist_ok=True)
         if request.method == "GET":
             try:
-                return jsonify(load_download_queue(queue_json))
+                return jsonify(load_download_queue(queue_json_value))
             except Exception as e:
                 logging.warning("download-queue load: %s", e)
                 return jsonify(load_download_queue(""))
@@ -30,7 +36,7 @@ def register_queue_routes(app, *, config_path: str, queue_json: str) -> None:
             return jsonify({"ok": False, "error": str(e)}), 400
 
         try:
-            save_download_queue(queue_json, out_doc)
+            save_download_queue(queue_json_value, out_doc)
         except Exception as e:
             logging.error("download-queue save: %s", e)
             return jsonify({"ok": False, "error": str(e)}), 500
