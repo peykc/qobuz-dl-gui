@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 
 import configparser
-import hashlib
 import logging
 import threading
 import time
@@ -13,14 +12,13 @@ import webbrowser
 
 from typing import Optional
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, send_from_directory
 
 from qobuz_dl.app.events import GuiEventHub, GuiQueueHandler
 from qobuz_dl.app.path_security import (
     audio_path_allowed_for_lyrics_attach as _path_allowed_for_lyrics_attach,
     reveal_file_in_os as _reveal_file_in_os,
 )
-from qobuz_dl.config_defaults import apply_common_defaults
 from qobuz_dl.config_paths import (
     CONFIG_FILE,
     CONFIG_PATH,
@@ -28,6 +26,7 @@ from qobuz_dl.config_paths import (
     GUI_FEEDBACK_HISTORY_JSON,
     QOBUZ_DB,
 )
+from qobuz_dl.routes.auth_routes import register_auth_routes
 from qobuz_dl.routes.config_routes import register_config_routes
 from qobuz_dl.routes.download_routes import register_download_routes
 from qobuz_dl.routes.feedback_routes import register_feedback_routes
@@ -147,6 +146,11 @@ def _get_qobuz():
     return _qobuz_client
 
 
+def _set_qobuz(qobuz):
+    global _qobuz_client
+    _qobuz_client = qobuz
+
+
 # ---------------------------------------------------------------------------
 # Static frontend
 # ---------------------------------------------------------------------------
@@ -180,422 +184,13 @@ register_feedback_routes(
 register_update_routes(app, config_path=lambda: CONFIG_PATH)
 
 
-# ---------------------------------------------------------------------------
-# API: setup (save config + initialise client)
-# ---------------------------------------------------------------------------
-@app.route("/api/setup", methods=["POST"])
-def api_setup():
-    global _qobuz_client
-    data = request.json or {}
-    email = data.get("email", "").strip()
-    password = data.get("password", "").strip()
-    folder = data.get("default_folder", "Qobuz Downloads").strip() or "Qobuz Downloads"
-    quality = data.get("default_quality", "27")
-
-    if not email or not password:
-        return jsonify({"ok": False, "error": "Email and password are required"}), 400
-
-    try:
-        from qobuz_dl.bundle import Bundle
-
-        logging.info("Fetching Qobuz tokens, please wait…")
-        bundle = Bundle()
-        app_id = str(bundle.get_app_id())
-        secrets = ",".join(bundle.get_secrets().values())
-
-        os.makedirs(CONFIG_PATH, exist_ok=True)
-        cfg = configparser.ConfigParser()
-        cfg["DEFAULT"]["email"] = email
-        cfg["DEFAULT"]["password"] = hashlib.md5(password.encode("utf-8")).hexdigest()
-        cfg["DEFAULT"]["default_folder"] = folder
-        cfg["DEFAULT"]["default_quality"] = str(quality)
-        cfg["DEFAULT"]["app_id"] = app_id
-        cfg["DEFAULT"]["secrets"] = secrets
-        cfg["DEFAULT"]["private_key"] = bundle.get_private_key() or ""
-        cfg["DEFAULT"]["user_id"] = ""
-        cfg["DEFAULT"]["user_auth_token"] = ""
-        apply_common_defaults(cfg["DEFAULT"], no_database="true")
-
-        with open(CONFIG_FILE, "w") as f:
-            cfg.write(f)
-
-        # Initialise client
-        from qobuz_dl.core import QobuzDL
-
-        qobuz = _build_qobuz_from_config(cfg)
-        secrets_list = [s for s in secrets.split(",") if s]
-        qobuz.initialize_client(email, cfg["DEFAULT"]["password"], app_id, secrets_list)
-
-        with _client_lock:
-            _qobuz_client = qobuz
-
-        logging.info("Login successful.")
-        return jsonify({"ok": True})
-    except Exception as e:
-        logging.error(f"Setup failed: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# API: connect (load existing config + init client)
-# ---------------------------------------------------------------------------
-@app.route("/api/connect", methods=["POST"])
-def api_connect():
-    global _qobuz_client
-    if not os.path.isfile(CONFIG_FILE):
-        return jsonify(
-            {"ok": False, "error": "No config file found. Please set up first."}
-        ), 400
-    try:
-        cfg = configparser.ConfigParser()
-        cfg.read(CONFIG_FILE)
-        app_id = cfg["DEFAULT"].get("app_id", "")
-        secrets_list = [s for s in cfg["DEFAULT"].get("secrets", "").split(",") if s]
-        user_id = cfg["DEFAULT"].get("user_id", "").strip()
-        user_auth_token = cfg["DEFAULT"].get("user_auth_token", "").strip()
-        email = cfg["DEFAULT"].get("email", "").strip()
-        password = cfg["DEFAULT"].get("password", "").strip()
-
-        qobuz = _build_qobuz_from_config(cfg)
-
-        if user_id and user_auth_token:
-            qobuz.initialize_client_with_token(
-                user_id, user_auth_token, app_id, secrets_list
-            )
-        elif email and password:
-            qobuz.initialize_client(email, password, app_id, secrets_list)
-        else:
-            return jsonify(
-                {
-                    "ok": False,
-                    "error": "No valid credentials in config. Use OAuth or set up with email/password.",
-                }
-            ), 400
-
-        with _client_lock:
-            _qobuz_client = qobuz
-
-        logging.info("Connected successfully.")
-        return jsonify({"ok": True})
-    except Exception as e:
-        logging.error(f"Connect failed: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# API: OAuth login (opens browser, waits for redirect)
-# ---------------------------------------------------------------------------
-@app.route("/api/oauth/start", methods=["POST"])
-def api_oauth_start():
-    """Kick off the OAuth flow in a background thread; returns the URL immediately."""
-    global _qobuz_client
-    import socket
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    from urllib.parse import parse_qs, urlparse
-
-    try:
-        from qobuz_dl.bundle import Bundle
-        from qobuz_dl.core import QobuzDL
-
-        bundle = Bundle()
-        app_id = str(bundle.get_app_id())
-        secrets_list = [s for s in bundle.get_secrets().values() if s]
-        private_key = bundle.get_private_key() or ""
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            port = s.getsockname()[1]
-
-        # Use 127.0.0.1 (not localhost) so the browser hits the IPv4 listener on Windows
-        # where localhost may resolve to ::1 first.
-        oauth_url = (
-            f"https://www.qobuz.com/signin/oauth"
-            f"?ext_app_id={app_id}"
-            f"&redirect_url=http://127.0.0.1:{port}"
-        )
-
-        # Store state for the callback thread to use
-        _oauth_state = {
-            "app_id": app_id,
-            "secrets": secrets_list,
-            "private_key": private_key,
-            "port": port,
-            "done": False,
-            "error": None,
-        }
-
-        class OAuthHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                parsed = urlparse(self.path)
-                params = parse_qs(parsed.query)
-                code = params.get("code", [params.get("code_autorisation", [""])[0]])[0]
-                if code:
-                    OAuthHandler.code = code
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/html")
-                    self.end_headers()
-                    self.wfile.write(
-                        b"<html><body style='font-family:system-ui;text-align:center;padding:60px;background:#0d0d0d;color:#f0f0f0'><h2 style='color:#6ee7f7'>Login successful!</h2><p>You may close this tab and return to Qobuz-DL.</p></body></html>"
-                    )
-                else:
-                    OAuthHandler.code = None
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"<html><body><h2>Login failed</h2></body></html>")
-
-            def log_message(self, format, *args):
-                pass
-
-        OAuthHandler.code = None
-
-        def _run_oauth():
-            global _qobuz_client
-            try:
-                server = HTTPServer(("127.0.0.1", port), OAuthHandler)
-                logging.info(f"OAuth: waiting for browser redirect on port {port}…")
-                server.handle_request()
-                server.server_close()
-
-                if not OAuthHandler.code:
-                    logging.error("OAuth: no code received.")
-                    return
-
-                cfg_read = configparser.ConfigParser()
-                cfg_read.read(CONFIG_FILE)
-
-                qobuz = _build_qobuz_from_config(cfg_read)
-                qobuz.app_id = app_id
-                qobuz.secrets = secrets_list
-                qobuz.private_key = private_key
-                qobuz.initialize_client_with_oauth(
-                    OAuthHandler.code, app_id, secrets_list, private_key
-                )
-
-                # Persist token to config
-                os.makedirs(CONFIG_PATH, exist_ok=True)
-                cfg_write = configparser.ConfigParser()
-                cfg_write.read(CONFIG_FILE)
-                cfg_write["DEFAULT"]["app_id"] = app_id
-                cfg_write["DEFAULT"]["secrets"] = ",".join(secrets_list)
-                cfg_write["DEFAULT"]["private_key"] = private_key
-                cfg_write["DEFAULT"]["user_auth_token"] = (
-                    qobuz.oauth_user_auth_token or ""
-                )
-                cfg_write["DEFAULT"]["user_id"] = str(qobuz.oauth_user_id or "")
-                cfg_write["DEFAULT"]["email"] = ""
-                cfg_write["DEFAULT"]["password"] = ""
-                for key in (
-                    "default_folder",
-                    "default_quality",
-                    "default_limit",
-                    "no_m3u",
-                    "albums_only",
-                    "no_fallback",
-                    "og_cover",
-                    "embed_art",
-                    "lyrics_enabled",
-                    "lyrics_embed_metadata",
-                    "no_cover",
-                    "no_database",
-                    "folder_format",
-                    "track_format",
-                    "smart_discography",
-                    "fix_md5s",
-                    "multiple_disc_prefix",
-                    "multiple_disc_one_dir",
-                    "multiple_disc_track_format",
-                    "max_workers",
-                    "delay_seconds",
-                    "segmented_fallback",
-                    "no_credits",
-                    "native_lang",
-                    "no_album_artist_tag",
-                    "no_album_title_tag",
-                    "no_track_artist_tag",
-                    "no_track_title_tag",
-                    "no_release_date_tag",
-                    "no_media_type_tag",
-                    "no_genre_tag",
-                    "no_track_number_tag",
-                    "no_track_total_tag",
-                    "no_disc_number_tag",
-                    "no_disc_total_tag",
-                    "no_composer_tag",
-                    "no_explicit_tag",
-                    "no_copyright_tag",
-                    "no_label_tag",
-                    "no_upc_tag",
-                    "no_isrc_tag",
-                    "tag_title_from_track_format",
-                    "tag_album_from_folder_format",
-                ):
-                    if not cfg_write.has_option("DEFAULT", key):
-                        defaults = {
-                            "default_folder": "Qobuz Downloads",
-                            "default_quality": "27",
-                            "default_limit": "20",
-                            "no_m3u": "false",
-                            "albums_only": "false",
-                            "no_fallback": "false",
-                            "og_cover": "false",
-                            "embed_art": "false",
-                            "lyrics_enabled": "false",
-                            "lyrics_embed_metadata": "false",
-                            "no_cover": "false",
-                            "no_database": "true",
-                            "folder_format": "{artist}/{album}",
-                            "track_format": "{tracknumber} - {tracktitle}",
-                            "smart_discography": "false",
-                            "fix_md5s": "false",
-                            "multiple_disc_prefix": "Disc",
-                            "multiple_disc_one_dir": "false",
-                            "multiple_disc_track_format": "{disc_number_unpadded}{track_number} - {tracktitle}",
-                            "max_workers": "1",
-                            "delay_seconds": "0",
-                            "segmented_fallback": "true",
-                            "no_credits": "false",
-                            "native_lang": "false",
-                            "no_album_artist_tag": "false",
-                            "no_album_title_tag": "false",
-                            "no_track_artist_tag": "false",
-                            "no_track_title_tag": "false",
-                            "no_release_date_tag": "false",
-                            "no_media_type_tag": "false",
-                            "no_genre_tag": "false",
-                            "no_track_number_tag": "false",
-                            "no_track_total_tag": "false",
-                            "no_disc_number_tag": "false",
-                            "no_disc_total_tag": "false",
-                            "no_composer_tag": "false",
-                            "no_explicit_tag": "false",
-                            "no_copyright_tag": "false",
-                            "no_label_tag": "false",
-                            "no_upc_tag": "false",
-                            "no_isrc_tag": "false",
-                            "tag_title_from_track_format": "true",
-                            "tag_album_from_folder_format": "true",
-                        }
-                        cfg_write["DEFAULT"][key] = defaults.get(key, "")
-                with open(CONFIG_FILE, "w") as f:
-                    cfg_write.write(f)
-
-                with _client_lock:
-                    _qobuz_client = qobuz
-                logging.info("OAuth login complete. You are now connected.")
-            except Exception as ex:
-                logging.error(f"OAuth error: {ex}")
-
-        t = threading.Thread(target=_run_oauth, daemon=True)
-        t.start()
-
-        webbrowser.open(oauth_url)
-        logging.info(f"Opened browser for OAuth login. Waiting for redirect…")
-        return jsonify({"ok": True, "url": oauth_url})
-    except Exception as e:
-        logging.error(f"OAuth start failed: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# API: token login (user_id + user_auth_token)
-# ---------------------------------------------------------------------------
-@app.route("/api/token_login", methods=["POST"])
-def api_token_login():
-    global _qobuz_client
-    data = request.json or {}
-    user_id = data.get("user_id", "").strip()
-    user_auth_token = data.get("user_auth_token", "").strip()
-    folder = data.get("default_folder", "Qobuz Downloads").strip() or "Qobuz Downloads"
-    quality = str(data.get("default_quality", "27"))
-
-    if not user_id or not user_auth_token:
-        return jsonify(
-            {"ok": False, "error": "user_id and user_auth_token are required"}
-        ), 400
-
-    try:
-        from qobuz_dl.bundle import Bundle
-
-        logging.info("Fetching Qobuz tokens for token-based login…")
-        bundle = Bundle()
-        app_id = str(bundle.get_app_id())
-        secrets_list = [s for s in bundle.get_secrets().values() if s]
-        private_key = bundle.get_private_key() or ""
-
-        os.makedirs(CONFIG_PATH, exist_ok=True)
-        cfg = configparser.ConfigParser()
-        cfg["DEFAULT"]["email"] = ""
-        cfg["DEFAULT"]["password"] = ""
-        cfg["DEFAULT"]["user_id"] = user_id
-        cfg["DEFAULT"]["user_auth_token"] = user_auth_token
-        cfg["DEFAULT"]["default_folder"] = folder
-        cfg["DEFAULT"]["default_quality"] = quality
-        cfg["DEFAULT"]["default_limit"] = "20"
-        cfg["DEFAULT"]["no_m3u"] = "false"
-        cfg["DEFAULT"]["albums_only"] = "false"
-        cfg["DEFAULT"]["no_fallback"] = "false"
-        cfg["DEFAULT"]["og_cover"] = "false"
-        cfg["DEFAULT"]["embed_art"] = "false"
-        cfg["DEFAULT"]["lyrics_enabled"] = "false"
-        cfg["DEFAULT"]["lyrics_embed_metadata"] = "false"
-        cfg["DEFAULT"]["no_cover"] = "false"
-        cfg["DEFAULT"]["no_database"] = "true"
-        cfg["DEFAULT"]["app_id"] = app_id
-        cfg["DEFAULT"]["secrets"] = ",".join(secrets_list)
-        cfg["DEFAULT"]["private_key"] = private_key
-        cfg["DEFAULT"]["folder_format"] = "{artist}/{album}"
-        cfg["DEFAULT"]["track_format"] = "{tracknumber} - {tracktitle}"
-        cfg["DEFAULT"]["smart_discography"] = "false"
-        cfg["DEFAULT"]["fix_md5s"] = "false"
-        cfg["DEFAULT"]["multiple_disc_prefix"] = "Disc"
-        cfg["DEFAULT"]["multiple_disc_one_dir"] = "false"
-        cfg["DEFAULT"]["multiple_disc_track_format"] = (
-            "{disc_number_unpadded}{track_number} - {tracktitle}"
-        )
-        cfg["DEFAULT"]["max_workers"] = "1"
-        cfg["DEFAULT"]["delay_seconds"] = "0"
-        cfg["DEFAULT"]["segmented_fallback"] = "true"
-        cfg["DEFAULT"]["no_credits"] = "false"
-        cfg["DEFAULT"]["native_lang"] = "false"
-        for key in (
-            "no_album_artist_tag",
-            "no_album_title_tag",
-            "no_track_artist_tag",
-            "no_track_title_tag",
-            "no_release_date_tag",
-            "no_media_type_tag",
-            "no_genre_tag",
-            "no_track_number_tag",
-            "no_track_total_tag",
-            "no_disc_number_tag",
-            "no_disc_total_tag",
-            "no_composer_tag",
-            "no_explicit_tag",
-            "no_copyright_tag",
-            "no_label_tag",
-            "no_upc_tag",
-            "no_isrc_tag",
-        ):
-            cfg["DEFAULT"][key] = "false"
-        cfg["DEFAULT"]["tag_title_from_track_format"] = "true"
-        cfg["DEFAULT"]["tag_album_from_folder_format"] = "true"
-        with open(CONFIG_FILE, "w") as f:
-            cfg.write(f)
-
-        qobuz = _build_qobuz_from_config(cfg)
-        qobuz.initialize_client_with_token(
-            user_id, user_auth_token, app_id, secrets_list
-        )
-
-        with _client_lock:
-            _qobuz_client = qobuz
-
-        logging.info("Token login successful.")
-        return jsonify({"ok": True})
-    except Exception as e:
-        logging.error(f"Token login failed: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+register_auth_routes(
+    app,
+    config_file=lambda: CONFIG_FILE,
+    build_qobuz_from_config=_build_qobuz_from_config,
+    client_lock=_client_lock,
+    set_qobuz=_set_qobuz,
+)
 
 
 register_config_routes(
