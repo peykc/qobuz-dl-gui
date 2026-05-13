@@ -5,7 +5,6 @@ from pathlib import Path
 
 import configparser
 import hashlib
-import json
 import logging
 import threading
 import time
@@ -30,8 +29,10 @@ from qobuz_dl.config_paths import (
     QOBUZ_DB,
 )
 from qobuz_dl.routes.config_routes import register_config_routes
+from qobuz_dl.routes.feedback_routes import register_feedback_routes
 from qobuz_dl.routes.queue_routes import register_queue_routes
 from qobuz_dl.routes.status_routes import register_status_routes
+from qobuz_dl.routes.update_routes import register_update_routes
 from qobuz_dl.services.qobuz_session import (
     as_bool as _as_bool,
     as_int as _as_int,
@@ -194,74 +195,17 @@ def api_session_logs():
     )
 
 
-@app.route("/api/feedback-history", methods=["GET", "POST"])
-def api_feedback_history():
-    """Persist feedback history on disk (pywebview localStorage can be ephemeral)."""
-    path = GUI_FEEDBACK_HISTORY_JSON
-    if request.method == "GET":
-        try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                items = raw if isinstance(raw, list) else raw.get("items", [])
-                if not isinstance(items, list):
-                    items = []
-            else:
-                items = []
-        except Exception:
-            items = []
-        return jsonify({"ok": True, "items": items[:100]})
-    try:
-        body = request.get_json(silent=True) or {}
-        items = body.get("items")
-        if not isinstance(items, list):
-            return jsonify({"ok": False, "error": "items must be a list"}), 400
-        items = items[:100]
-        os.makedirs(CONFIG_PATH, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
-        return jsonify({"ok": True})
-    except Exception as e:
-        logging.warning("feedback-history save failed: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+register_feedback_routes(
+    app,
+    config_path=lambda: CONFIG_PATH,
+    feedback_history_json=lambda: GUI_FEEDBACK_HISTORY_JSON,
+)
 
 
 # ---------------------------------------------------------------------------
 # API: updates (GitHub Releases)
 # ---------------------------------------------------------------------------
-@app.route("/api/update/check")
-def api_update_check():
-    from qobuz_dl import updater
-
-    force = request.args.get("force") == "1"
-    return jsonify(updater.check_for_update(CONFIG_PATH, force=force))
-
-
-@app.route("/api/update/install", methods=["POST"])
-def api_update_install():
-    from qobuz_dl import updater
-    from qobuz_dl.version import GITHUB_RELEASE_REPO
-
-    data = request.json or {}
-    url = (data.get("download_url") or "").strip()
-    if not updater.is_safe_release_asset_url(url, GITHUB_RELEASE_REPO.strip()):
-        return jsonify({"ok": False, "error": "Invalid or untrusted download URL"}), 400
-    auto_platform = os.name == "nt" or sys.platform.startswith("linux")
-    if not getattr(sys, "frozen", False) or not auto_platform:
-        return jsonify(
-            {
-                "ok": False,
-                "error": "Automatic install is only available for Windows and Linux frozen builds.",
-            }
-        ), 400
-    try:
-        path = updater.download_update_to_temp(url)
-    except Exception as e:
-        logging.error("Update download failed: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-    updater.schedule_stage_update_and_exit(path)
-    return jsonify({"ok": True, "restarting": True})
+register_update_routes(app, config_path=lambda: CONFIG_PATH)
 
 
 # ---------------------------------------------------------------------------

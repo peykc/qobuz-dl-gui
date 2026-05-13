@@ -14,6 +14,7 @@ class GuiApiContractTests(unittest.TestCase):
         self.config_dir = self.tmp.name
         self.config_file = os.path.join(self.config_dir, "config.ini")
         self.queue_json = os.path.join(self.config_dir, "download_queue.json")
+        self.feedback_json = os.path.join(self.config_dir, "gui_feedback_history.json")
         self.allowed_root = os.path.join(self.config_dir, "library")
         os.makedirs(self.allowed_root, exist_ok=True)
 
@@ -21,6 +22,7 @@ class GuiApiContractTests(unittest.TestCase):
             patch.object(gui_app, "CONFIG_PATH", self.config_dir),
             patch.object(gui_app, "CONFIG_FILE", self.config_file),
             patch.object(gui_app, "DOWNLOAD_QUEUE_JSON", self.queue_json),
+            patch.object(gui_app, "GUI_FEEDBACK_HISTORY_JSON", self.feedback_json),
             patch.object(gui_app, "_qobuz_client", None),
             patch.object(gui_app, "_session_download_root_resolved", None),
         )
@@ -114,6 +116,32 @@ class GuiApiContractTests(unittest.TestCase):
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json(), {"ok": True, "items": []})
+
+    def test_feedback_history_get_and_post_shape(self):
+        get_res = self.client.get("/api/feedback-history")
+        self.assertEqual(get_res.status_code, 200)
+        self.assertEqual(get_res.get_json(), {"ok": True, "items": []})
+
+        post_res = self.client.post(
+            "/api/feedback-history",
+            json={"items": [{"id": "one", "status": "sent"}]},
+        )
+        self.assertEqual(post_res.status_code, 200)
+        self.assertEqual(post_res.get_json(), {"ok": True})
+
+        roundtrip = self.client.get("/api/feedback-history").get_json()
+        self.assertEqual(roundtrip["items"], [{"id": "one", "status": "sent"}])
+
+    def test_update_check_shape(self):
+        with patch(
+            "qobuz_dl.updater.check_for_update",
+            return_value={"ok": True, "update_available": False},
+        ) as mock_check:
+            res = self.client.get("/api/update/check?force=1")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json(), {"ok": True, "update_available": False})
+        mock_check.assert_called_once_with(self.config_dir, force=True)
 
     def test_lyrics_search_shape(self):
         with patch(
