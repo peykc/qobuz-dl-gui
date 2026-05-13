@@ -5,6 +5,8 @@
 (function () {
   "use strict";
 
+  const api = window.QobuzGui && window.QobuzGui.api;
+
   /** Matches ``qobuz_dl.db.GUI_PENDING_TRACK_PREFIX``, pending DB rows have no local file. */
   const _GUI_PENDING_AUDIO_PREFIX = "__GUI_PENDING__:slot:";
   let _sse = null;
@@ -3435,8 +3437,12 @@
 
   async function checkStatus() {
     try {
-      const res = await fetch("/api/status");
-      const data = await res.json();
+      const { data } = api
+        ? await api.getJson("/api/status")
+        : await (async () => {
+            const res = await fetch("/api/status");
+            return { data: await res.json() };
+          })();
       updateStatus(data.ready);
       return data;
     } catch (e) {
@@ -5852,8 +5858,12 @@
   // ── Settings tab ──────────────────────────────────────────
   async function loadSettingsIntoForm() {
     try {
-      const res = await fetch("/api/status");
-      const data = await res.json();
+      const { data } = api
+        ? await api.getJson("/api/status")
+        : await (async () => {
+            const res = await fetch("/api/status");
+            return { data: await res.json() };
+          })();
       const cfg = data.config || {};
       const capabilities = data.capabilities || {};
 

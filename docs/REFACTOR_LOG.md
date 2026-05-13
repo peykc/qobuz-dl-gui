@@ -163,3 +163,26 @@ Commit: pending
 - Endpoint paths and response shapes were preserved.
 - No UI behavior or copy was changed.
 - Password/token storage behavior was not intentionally changed.
+
+## Checkpoint 8 - Frontend API Client Adapter
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/gui/js/api/client.js` as the first ordered vanilla JavaScript module.
+- Loaded the API client before `qobuz_dl/gui/app.js` without introducing build tooling.
+- Routed two `/api/status` reads through the shared API adapter while preserving fallback behavior.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- Cursor diagnostics reported no linter errors for the changed frontend files.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- No UI behavior or copy was changed.
+- No frontend build tooling was introduced.
+- The large `app.js` IIFE remains in place while adapter modules are introduced incrementally.
