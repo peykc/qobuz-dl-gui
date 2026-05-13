@@ -30,6 +30,7 @@ from qobuz_dl.config_paths import (
     GUI_FEEDBACK_HISTORY_JSON,
     QOBUZ_DB,
 )
+from qobuz_dl.routes.queue_routes import register_queue_routes
 from qobuz_dl.services.qobuz_session import (
     as_bool as _as_bool,
     as_int as _as_int,
@@ -1662,78 +1663,10 @@ def api_reveal_in_folder():
     return jsonify({"ok": True})
 
 
-def _sanitize_gui_queue_items(items) -> list:
-    if not items or not isinstance(items, list):
-        return []
-    out = []
-    for it in items[:5000]:
-        if not isinstance(it, dict):
-            continue
-        url = (it.get("url") or "").strip()
-        if not url:
-            continue
-        res = it.get("resolved")
-        if res is not None and not isinstance(res, dict):
-            res = None
-        out.append({"url": url, "resolved": res})
-    return out
-
-
 # ---------------------------------------------------------------------------
 # API: download URL queue (persisted across GUI restarts)
 # ---------------------------------------------------------------------------
-@app.route("/api/download-queue", methods=["GET", "POST"])
-def api_download_queue():
-    empty = {
-        "ok": True,
-        "version": 1,
-        "text_mode": False,
-        "text_urls": "",
-        "items": [],
-    }
-    os.makedirs(CONFIG_PATH, exist_ok=True)
-    if request.method == "GET":
-        if not os.path.isfile(DOWNLOAD_QUEUE_JSON):
-            return jsonify(empty)
-        try:
-            with open(DOWNLOAD_QUEUE_JSON, encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                return jsonify(empty)
-            return jsonify(
-                {
-                    "ok": True,
-                    "version": int(data.get("version") or 1),
-                    "text_mode": bool(data.get("text_mode")),
-                    "text_urls": str(data.get("text_urls") or ""),
-                    "items": _sanitize_gui_queue_items(data.get("items")),
-                }
-            )
-        except Exception as e:
-            logging.warning("download-queue load: %s", e)
-            return jsonify(empty)
-    payload = request.get_json(silent=True) or {}
-    text_urls = str(payload.get("text_urls") or "")
-    if len(text_urls) > 1_500_000:
-        return jsonify({"ok": False, "error": "payload too large"}), 400
-    items = payload.get("items")
-    if items is not None and not isinstance(items, list):
-        return jsonify({"ok": False, "error": "items must be a list"}), 400
-    out_doc = {
-        "version": 1,
-        "text_mode": bool(payload.get("text_mode")),
-        "text_urls": text_urls,
-        "items": _sanitize_gui_queue_items(items),
-    }
-    try:
-        tmp = DOWNLOAD_QUEUE_JSON + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(out_doc, f, ensure_ascii=False, indent=0)
-        os.replace(tmp, DOWNLOAD_QUEUE_JSON)
-    except Exception as e:
-        logging.error("download-queue save: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify({"ok": True})
+register_queue_routes(app, config_path=CONFIG_PATH, queue_json=DOWNLOAD_QUEUE_JSON)
 
 
 # ---------------------------------------------------------------------------
