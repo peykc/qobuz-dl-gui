@@ -1,5 +1,6 @@
 from flask import jsonify, request
 
+from qobuz_dl.services import history_service
 from qobuz_dl.services.qobuz_session import as_bool
 
 
@@ -11,9 +12,7 @@ def register_history_routes(
 ) -> None:
     @app.route("/api/download-history", methods=["GET"])
     def api_download_history():
-        from qobuz_dl import db as _qdb
-
-        items = _qdb.list_gui_download_history()
+        items = history_service.list_history()
         safe = [
             it
             for it in items
@@ -54,7 +53,7 @@ def register_history_routes(
             duration_sec = int(data.get("duration_sec") or 0)
         except (TypeError, ValueError):
             duration_sec = 0
-        _qdb.upsert_gui_download_history(
+        history_service.upsert_history_row(
             audio_path,
             track_no=str(data.get("track_no") or ""),
             title=str(data.get("title") or ""),
@@ -89,7 +88,7 @@ def register_history_routes(
         lyric_type = (data.get("lyric_type") or "").strip()
         if not lyric_type:
             return jsonify({"ok": False, "error": "lyric_type required"}), 400
-        _qdb.update_gui_download_history_lyrics(
+        history_service.update_history_lyrics(
             audio_path,
             lyric_type=lyric_type,
             lyric_provider=str(data.get("lyric_provider") or ""),
@@ -100,7 +99,5 @@ def register_history_routes(
 
     @app.route("/api/download-history/clear", methods=["POST"])
     def api_download_history_clear():
-        from qobuz_dl import db as _qdb
-
-        _qdb.clear_gui_download_history()
+        history_service.clear_history()
         return jsonify({"ok": True})

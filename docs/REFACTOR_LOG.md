@@ -186,3 +186,27 @@ Commit: pending
 - No UI behavior or copy was changed.
 - No frontend build tooling was introduced.
 - The large `app.js` IIFE remains in place while adapter modules are introduced incrementally.
+
+## Checkpoint 9 - History Service Boundary
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added conservative dataclasses in `qobuz_dl/domain/models.py`.
+- Added `qobuz_dl/persistence/history_repo.py` as a thin repository wrapper over existing DB functions.
+- Added `qobuz_dl/services/history_service.py` and routed history endpoints through it.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/domain/models.py qobuz_dl/persistence/history_repo.py qobuz_dl/services/history_service.py qobuz_dl/routes/history_routes.py` passed.
+- Cursor diagnostics reported no linter errors for changed history/domain files.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- SQL behavior remains in `qobuz_dl/db.py` for this checkpoint.
+- No endpoint response shapes were changed.
+- No UI behavior or copy was changed.
