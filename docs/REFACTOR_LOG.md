@@ -210,3 +210,27 @@ Commit: pending
 - SQL behavior remains in `qobuz_dl/db.py` for this checkpoint.
 - No endpoint response shapes were changed.
 - No UI behavior or copy was changed.
+
+## Checkpoint 10 - Lyrics Package Compatibility Split
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Converted `qobuz_dl/lyrics.py` into the package `qobuz_dl/lyrics/__init__.py`.
+- Added thin compatibility submodules for `lrclib_client`, `matcher`, `classifier`, `attach`, and `preview`.
+- Preserved existing `from qobuz_dl import lyrics` and `qobuz_dl.lyrics.<function>` imports.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/lyrics/__init__.py qobuz_dl/lyrics/lrclib_client.py qobuz_dl/lyrics/matcher.py qobuz_dl/lyrics/classifier.py qobuz_dl/lyrics/attach.py qobuz_dl/lyrics/preview.py` passed.
+- Cursor diagnostics reported no linter errors for `qobuz_dl/lyrics`.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- This checkpoint is primarily mechanical package movement plus compatibility adapters.
+- No lyric matching or attachment behavior was intentionally changed.
+- No endpoint response shapes or UI behavior were changed.
