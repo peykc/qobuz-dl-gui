@@ -27,3 +27,25 @@ Commit: pending
 - No UI behavior or copy was changed.
 - `python -m unittest discover` did not discover the existing tests; use `python -m unittest discover -s tests`.
 - Earlier accidental overwrites of tracked route/service files were restored to the branch versions before continuing.
+
+## Checkpoint 2 - Browse Folder Utility Route Move
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Moved `/api/browse_folder` from `qobuz_dl/gui_app.py` into `qobuz_dl/routes/utility_routes.py`.
+- Preserved the existing endpoint path, method, response shape, and tkinter folder picker behavior.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/gui_app.py qobuz_dl/routes/utility_routes.py tests/test_gui_route_shapes.py` passed.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- No endpoint response shapes were changed.
+- No UI behavior or copy was changed.
+- No download semantics were changed.

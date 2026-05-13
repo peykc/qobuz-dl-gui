@@ -17,6 +17,26 @@ def register_utility_routes(
     audio_path_allowed_for_lyrics_attach,
     reveal_file_in_os,
 ) -> None:
+    @app.route("/api/browse_folder", methods=["POST"])
+    def api_browse_folder():
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.wm_attributes("-topmost", True)
+            folder = filedialog.askdirectory(
+                parent=root,
+                title="Select Download Folder",
+            )
+            root.destroy()
+            if folder:
+                return jsonify({"ok": True, "path": folder})
+            return jsonify({"ok": False, "cancelled": True})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.route("/api/clipboard-text", methods=["GET"])
     def api_clipboard_text():
         """Return the system clipboard as UTF-8 text (localhost-only; used by GUI paste)."""

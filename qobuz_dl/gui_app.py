@@ -594,27 +594,6 @@ def api_token_login():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ---------------------------------------------------------------------------
-# API: browse folder (Windows/Linux native dialog via tkinter)
-# ---------------------------------------------------------------------------
-@app.route("/api/browse_folder", methods=["POST"])
-def api_browse_folder():
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes("-topmost", True)
-        folder = filedialog.askdirectory(parent=root, title="Select Download Folder")
-        root.destroy()
-        if folder:
-            return jsonify({"ok": True, "path": folder})
-        return jsonify({"ok": False, "cancelled": True})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
 register_config_routes(
     app,
     config_file=lambda: CONFIG_FILE,
