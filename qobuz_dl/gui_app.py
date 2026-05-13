@@ -1,7 +1,5 @@
 import sys
 import os
-import platform
-import subprocess
 
 from pathlib import Path
 
@@ -9,19 +7,21 @@ import configparser
 import hashlib
 import json
 import logging
-import queue
-import re
 import shutil
 import threading
 import time
 import socket
 import webbrowser
-from collections import deque
 
 from typing import Optional
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
+from qobuz_dl.app.events import GuiEventHub, GuiQueueHandler
+from qobuz_dl.app.path_security import (
+    audio_path_allowed_for_lyrics_attach as _path_allowed_for_lyrics_attach,
+    reveal_file_in_os as _reveal_file_in_os,
+)
 from qobuz_dl.config_defaults import apply_common_defaults
 from qobuz_dl.config_paths import (
     CONFIG_FILE,
@@ -57,14 +57,7 @@ GUI_DIR = _gui_static_dir()
 # ---------------------------------------------------------------------------
 app = Flask(__name__, static_folder=GUI_DIR)
 
-# ---------------------------------------------------------------------------
-# SSE log queue – a list so multiple consumers can drain independently
-# ---------------------------------------------------------------------------
-_log_queues: list[queue.Queue] = []
-_log_lock = threading.Lock()
-
-# Bounded in-memory session log for anonymous feedback attachments (localhost only).
-_gui_session_log_lines: deque[str] = deque(maxlen=600)
+_event_hub = GuiEventHub(session_log_limit=600)
 
 # Last resolved download root (matches QobuzDL.directory for the active UI folder).
 # Lyrics/stream endpoints allow paths under this OR under config default_folder, so
@@ -73,162 +66,9 @@ _session_download_root_lock = threading.Lock()
 _session_download_root_resolved: Optional[Path] = None
 
 
-def _gui_session_log_append(line: str) -> None:
-    s = (line or "").strip()
-    if not s:
-        return
-    with _log_lock:
-        _gui_session_log_lines.append(s)
-
-
-class _QueueHandler(logging.Handler):
-    """Puts every log record into every registered SSE queue."""
-
-    def emit(self, record):
-        msg = self.format(record)
-        # Track whether an error was logged during the current URL's download
-        if record.levelno >= logging.ERROR:
-            _ctx_mark_error()
-
-        # Strip ANSI colour codes for processing
-        clean = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
-        _gui_session_log_append(clean)
-
-        # Intercept [TRACK_START] markers | emit a structured SSE event AND
-        # replace the raw marker with a human-readable log line.
-        if clean.startswith("[TRACK_START] "):
-            payload = clean[len("[TRACK_START] ") :]
-            if "|" in payload:
-                parts = payload.split("|")
-                track_no = parts[0].strip()
-                title = parts[1].strip() if len(parts) > 1 else ""
-                cover_url = parts[2].strip() if len(parts) > 2 else ""
-                ev_data = {
-                    "type": "track_start",
-                    "track_no": track_no,
-                    "title": title,
-                    "cover_url": cover_url,
-                }
-                if len(parts) >= 6:
-                    ev_data["lyric_artist"] = parts[3].strip()
-                    ev_data["lyric_album"] = parts[4].strip()
-                    try:
-                        ev_data["duration_sec"] = int(parts[5].strip() or 0)
-                    except ValueError:
-                        ev_data["duration_sec"] = 0
-                    if len(parts) >= 7:
-                        ev_data["track_explicit"] = parts[6].strip() in (
-                            "1",
-                            "true",
-                            "True",
-                        )
-                _emit_event(ev_data)
-                display = f"  \u2193 {track_no}. {title}".strip()
-            else:
-                _emit_event({"type": "track_start", "title": payload})
-                display = f"  \u2193 {payload}"
-            with _log_lock:
-                for q in _log_queues:
-                    try:
-                        q.put_nowait(display)
-                    except queue.Full:
-                        pass
-            return
-
-        if clean.startswith("[TRACK_RESULT] "):
-            payload = clean[len("[TRACK_RESULT] ") :]
-            parts = payload.split("|")
-            if len(parts) >= 4:
-                track_no, title, status, detail = (
-                    parts[0],
-                    parts[1],
-                    parts[2],
-                    parts[3],
-                )
-                queue_url = parts[4].strip() if len(parts) >= 5 else ""
-                if queue_url == "-":
-                    queue_url = ""
-                audio_path = parts[5].strip() if len(parts) >= 6 else ""
-                lyric_album = parts[6].strip() if len(parts) >= 7 else ""
-                slot_track_id = parts[7].strip() if len(parts) >= 8 else ""
-                release_album_id = parts[8].strip() if len(parts) >= 9 else ""
-                substitute_attach = len(parts) > 9 and parts[9].strip() == "1"
-                # Do not _ctx_mark_error() for purchase_only: it is a per-track outcome
-                # (queue card shows purchase count); URL-level url_error should reflect
-                # album/connection failures (e.g. Not streamable), not purchasable tracks.
-                ev = {
-                    "type": "track_result",
-                    "track_no": track_no,
-                    "title": title,
-                    "status": status,
-                    "detail": detail,
-                }
-                if queue_url:
-                    ev["source_url"] = queue_url
-                if audio_path:
-                    ev["audio_path"] = audio_path
-                if lyric_album:
-                    ev["lyric_album"] = lyric_album
-                if slot_track_id:
-                    ev["slot_track_id"] = slot_track_id
-                if release_album_id:
-                    ev["release_album_id"] = release_album_id
-                if substitute_attach:
-                    ev["substitute_attach"] = True
-                _emit_event(ev)
-            return
-
-        if clean.startswith("[TRACK_LYRICS] "):
-            payload = clean[len("[TRACK_LYRICS] ") :]
-            parts = payload.split("|")
-            if len(parts) >= 4:
-                track_no, title, lyric_type, provider = (
-                    parts[0],
-                    parts[1],
-                    parts[2],
-                    parts[3],
-                )
-                confidence = parts[4] if len(parts) >= 5 else ""
-                audio_path_lyrics = parts[5].strip() if len(parts) >= 6 else ""
-                lyric_destination = parts[6].strip() if len(parts) >= 7 else ""
-                ev_ly = {
-                    "type": "track_lyrics",
-                    "track_no": track_no,
-                    "title": title,
-                    "lyric_type": lyric_type,
-                    "provider": provider,
-                    "confidence": confidence,
-                }
-                if audio_path_lyrics:
-                    ev_ly["audio_path"] = audio_path_lyrics
-                if lyric_destination:
-                    ev_ly["lyric_destination"] = lyric_destination
-                _emit_event(ev_ly)
-            return
-
-        with _log_lock:
-            for q in _log_queues:
-                try:
-                    q.put_nowait(msg)
-                except queue.Full:
-                    pass
-
-
-_queue_handler = _QueueHandler()
-_queue_handler.setFormatter(logging.Formatter("%(message)s"))
-logging.getLogger().addHandler(_queue_handler)
-logging.getLogger().setLevel(logging.INFO)
-logging.getLogger("werkzeug").setLevel(logging.ERROR)
-
-
 def _emit_event(event_data: dict):
     """Push a structured JSON status event to all SSE consumers."""
-    with _log_lock:
-        for q in _log_queues:
-            try:
-                q.put_nowait(event_data)  # dict, not str
-            except queue.Full:
-                pass
+    _event_hub.emit_event(event_data)
 
 
 # Import core for monkey-patched GUI hooks (see assignments after URL context helpers).
@@ -265,6 +105,13 @@ def _ctx_mark_error():
     with _url_ctx_lock:
         if _url_ctx["tracking"]:
             _url_ctx["had_error"] = True
+
+
+_queue_handler = GuiQueueHandler(_event_hub, on_error=_ctx_mark_error)
+_queue_handler.setFormatter(logging.Formatter("%(message)s"))
+logging.getLogger().addHandler(_queue_handler)
+logging.getLogger().setLevel(logging.INFO)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 
 def _ctx_finish_url() -> tuple[bool, Optional[str]]:
@@ -449,8 +296,7 @@ def api_clipboard_text():
 @app.route("/api/session-logs", methods=["GET"])
 def api_session_logs():
     """Recent GUI log lines (plain text) for optional feedback attachment."""
-    with _log_lock:
-        text = "\n".join(_gui_session_log_lines)
+    text = _event_hub.session_log_text()
     return Response(
         text + ("\n" if text and not text.endswith("\n") else ""),
         mimetype="text/plain; charset=utf-8",
@@ -1695,13 +1541,7 @@ def api_cancel():
         logging.info("Cancelling | current item will finish then stop…")
         
         def purge():
-            with _log_lock:
-                for q in _log_queues:
-                    while not q.empty():
-                        try:
-                            q.get_nowait()
-                        except queue.Empty:
-                            break
+            _event_hub.drain_queues()
         
         # Immediate purge
         purge()
@@ -1799,56 +1639,10 @@ def _download_history_audio_path_accepted(audio_path: str) -> bool:
 
 
 def _audio_path_allowed_for_lyrics_attach(audio_path: str) -> bool:
-    try:
-        p = Path(audio_path).expanduser().resolve()
-    except OSError:
-        return False
-    if not p.is_file():
-        return False
-    allowed = False
-    for root in _download_roots_for_lyrics_allow():
-        try:
-            p.relative_to(root)
-            allowed = True
-            break
-        except ValueError:
-            continue
-    if not allowed:
-        return False
-    name_low = str(p.name or "").lower()
-    if name_low.endswith(".missing.txt"):
-        return True
-    if p.suffix.lower() not in (
-        ".flac",
-        ".mp3",
-        ".m4a",
-        ".ogg",
-        ".opus",
-        ".wav",
-        ".aiff",
-        ".aif",
-    ):
-        return False
-    return True
-
-
-def _reveal_file_in_os(file_path: Path) -> None:
-    """Open the system file manager and reveal ``file_path`` (Windows / macOS / Linux)."""
-    p = file_path.expanduser().resolve()
-    system = platform.system()
-    if system == "Darwin":
-        subprocess.Popen(["open", "-R", str(p)])
-    elif system == "Windows":
-        subprocess.Popen(["explorer", "/select,", str(p)])
-    else:
-        if shutil.which("nautilus"):
-            subprocess.Popen(["nautilus", "--select", str(p)])
-        elif shutil.which("dolphin"):
-            subprocess.Popen(["dolphin", "--select", str(p)])
-        elif shutil.which("nemo"):
-            subprocess.Popen(["nemo", str(p)])
-        else:
-            subprocess.Popen(["xdg-open", str(p.parent)])
+    return _path_allowed_for_lyrics_attach(
+        audio_path,
+        _download_roots_for_lyrics_allow(),
+    )
 
 
 @app.route("/api/reveal-in-folder", methods=["POST"])
@@ -2318,36 +2112,8 @@ def api_purge():
 # ---------------------------------------------------------------------------
 @app.route("/api/stream")
 def api_stream():
-    def event_stream():
-        q = queue.Queue(maxsize=200)
-        with _log_lock:
-            _log_queues.append(q)
-        try:
-            # Send a keep-alive immediately
-            yield "data: \n\n"
-            while True:
-                try:
-                    msg = q.get(timeout=20)
-                    if isinstance(msg, dict):
-                        import json as _json
-
-                        yield f"event: status\ndata: {_json.dumps(msg)}\n\n"
-                    else:
-                        import re
-
-                        clean = re.sub(r"\x1b\[[0-9;]*m", "", msg)
-                        yield f"data: {clean}\n\n"
-                except queue.Empty:
-                    yield ": keep-alive\n\n"
-        finally:
-            with _log_lock:
-                try:
-                    _log_queues.remove(q)
-                except ValueError:
-                    pass
-
     return Response(
-        event_stream(),
+        _event_hub.stream(),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
