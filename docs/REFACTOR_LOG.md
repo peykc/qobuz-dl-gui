@@ -49,3 +49,26 @@ Commit: pending
 - No endpoint response shapes were changed.
 - No UI behavior or copy was changed.
 - No download semantics were changed.
+
+## Checkpoint 3 - Search And Resolve Route Move
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/routes/search_routes.py`.
+- Moved `/api/resolve`, `/api/search`, and `/api/search_tracks_attach` out of `qobuz_dl/gui_app.py`.
+- Kept replacement/download execution routes in `qobuz_dl/gui_app.py`.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/gui_app.py qobuz_dl/routes/search_routes.py` passed.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- Endpoint paths and response shapes were preserved.
+- No UI behavior or copy was changed.
+- No download semantics were changed.
