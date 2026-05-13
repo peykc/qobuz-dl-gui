@@ -6286,6 +6286,17 @@
       return t;
     }
 
+    /** Token stored when feedback was sent (survives different GUI ports / localStorage origins). */
+    function getClientTokenForClose(feedbackId) {
+      try {
+        const items = loadFeedbackHistory();
+        const it = items.find((x) => x && x.id === feedbackId);
+        const t = it && typeof it.clientToken === "string" ? it.clientToken.trim() : "";
+        if (t.length >= 8) return t;
+      } catch (_) {}
+      return getFeedbackClientToken();
+    }
+
     function loadFeedbackHistory() {
       try {
         const raw = localStorage.getItem(FEEDBACK_HISTORY_LS);
@@ -6638,7 +6649,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             id,
-            clientToken: getFeedbackClientToken(),
+            clientToken: getClientTokenForClose(id),
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -6650,13 +6661,13 @@
           feedbackDetailModalItem = { ...feedbackDetailModalItem, closed: true };
           setFeedbackDetailStatusPill(feedbackDetailModalItem);
         }
-      } catch (_) {
+      } catch (err) {
         if (reportFeedback) {
-          showFeedback(
-            reportFeedback,
-            "Could not mark resolved (network error).",
-            false,
-          );
+          const why =
+            err && err.message === "forbidden"
+              ? "Could not close this report (session token mismatch). Dev and packaged builds use different browser storage ports; older history entries may lack a saved token. Close or delete from the feedback inbox using your admin bearer token, or remove the stale row from Sent history."
+              : "Could not mark resolved (network error).";
+          showFeedback(reportFeedback, why, false);
         }
         if (btnEl) btnEl.disabled = false;
         if (usePillBusy) setFeedbackDetailStatusPill(feedbackDetailModalItem);
@@ -6850,6 +6861,7 @@
             timestamp: payload.timestamp,
             closed: false,
             hasLog: Boolean(logText),
+            clientToken: payload.clientToken,
           });
           syncIssueReportOpenCountBadge();
           if (
