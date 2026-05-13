@@ -234,3 +234,27 @@ Commit: pending
 - This checkpoint is primarily mechanical package movement plus compatibility adapters.
 - No lyric matching or attachment behavior was intentionally changed.
 - No endpoint response shapes or UI behavior were changed.
+
+## Checkpoint 11 - Placeholder Helper Extraction
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/download/placeholders.py`.
+- Moved missing-placeholder formatting and Qobuz storefront URL helpers out of `qobuz_dl/downloader.py`.
+- Imported the helpers back under the existing private names so downloader call sites remain unchanged.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/downloader.py qobuz_dl/download/placeholders.py` passed.
+- Cursor diagnostics reported no linter errors for changed downloader/download files.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- No download semantics were changed.
+- Placeholder file content and URL formatting should be unchanged.
+- No endpoint response shapes or UI behavior were changed.
