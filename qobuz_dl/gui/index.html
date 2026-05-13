@@ -305,27 +305,126 @@
                     </div>
                     <div id="issue-report-popover" class="issue-report-popover hidden" role="dialog"
                         aria-labelledby="issue-report-heading" aria-hidden="true">
-                        <div class="settings-popover-header">
+                        <div class="settings-popover-header issue-report-header">
                             <span id="issue-report-heading">Send Feedback</span>
-                            <button id="issue-report-close" class="btn-ghost btn-sm" aria-label="Close issue report">
-                                ✕
-                            </button>
+                            <div class="issue-report-header-actions">
+                                <button id="issue-report-history-btn" type="button"
+                                    class="btn-ghost btn-sm issue-report-icon-btn issue-report-history-btn"
+                                    aria-label="Sent feedback history" data-tip="History">
+                                    <span id="issue-report-open-count" class="issue-report-open-count hidden"
+                                        aria-hidden="true"></span>
+                                    <span class="issue-report-history-btn-icon issue-report-history-btn-icon--history"
+                                        aria-hidden="true">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                                            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                                            <path d="M3 3v5h5" />
+                                            <path d="M12 7v5l4 2" />
+                                        </svg>
+                                    </span>
+                                    <span class="issue-report-history-btn-icon issue-report-history-btn-icon--back hidden"
+                                        aria-hidden="true">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                                            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="m12 19-7-7 7-7" />
+                                            <path d="M19 12H5" />
+                                        </svg>
+                                    </span>
+                                </button>
+                                <button id="issue-report-close" class="btn-ghost btn-sm" aria-label="Close issue report">
+                                    ✕
+                                </button>
+                            </div>
                         </div>
-                        <div class="settings-section">
-                            <textarea id="issue-report-message" class="issue-report-textarea" rows="6"
-                                maxlength="2000" placeholder="Explain what happened..."></textarea>
-                            <div id="issue-report-feedback" class="feedback-msg hidden"></div>
+                        <div id="issue-report-main" class="issue-report-main">
+                            <div class="settings-section">
+                                <textarea id="issue-report-message" class="issue-report-textarea" rows="6"
+                                    maxlength="2000" placeholder="Explain what happened..."></textarea>
+                                <div id="issue-report-feedback" class="feedback-msg hidden"></div>
+                            </div>
+                            <div class="issue-report-actions">
+                                <button id="issue-report-log-preview-btn" type="button"
+                                    class="btn-ghost btn-sm issue-report-icon-btn issue-report-log-preview-btn"
+                                    aria-label="Preview session log"
+                                    data-tip="Preview session log (attached when sending if enabled below)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M15 12h-5" />
+                                        <path d="M15 8h-5" />
+                                        <path d="M19 17V5a2 2 0 0 0-2-2H4" />
+                                        <path
+                                            d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3" />
+                                    </svg>
+                                </button>
+                                <span class="issue-report-actions-spacer"></span>
+                                <button id="issue-report-open" class="btn-primary btn-sm issue-report-open-send"
+                                    type="button" disabled>
+                                    <span class="issue-report-send-label">Send</span>
+                                    <span class="issue-report-send-spinner spinner hidden" aria-hidden="true"></span>
+                                    <span class="issue-report-send-check" aria-hidden="true">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                                            stroke-linejoin="round">
+                                            <path d="M20 6 9 17l-5-5" />
+                                        </svg>
+                                    </span>
+                                </button>
+                            </div>
+                            <div class="issue-report-popover-resize" aria-hidden="true"></div>
                         </div>
-                        <div class="issue-report-actions">
-                            <button id="issue-report-open" class="btn-primary btn-sm" type="button"
-                                disabled>
-                                Send
-                            </button>
+                        <div id="issue-report-history-panel" class="issue-report-history-panel hidden"
+                            aria-labelledby="issue-report-heading">
+                            <div class="issue-report-history-head">
+                                <p id="issue-report-history-hint" class="issue-report-history-hint">Review feedback or
+                                    mark issues as resolved.</p>
+                            </div>
+                            <div class="issue-report-history-body">
+                                <div id="issue-report-history-list" class="issue-report-history-list" role="list"></div>
+                                <p id="issue-report-history-empty" class="issue-report-history-empty hidden">No feedback
+                                    sent from this device yet.</p>
+                            </div>
+                            <div class="issue-report-popover-resize" aria-hidden="true"></div>
                         </div>
                     </div>
             </div>
 
             <div class="sidebar-search">
+                <div id="issue-report-logs-modal" class="issue-report-logs-modal hidden" role="dialog"
+                    aria-modal="true" aria-labelledby="issue-report-logs-modal-title" aria-hidden="true">
+                    <div class="issue-report-logs-modal-backdrop" data-logs-modal-dismiss="1" tabindex="-1">
+                    </div>
+                    <div class="issue-report-logs-modal-panel">
+                        <div class="issue-report-logs-modal-head">
+                            <span id="issue-report-logs-modal-title" class="issue-report-logs-modal-title">Session
+                                log</span>
+                            <button type="button" id="issue-report-logs-modal-close"
+                                class="btn-ghost btn-sm issue-report-logs-modal-close-x" aria-label="Close">✕</button>
+                        </div>
+                        <p id="issue-report-logs-modal-loading" class="issue-report-logs-modal-loading hidden">
+                            Loading…</p>
+                        <pre id="issue-report-logs-modal-body" class="issue-report-logs-modal-body"
+                            aria-label="Log contents"></pre>
+                        <div class="issue-report-logs-modal-footer">
+                            <div id="issue-report-logs-modal-footer-logs" class="issue-report-logs-modal-footer-left">
+                                <label class="issue-report-logs-include-label">
+                                    <input type="checkbox" id="issue-report-logs-include" checked />
+                                    <span>Include this log when sending feedback</span>
+                                </label>
+                            </div>
+                            <div id="issue-report-logs-modal-footer-feedback"
+                                class="issue-report-logs-modal-footer-left hidden">
+                                <span id="issue-report-feedback-detail-status" class="feedback-detail-status-pill"
+                                    role="status"></span>
+                            </div>
+                            <button type="button" class="btn-primary btn-sm" id="issue-report-logs-modal-done">
+                                Done
+                            </button>
+                        </div>
+                    </div>
+                </div>
                 <div class="card search-bar-card">
                     <div class="search-row">
                         <input type="text" id="search-query" placeholder="Search Qobuz…" class="search-input" />
@@ -1230,7 +1329,17 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
         <!-- Global Tooltip -->
     <div id="global-tooltip" class="global-tooltip"></div>
 
-    <script src="/gui/app.js?v=49"></script>
+    <!-- Styled edit context menu (replaces native menu on text fields; matches global-tooltip look) -->
+    <div id="text-field-context-menu" class="text-field-context-menu hidden" role="menu"
+        aria-hidden="true">
+        <button type="button" class="text-field-context-menu-item" role="menuitem" data-action="cut">Cut</button>
+        <button type="button" class="text-field-context-menu-item" role="menuitem" data-action="copy">Copy</button>
+        <button type="button" class="text-field-context-menu-item" role="menuitem" data-action="paste">Paste</button>
+        <div class="text-field-context-menu-sep" role="separator" aria-hidden="true"></div>
+        <button type="button" class="text-field-context-menu-item" role="menuitem" data-action="selectAll">Select all</button>
+    </div>
+
+    <script src="/gui/app.js?v=70"></script>
 </body>
 
 </html>

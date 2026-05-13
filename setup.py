@@ -30,6 +30,7 @@ requirements = [
     "colorama",
     "flask",
     "pywebview>=5.0",
+    "pyperclip>=1.8.2",
     "packaging>=21.0",
 ]
 

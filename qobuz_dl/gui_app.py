@@ -16,6 +16,7 @@ import threading
 import time
 import socket
 import webbrowser
+from collections import deque
 
 from typing import Optional
 
@@ -33,6 +34,7 @@ CONFIG_PATH = os.path.join(OS_CONFIG, "qobuz-dl")
 CONFIG_FILE = os.path.join(CONFIG_PATH, "config.ini")
 QOBUZ_DB = os.path.join(CONFIG_PATH, "qobuz_dl.db")
 DOWNLOAD_QUEUE_JSON = os.path.join(CONFIG_PATH, "download_queue.json")
+GUI_FEEDBACK_HISTORY_JSON = os.path.join(CONFIG_PATH, "gui_feedback_history.json")
 
 
 def _gui_static_dir():
@@ -61,11 +63,22 @@ app = Flask(__name__, static_folder=GUI_DIR)
 _log_queues: list[queue.Queue] = []
 _log_lock = threading.Lock()
 
+# Bounded in-memory session log for anonymous feedback attachments (localhost only).
+_gui_session_log_lines: deque[str] = deque(maxlen=600)
+
 # Last resolved download root (matches QobuzDL.directory for the active UI folder).
 # Lyrics/stream endpoints allow paths under this OR under config default_folder, so
 # features work when directory override differs from saved config (e.g. before autosave).
 _session_download_root_lock = threading.Lock()
 _session_download_root_resolved: Optional[Path] = None
+
+
+def _gui_session_log_append(line: str) -> None:
+    s = (line or "").strip()
+    if not s:
+        return
+    with _log_lock:
+        _gui_session_log_lines.append(s)
 
 
 class _QueueHandler(logging.Handler):
@@ -79,6 +92,7 @@ class _QueueHandler(logging.Handler):
 
         # Strip ANSI colour codes for processing
         clean = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
+        _gui_session_log_append(clean)
 
         # Intercept [TRACK_START] markers | emit a structured SSE event AND
         # replace the raw marker with a human-readable log line.
@@ -631,6 +645,72 @@ def api_status():
             },
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# API: OS clipboard (plain text) — avoids Chromium "read clipboard" permission
+# ---------------------------------------------------------------------------
+@app.route("/api/clipboard-text", methods=["GET"])
+def api_clipboard_text():
+    """Return the system clipboard as UTF-8 text (localhost-only; used by GUI paste)."""
+    try:
+        import pyperclip
+    except ImportError:
+        return jsonify(
+            ok=False,
+            error="pyperclip is not installed",
+        ), 501
+    try:
+        raw = pyperclip.paste()
+        if raw is None:
+            raw = ""
+        return jsonify(ok=True, text=str(raw))
+    except Exception as e:
+        logging.warning("clipboard read failed: %s", e)
+        return jsonify(ok=False, error=str(e)), 500
+
+
+@app.route("/api/session-logs", methods=["GET"])
+def api_session_logs():
+    """Recent GUI log lines (plain text) for optional feedback attachment."""
+    with _log_lock:
+        text = "\n".join(_gui_session_log_lines)
+    return Response(
+        text + ("\n" if text and not text.endswith("\n") else ""),
+        mimetype="text/plain; charset=utf-8",
+    )
+
+
+@app.route("/api/feedback-history", methods=["GET", "POST"])
+def api_feedback_history():
+    """Persist feedback history on disk (pywebview localStorage can be ephemeral)."""
+    path = GUI_FEEDBACK_HISTORY_JSON
+    if request.method == "GET":
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                items = raw if isinstance(raw, list) else raw.get("items", [])
+                if not isinstance(items, list):
+                    items = []
+            else:
+                items = []
+        except Exception:
+            items = []
+        return jsonify({"ok": True, "items": items[:100]})
+    try:
+        body = request.get_json(silent=True) or {}
+        items = body.get("items")
+        if not isinstance(items, list):
+            return jsonify({"ok": False, "error": "items must be a list"}), 400
+        items = items[:100]
+        os.makedirs(CONFIG_PATH, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+        return jsonify({"ok": True})
+    except Exception as e:
+        logging.warning("feedback-history save failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,7 @@ a = Analysis(
         "webview",
         "webview.http",
         "webview.platforms",
+        "pyperclip",
     ],
     hookspath=[],
     hooksconfig={},
