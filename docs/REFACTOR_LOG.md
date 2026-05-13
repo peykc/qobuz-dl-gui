@@ -72,3 +72,26 @@ Commit: pending
 - Endpoint paths and response shapes were preserved.
 - No UI behavior or copy was changed.
 - No download semantics were changed.
+
+## Checkpoint 4 - Replacement Route Move
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/routes/replacement_routes.py`.
+- Moved `/api/download_attach_track`, `/api/write_missing_track_placeholder`, and `/api/delete_track_resolution_file` out of `qobuz_dl/gui_app.py`.
+- Kept the existing downloader methods and replacement workflow behavior unchanged.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/gui_app.py qobuz_dl/routes/replacement_routes.py` passed.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- Endpoint paths and response shapes were preserved.
+- No UI behavior or copy was changed.
+- No `qobuz_dl/downloader.py` internals were changed.
