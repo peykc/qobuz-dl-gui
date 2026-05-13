@@ -258,3 +258,27 @@ Commit: pending
 - No download semantics were changed.
 - Placeholder file content and URL formatting should be unchanged.
 - No endpoint response shapes or UI behavior were changed.
+
+## Checkpoint 12 - Typed Download Event Models
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/download/events.py` with typed event dataclasses for track start, track finish, lyrics resolution, and URL finish.
+- Added tests documenting that release slot identity, local artifact identity, and URL outcome remain separate.
+- Kept existing string marker parsing and frontend SSE behavior unchanged.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- `python -m py_compile qobuz_dl/download/events.py tests/test_download_events.py` passed.
+- Cursor diagnostics reported no linter errors for changed event model files.
+- `python -m flake8 <changed files>` could not run because `flake8` is not installed in the current Python environment.
+
+### Notes
+
+- No download semantics were changed.
+- Existing `[TRACK_START]`, `[TRACK_RESULT]`, and `[TRACK_LYRICS]` markers remain in place.
+- No endpoint response shapes or UI behavior were changed.
