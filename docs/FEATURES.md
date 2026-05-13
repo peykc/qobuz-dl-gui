@@ -42,7 +42,7 @@ Settings include account login, audio quality, duplicate handling, cover art, me
 
 Use the built-in feedback tool to send issues or comments without opening GitHub or signing in there.
 
-![Report feedback from inside the app](../assets/feedback.png)
+![Report feedback from inside the app](../assets/feedback.gif)
 
 ## Other Tools
 
