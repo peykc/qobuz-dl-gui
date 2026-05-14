@@ -448,3 +448,49 @@ Commit: pending
 ### Notes
 
 - `window._handleDrop` / `_handleDropText` stay the HTML entry points; `impl` repeats those references on the façade for callers.
+
+## Checkpoint 21 - Queue internals (`queueInternals.js`)
+
+Date: 2026-05-14  
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/gui/js/features/queue/queueInternals.js`: URL queue array, text/card mode, persist/restore, resolve + cards, drag handlers (`window._handleDrop*`). **`features.queue.internals.bootstrap(deps)`** returns the host (`urlQueue`, `textMode`, `initUrlQueue`, `restoreFromServer`, `countHistoryDownloadedForRelease`, progress helpers used by the download tab).
+- **`app.js`**: removed inlined block; **`initDownload()`** calls `bootstrap({ getTrackStatusMap, guiPendingAudioPrefix, syncSearchQueuedHighlights })`; download/SSE/purchase paths use **`_queueHost.*`**; **`features.history.countDownloadedForRelease`** delegates to **`_queueHost.countHistoryDownloadedForRelease`**.
+- **`index.html`:** load `queueInternals.js` immediately after **`queueController.js`**; **`app.js?v=77`**.
+
+### Validation
+
+- `node --check` on `queueInternals.js` and `app.js`; `python -m unittest discover -s tests` passed.
+
+### Notes
+
+- `tools/_patch_app_queue_internals.py` and `tools/_gen_queue_internals.py` document the splice for future peels (e.g. download runtime only).
+
+
+## Deferred architecture (yellow flags, post–checkpoint 20)
+
+These items are **intentionally not done** yet; captured so we do not mistake interim layout for finished structure.
+
+### `issueReportSubsystem.js` (~880 lines)
+
+- Moving the feedback workflow out of `app.js` was the win for that checkpoint; the file is a **contained mini-monolith**, not final layering.
+- **Later split target** under `features/feedback/` (non-goal until scheduled):  
+  `feedbackStore.js`, `feedbackApi.js`, `feedbackHistory.js`, `feedbackLogsModal.js`, `feedbackDetailModal.js`, `feedbackSubmit.js`, `feedbackPopover.js`.
+
+### Naming / ownership
+
+- The same module also wires the **settings gear popover** (open/close with backdrop). That is workable but mildly misleading versus the filename **“issue report”**.
+- Eventually either: **`settingsPopover.js`** owns gear/settings chrome while feedback owns issue-report chrome only, **or** rename to something broader (e.g. `settingsFeedbackSubsystem.js`).
+
+### Script load order
+
+- Today **`updateBanner.js` runs before `core/namespace.js`**; it only needs `window.QobuzGui` from `client.js`, so behaviour is OK.
+- **Stylistically preferred eventual order**: `api/client.js` → `core/namespace.js` → `core/*` → `api/extensions.js` → `ui/*` → `features/*` → `app.js`. Only reshuffle when deliberately testing script order (not a drive-by refactor).
+
+### Suggested sequencing for the next splits
+
+- **Queue internals landed** (`queueInternals.js`); optional further peels: download-only helpers co-located in `initDownload`, or thinning `bootstrap` deps.
+- **Defer**: **download / SSE**.
+- **History / track-status virtualization**: higher coupling and risk—schedule deliberately unless a regression forces sooner.
