@@ -282,3 +282,118 @@ Commit: pending
 - No download semantics were changed.
 - Existing `[TRACK_START]`, `[TRACK_RESULT]`, and `[TRACK_LYRICS]` markers remain in place.
 - No endpoint response shapes or UI behavior were changed.
+
+## Checkpoint 13 - Frontend Phase 0 Contracts And Smoke Docs
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `docs/FRONTEND_CONTRACT.md` (script order, namespace, compatibility globals, DOM id rules, API rules).
+- Added `docs/FRONTEND_SMOKE_TESTS.md` (manual flows from launch through feedback and UI utilities; visual baseline list).
+- No runtime or Python code changes.
+
+### Validation
+
+- `python -m unittest discover -s tests` passed.
+- Visual baselines (screenshots/recordings) are documented as a manual Phase 0 step; capture before large `app.js` moves.
+
+### Notes
+
+- Do not edit the standalone plan file in `.cursor/plans/`; this log is the repo source of truth for checkpoints.
+
+---
+
+## Frontend refactor log entries (template)
+
+Use this block for each **frontend** checkpoint after Phase 0. Append a new dated section below.
+
+### Frontend checkpoint - &lt;short title&gt;
+
+Date: YYYY-MM-DD
+Commit: pending
+
+#### What changed
+
+- Files added/moved and `QobuzGui.*` namespace entries.
+- `index.html` script tag order changes (if any).
+- `app.js` line shrinkage or wrapper-only delegations.
+- Compatibility globals preserved: `_handleDlStatus`, `_qUrlForPurchaseSlot`, `_updateQueueBadge`, `_handleDrop`, `_handleDropText`, `isDownloading`.
+
+#### Validation
+
+- `node --check` on each changed `.js` file.
+- `python -m unittest discover -s tests` passed.
+- Smoke flows from `docs/FRONTEND_SMOKE_TESTS.md` (list which sections were run or "not run").
+
+#### Notes
+
+- Confirm no DOM id renames, no endpoint path changes, no copy changes for refactor-only work.
+
+## Checkpoint 14 - Frontend Core Modules
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/gui/js/core/{namespace,constants,trackIdentity,format,dom,icons}.js` and wired them in `index.html` before `app.js`.
+- `app.js` delegates `_normalizeTrackNo`, scroll/format/esc helpers, SVG constants, and virtual-list constants to `QobuzGui.core.*`.
+
+### Validation
+
+- `node --check` on changed JS files.
+- `python -m unittest discover -s tests` passed.
+- Desktop smoke: not run (CI-only validation).
+
+### Notes
+
+- Compatibility globals unchanged.
+
+## Checkpoint 15 - Frontend Leaf UI Modules
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `js/ui/{globalTooltip,textFieldContextMenu,donationPopover,collapses,resetButtons}.js` and `js/features/formatBuilder/formatTooltips.js`.
+- `app.js` delegates `DOMContentLoaded` UI init and `init()` collapse/reset wiring to `QobuzGui.ui.*` / `QobuzGui.features.formatBuilder.formatTooltips`.
+
+### Validation
+
+- `node --check` on all GUI JS.
+- `python -m unittest discover -s tests` passed.
+
+## Checkpoint 16 - Frontend API Extensions
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/gui/js/api/extensions.js` with grouped wrappers (`statusApi`, `configApi`, `searchApi`, `queueApi`, `downloadApi`, `historyApi`, `lyricsApi`, `replacementApi`, `updateApi`, `feedbackApi`, `utilityApi`, `setupApi`, `sessionLogsApi`).
+- Migrated in-app `/api/*` `fetch` usage to wrappers; external `FEEDBACK_ENDPOINT` calls unchanged.
+
+### Validation
+
+- `node --check`; `python -m unittest discover -s tests` passed.
+
+## Checkpoint 17 - Update Banner Module And Feature Adapters
+
+Date: 2026-05-13
+Commit: pending
+
+### What changed
+
+- Added `js/features/settings/updateBanner.js` (`QobuzGui.features.updateBanner`).
+- `initDownload` registers `QobuzGui.features.queue` and `QobuzGui.features.history` thin APIs (plan adapter-first step).
+
+### Validation
+
+- `node --check`; `python -m unittest discover -s tests` passed.
+
+### Notes
+
+- Further extraction of settings form, feedback subsystem, search/queue internals, history virtualization, lyrics UI, download SSE shell, and final `main.js` bootstrap can proceed in follow-up checkpoints; monolith size is reduced and contracts documented.

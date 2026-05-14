@@ -6,15 +6,23 @@
   "use strict";
 
   const api = window.QobuzGui && window.QobuzGui.api;
+  const QG = window.QobuzGui;
+  const _cgConst = QG.core.constants;
+  const _GUI_PENDING_AUDIO_PREFIX = _cgConst.GUI_PENDING_AUDIO_PREFIX;
+  const _TS_VIRT_THRESHOLD = _cgConst.TS_VIRT_THRESHOLD;
+  const _TS_VIRT_OVERSCAN = _cgConst.TS_VIRT_OVERSCAN;
+  const _ic = QG.core.icons;
+  const _TRACK_DL_ICON_SVG = _ic.trackDlIconSvg;
+  const _TRACK_SEARCH_ICON_SVG = _ic.trackSearchIconSvg;
+  const _TRACK_MISSING_NOTE_ICON_SVG = _ic.trackMissingNoteIconSvg;
+  const _MISSING_PLACEHOLDER_BTN_TIP = _ic.missingPlaceholderBtnTip;
+  const _TRACK_FOLDER_ICON_SVG = _ic.trackFolderIconSvg;
+  const _LYRIC_SEARCH_ATTACHED_SVG = _ic.lyricSearchAttachedSvg;
+  const _TRACK_DL_FAIL_SVG = _ic.trackDlFailSvg;
+  const _EXPLICIT_BADGE_SVG = _ic.explicitBadgeSvg;
 
-  /** Matches ``qobuz_dl.db.GUI_PENDING_TRACK_PREFIX``, pending DB rows have no local file. */
-  const _GUI_PENDING_AUDIO_PREFIX = "__GUI_PENDING__:slot:";
   let _sse = null;
   let _trackStatusMap = new Map();
-
-  /** Virtualized download history when many rows (reduces DOM + layout cost). */
-  const _TS_VIRT_THRESHOLD = 72;
-  const _TS_VIRT_OVERSCAN = 6;
   let _tsVirtActive = false;
   let _tsVirtInnerEl = null;
   let _tsVirtRowH = 50;
@@ -55,31 +63,16 @@
     };
   }
 
-  /** True if the scrollable element is at (or within a few px of) the bottom. */
-  function _scrollContainerAtBottom(el, slackPx = 8) {
-    if (!el) return true;
-    const max = el.scrollHeight - el.clientHeight;
-    if (max <= 0) return true;
-    return el.scrollTop >= max - slackPx;
+  function _scrollContainerAtBottom(el, slackPx) {
+    return QG.core.dom.scrollContainerAtBottom(el, slackPx);
   }
 
   function _normalizeTrackNo(trackNo) {
-    const raw = String(trackNo || "").trim();
-    if (!raw) return "";
-    const m = raw.match(/\d+/);
-    if (!m) return raw;
-    return String(parseInt(m[0], 10));
+    return QG.core.trackIdentity.normalizeTrackNo(trackNo);
   }
 
   function _normalizeTrackTitle(title) {
-    let t = String(title || "").trim().toLowerCase();
-    if (!t) return "";
-    t = t.replace(/\s+/g, " ");
-    // Collapse variant suffixes so start/result events map to one card.
-    while (/\s*\([^)]*\)\s*$/.test(t)) {
-      t = t.replace(/\s*\([^)]*\)\s*$/, "").trim();
-    }
-    return t;
+    return QG.core.trackIdentity.normalizeTrackTitle(title);
   }
 
   /** Title for the LRCLIB search field when opening from a download-history row. */
@@ -88,21 +81,11 @@
   }
 
   function _parseTrackRef(trackNo, title) {
-    const rawTitle = String(title || "").trim();
-    const rawNo = String(trackNo || "").trim();
-    if (rawNo) {
-      return { trackNo: rawNo, title: rawTitle };
-    }
-    const m = rawTitle.match(/^(\d+)\.\s*(.+)$/);
-    if (m) return { trackNo: m[1], title: m[2] };
-    return { trackNo: "", title: rawTitle };
+    return QG.core.trackIdentity.parseTrackRef(trackNo, title);
   }
 
   function _trackKey(trackNo, title, lyricAlbum) {
-    const num = _normalizeTrackNo(trackNo);
-    const t = _normalizeTrackTitle(title);
-    const a = _normalizeTrackTitle(lyricAlbum || "");
-    return a ? `${num}::${t}::${a}` : `${num}::${t}`;
+    return QG.core.trackIdentity.trackKey(trackNo, title, lyricAlbum);
   }
 
   /**
@@ -111,17 +94,7 @@
    * classification matches parallel / multi-queue downloads.
    */
   function _trackKeyStem(fullKey) {
-    const k = String(fullKey || "").trim();
-    if (!k) return "";
-    const sep = "::";
-    const i = k.indexOf(sep);
-    if (i < 0) return k;
-    const num = k.slice(0, i);
-    const rest = k.slice(i + sep.length);
-    const j = rest.indexOf(sep);
-    const t = j < 0 ? rest : rest.slice(0, j);
-    if (!num && !t.trim()) return k;
-    return t ? `${num}::${t}` : `${num}`;
+    return QG.core.trackIdentity.trackKeyStem(fullKey);
   }
 
   function _tsMountedCardShowsDlTerminal(card) {
@@ -738,26 +711,10 @@
     }
   }
 
-  const _TRACK_DL_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 12 12 17 17 12"/><path d="M5 21h14"/></svg>`;
-  const _TRACK_SEARCH_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>`;
-  const _TRACK_MISSING_NOTE_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/></svg>`;
-  /** Global-tooltip text for queue-row *.missing.txt control. */
-  const _MISSING_PLACEHOLDER_BTN_TIP =
-    'Writes a detailed placeholder txt file using your track naming pattern (*.missing.txt). Search "missing" in your library to find placeholders.';
-  const _TRACK_FOLDER_ICON_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>`;
-  /** Shown after explicit/clean in lyric search when this LRCLIB id matches the saved sidecar. */
-  const _LYRIC_SEARCH_ATTACHED_SVG = `<svg class="lyric-search-attached-ico lucide-folder-check" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="m9 13 2 2 4-4"/></svg>`;
-  const _TRACK_DL_FAIL_SVG = `<svg class="track-dl-btn-ico" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
-  /** Qobuz / lyric explicit badge | same E icon as queue cards and search. */
-  const _EXPLICIT_BADGE_SVG = `<svg viewBox="0 0 24 24" class="explicit-badge-icon" aria-hidden="true"><path fill="currentColor" d="M10.603 15.626v-2.798h3.632a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.241h-3.632V8.352h3.632a.8.8 0 0 0 .598-.24q.24-.242.24-.599a.81.81 0 0 0-.24-.598.8.8 0 0 0-.598-.24h-4.47a.8.8 0 0 0-.598.24.81.81 0 0 0-.24.598v8.952q0 .357.24.598.241.24.598.241h4.47a.8.8 0 0 0 .598-.241q.24-.241.24-.598a.81.81 0 0 0-.24-.598.81.81 0 0 0-.598-.241zM4.52 21.5c-.575-.052-.98-.284-1.383-.651-.39-.392-.55-.844-.637-1.372V4.493c.135-.607.27-.961.661-1.353.392-.391.762-.548 1.343-.64H19.47c.541.066.952.254 1.362.62.413.37.546.796.668 1.38v14.977c-.074.467-.237.976-.629 1.367-.39.392-.82.595-1.391.656z"></path></svg>`;
-
   let _attachTrackAnchorCard = null;
 
   function _formatAttachDur(sec) {
-    const s = Number(sec) || 0;
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return `${m}:${String(r).padStart(2, "0")}`;
+    return QG.core.format.formatAttachDur(sec);
   }
 
   function _attachNormTokens(s) {
@@ -786,12 +743,7 @@
 
   /** Match ``normalize_sampling_rate_hz`` in Python (Hz/kHz/MHz-ish API quirks). */
   function _normalizeSamplingRateHz(raw) {
-    const f =
-      typeof raw === "number" ? raw : parseFloat(String(raw != null ? raw : ""));
-    if (!Number.isFinite(f) || f <= 0) return null;
-    if (f < 1) return f * 1_000_000;
-    if (f < 1000) return f * 1000;
-    return f;
+    return QG.core.format.normalizeSamplingRateHz(raw);
   }
 
   function _attachQualitySpecsTooltip(t) {
@@ -1039,11 +991,7 @@
     }
     _showLyricSearchResultsLoading(resultsEl, "Searching Qobuz");
     try {
-      const res = await fetch("/api/search_tracks_attach", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const res = await api.replacementApi.searchAttachTracks(body);
       const data = await res.json();
       if (!data.ok) {
         resultsEl.replaceChildren();
@@ -1180,11 +1128,7 @@
     }
 
     try {
-      const res = await fetch("/api/write_missing_track_placeholder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const res = await api.replacementApi.writeMissingPlaceholder(payload);
       const data = await res.json().catch(() => ({}));
 
       if (data.ok) {
@@ -1267,11 +1211,7 @@
         qs = window._qUrlForPurchaseSlot(sid) || "";
       }
       if (qs) payload.queue_source_url = qs;
-      const res = await fetch("/api/download_attach_track", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const res = await api.replacementApi.downloadAttachTrack(payload);
       const data = await res.json();
       if (!data.ok) {
         console.warn(data.error || "Attach failed");
@@ -1380,11 +1320,7 @@
       
       const prevAudio = (card.dataset.audioPath || "").trim();
       if (card.dataset.resolvedBy === "search" && prevAudio && !prevAudio.toLowerCase().endsWith(".missing.txt")) {
-        fetch("/api/delete_track_resolution_file", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ file_path: prevAudio }),
-        }).catch(() => {});
+        api.replacementApi.deleteResolutionFile({ file_path: prevAudio }).catch(() => {});
         delete card.dataset.audioPath;
         delete card.dataset.resolvedBy;
       }
@@ -1410,11 +1346,7 @@
       // so the library doesn't end up with both a real file and a placeholder.
       const prevPath = (card.dataset.missingPlaceholderPath || "").trim();
       if (card.dataset.resolvedBy === "placeholder" && prevPath) {
-        fetch("/api/delete_track_resolution_file", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ file_path: prevPath }),
-        }).catch(() => { /* fire-and-forget; open search regardless */ });
+        api.replacementApi.deleteResolutionFile({ file_path: prevPath }).catch(() => { /* fire-and-forget; open search regardless */ });
         delete card.dataset.missingPlaceholderPath;
         delete card.dataset.resolvedBy;
         _syncResolutionButtonStates(card);
@@ -1816,29 +1748,21 @@
 
     const apHist = (card.dataset.audioPath || "").trim();
     if (apHist && lt !== "loading") {
-      void fetch("/api/download-history/lyrics", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      void api.historyApi
+        .postLyrics({
           audio_path: apHist,
           lyric_type: lt,
           lyric_provider: lyricProvider != null ? String(lyricProvider) : "",
           lyric_confidence: confRaw,
           lyric_destination: dest,
-        }),
-      }).catch(() => {});
+        })
+        .catch(() => {});
     }
   }
 
   /** LRCLIB duration delta vs reference (±2s hidden; same threshold as LRCLIB matching). */
   function _formatLyricDeltaSec(sec) {
-    if (sec == null || !Number.isFinite(Number(sec))) return "";
-    const n = Math.round(Number(sec));
-    const sign = n > 0 ? "+" : "\u2212";
-    const a = Math.abs(n);
-    const m = Math.floor(a / 60);
-    const s = a % 60;
-    return `${sign}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return QG.core.format.formatLyricDeltaSec(sec);
   }
 
   function _lyricKindLabel(kind) {
@@ -2659,10 +2583,8 @@
     _closeLyricPreviewOverlay();
 
     try {
-      const res = await fetch("/api/lyrics/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const res = await api.lyricsApi.search(
+        {
           title,
           artist,
           album,
@@ -2674,9 +2596,9 @@
               ? _lyricSearchModalCtx.trackExplicit
               : null,
           filter_mismatched: true,
-        }),
-        signal: searchSignal,
-      });
+        },
+        searchSignal,
+      );
       const data = await res.json();
       if (
         !_lyricSearchModalCtx ||
@@ -2785,18 +2707,12 @@
     try {
       let res;
       if (shouldUseLocal) {
-        res = await fetch(
-          `/api/lyrics/local?audio_path=${encodeURIComponent(audioPath)}`,
-        );
+        res = await api.lyricsApi.local(audioPath);
         if (!res.ok) {
-          res = await fetch(
-            `/api/lyrics/fetch?id=${encodeURIComponent(id)}`,
-          );
+          res = await api.lyricsApi.fetchById(id);
         }
       } else {
-        res = await fetch(
-          `/api/lyrics/fetch?id=${encodeURIComponent(id)}`,
-        );
+        res = await api.lyricsApi.fetchById(id);
       }
       const data = await res.json();
       if (!data.ok) {
@@ -2872,15 +2788,11 @@
     const statusEl = document.getElementById("lyric-search-status");
     const lyricOutputs = _readLyricOutputChecks("popover");
     try {
-      const res = await fetch("/api/lyrics/attach", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          audio_path: ctx.audioPath,
-          lrclib_id: idNum,
-          write_sidecar: lyricOutputs.lrc,
-          write_metadata: lyricOutputs.metadata,
-        }),
+      const res = await api.lyricsApi.attach({
+        audio_path: ctx.audioPath,
+        lrclib_id: idNum,
+        write_sidecar: lyricOutputs.lrc,
+        write_metadata: lyricOutputs.metadata,
       });
       const data = await res.json();
       if (!data.ok) {
@@ -2996,10 +2908,7 @@
     let attachedLrclibId = null;
     if (audioPath) {
       try {
-        const res = await fetch(
-          `/api/lyrics/attached-id?audio_path=${encodeURIComponent(audioPath)}`,
-          { signal: attachSignal },
-        );
+        const res = await api.lyricsApi.attachedId(audioPath, attachSignal);
         const data = await res.json();
         if (data.ok && data.attached_lrclib_id != null) {
           attachedLrclibId = data.attached_lrclib_id;
@@ -3110,11 +3019,7 @@
         if (!rp) return;
         void (async () => {
           try {
-            const res = await fetch("/api/reveal-in-folder", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ audio_path: rp }),
-            });
+            const res = await api.utilityApi.revealInFolder(rp);
             await res.json();
           } catch (_) {
             /* ignore */
@@ -3192,11 +3097,7 @@
       );
     }
     _tsRegisterAudioPathAlbum(ap, (payload.lyric_album || "").trim());
-    void fetch("/api/download-history/upsert", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
+    void api.historyApi.upsert(payload).catch(() => {});
   }
 
   function _persistPendingSlotDownloadHistory(ev, preCard, resAlb) {
@@ -3252,18 +3153,14 @@
         chip.dataset.lyricDestination || "",
       );
     }
-    void fetch("/api/download-history/upsert", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
+    void api.historyApi.upsert(payload).catch(() => {});
   }
 
   async function _hydrateDownloadHistoryFromDb() {
     const list = document.getElementById("dl-track-status");
     if (!list) return;
     try {
-      const res = await fetch("/api/download-history");
+      const res = await api.historyApi.list();
       const data = await res.json();
       if (!data.ok || !Array.isArray(data.items)) return;
       const items = data.items;
@@ -3345,7 +3242,7 @@
   async function _resetTrackStatusCards() {
     _closeLyricSearchModal();
     try {
-      await fetch("/api/download-history/clear", { method: "POST" });
+      await api.historyApi.clear();
     } catch (_) {
       /* ignore */
     }
@@ -3440,7 +3337,7 @@
       const { data } = api
         ? await api.getJson("/api/status")
         : await (async () => {
-            const res = await fetch("/api/status");
+            const res = await api.statusApi.fetchRaw();
             return { data: await res.json() };
           })();
       updateStatus(data.ready);
@@ -3468,7 +3365,7 @@
     document.querySelectorAll(".btn-browse").forEach((btn) => {
       btn.addEventListener("click", async () => {
         try {
-          const res = await fetch("/api/browse_folder", { method: "POST" });
+          const res = await api.utilityApi.browseFolder();
           const data = await res.json();
           if (data.ok && data.path) {
             const targetId = btn.dataset.target;
@@ -3515,7 +3412,7 @@
       oauthSpinner.classList.remove("hidden");
 
       try {
-        const res = await fetch("/api/oauth/start", { method: "POST" });
+        const res = await api.setupApi.oauthStart();
         const data = await res.json();
         if (!data.ok) {
           oauthErr.textContent = data.error || "OAuth start failed.";
@@ -3572,16 +3469,12 @@
       tokenSpinner.classList.remove("hidden");
 
       try {
-        const res = await fetch("/api/token_login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const res = await api.setupApi.tokenLogin({
             user_id,
             user_auth_token,
             default_folder: folder,
             default_quality: quality,
-          }),
-        });
+          });
         const data = await res.json();
         if (data.ok) {
           showApp();
@@ -3627,16 +3520,12 @@
       spinner.classList.remove("hidden");
 
       try {
-        const res = await fetch("/api/setup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const res = await api.setupApi.setup({
             email,
             password,
             default_folder: folder,
             default_quality: quality,
-          }),
-        });
+          });
         const data = await res.json();
         if (data.ok) {
           showApp();
@@ -3823,17 +3712,13 @@
     if (_guiQueuePersistTimer) clearTimeout(_guiQueuePersistTimer);
     _guiQueuePersistTimer = window.setTimeout(() => {
       _guiQueuePersistTimer = null;
-      void fetch("/api/download-queue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(_buildGuiQueuePersistPayload()),
-      }).catch(() => {});
+      void api.queueApi.persist(_buildGuiQueuePersistPayload()).catch(() => {});
     }, 400);
   }
 
   async function _restoreGuiQueueFromServer() {
     try {
-      const res = await fetch("/api/download-queue");
+      const res = await api.queueApi.get();
       const data = await res.json();
       if (!data.ok) return;
       const items = Array.isArray(data.items) ? data.items : [];
@@ -3986,11 +3871,7 @@
     _scrollDlQueueToBottom();
 
     // Resolve metadata in background
-    fetch("/api/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    })
+    api.downloadApi.resolve({ url })
       .then((r) => r.json())
       .then((data) => {
         if (data.ok && data.result) {
@@ -4000,11 +3881,7 @@
           _updateQueueCard(card, data.result);
           
           if (data.result.type === "artist") {
-             fetch("/api/check_discography", {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({ url })
-             })
+             api.downloadApi.checkDiscography({ url })
              .then(r => r.json())
              .then(cd => {
                 if (cd.ok && cd.result) {
@@ -4277,9 +4154,7 @@
   }
 
   function _esc(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
+    return QG.core.dom.esc(s);
   }
 
   // Rebuild cards from queue data (used when switching back from text mode)
@@ -4320,11 +4195,7 @@
       if (!_urlQueue.some((q) => q.url === u)) {
         _urlQueue.push({ url: u, resolved: null });
         // Resolve in background
-        fetch("/api/resolve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: u }),
-        })
+        api.downloadApi.resolve({ url: u })
           .then((r) => r.json())
           .then((data) => {
             const qi = _urlQueue.find((q) => q.url === u);
@@ -4475,31 +4346,6 @@
     });
   }
 
-  // ── Collapse toggles ──────────────────────────────────────
-  function initCollapses() {
-    document.querySelectorAll(".collapse-toggle").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const body = document.getElementById(
-          btn.id.replace("-toggle", "-body"),
-        );
-        const expanded = btn.getAttribute("aria-expanded") === "true";
-        btn.setAttribute("aria-expanded", String(!expanded));
-        body.classList.toggle("hidden", expanded);
-      });
-    });
-  }
-
-  // ── Reset buttons ─────────────────────────────────────────
-  function initResetButtons() {
-    document.querySelectorAll(".btn-reset").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const targetId = btn.dataset.reset;
-        const def = btn.dataset.default;
-        const input = document.getElementById(targetId);
-        if (input) input.value = def;
-      });
-    });
-  }
 
   // ── Cover art mutual exclusivity ──────────────────────────
   // "Skip Cover Art" is incompatible with "Write Art to Tracks" and
@@ -4560,14 +4406,12 @@
   }
 
   function _persistLyricOutputSettings(lrcEnabled, metadataEnabled) {
-    fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    api.configApi
+      .post({
         lyrics_enabled: String(!!lrcEnabled),
         lyrics_embed_metadata: String(!!metadataEnabled),
-      }),
-    }).catch(() => {});
+      })
+      .catch(() => {});
   }
 
   function _bindLyricOutputPopoverToggles() {
@@ -4684,11 +4528,7 @@
       };
       const dir = document.getElementById("dl-directory").value.trim();
       if (dir) payload.default_folder = dir;
-      fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
+      api.configApi.post(payload).catch(() => {});
     }
 
     function _scheduleAutosave() {
@@ -5110,11 +4950,7 @@
             // Mark resolved-by-search and delete any prior .missing.txt.
             const prevPlaceholderPath = (preCard.dataset.missingPlaceholderPath || "").trim();
             if (prevPlaceholderPath) {
-              fetch("/api/delete_track_resolution_file", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ file_path: prevPlaceholderPath }),
-              }).catch(() => {});
+              api.replacementApi.deleteResolutionFile({ file_path: prevPlaceholderPath }).catch(() => {});
               delete preCard.dataset.missingPlaceholderPath;
             }
             preCard.dataset.resolvedBy = "search";
@@ -5307,7 +5143,7 @@
         dlBtn.style.cursor = "default";
         dlBtn.style.pointerEvents = "none";
         try {
-          await fetch("/api/pause", { method: "POST" });
+          await api.downloadApi.pause();
         } catch (_) {
           dlBtn.dataset.state = "downloading";
           dlBtn.style.opacity = "";
@@ -5407,11 +5243,7 @@
       };
 
       try {
-        const res = await fetch("/api/download", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+        const res = await api.downloadApi.start(payload);
         const data = await res.json();
         if (data.ok) {
           // Mark all visible queue cards as pending (keep them in the list)
@@ -5461,6 +5293,33 @@
       await _hydrateDownloadHistoryFromDb();
       _refreshAlbumQueueCardMetas();
     })();
+
+    window.QobuzGui.features = window.QobuzGui.features || {};
+    window.QobuzGui.features.history = {
+      countDownloadedForRelease(releaseAlbumId) {
+        return _countHistoryDownloadedForRelease(releaseAlbumId);
+      },
+      applyFilter() {
+        return _tsApplyHistoryFilter();
+      },
+    };
+    window.QobuzGui.features.queue = {
+      addUrl(url) {
+        return _addUrlToQueue(url);
+      },
+      removeUrl(url) {
+        return _removeFromQueueByUrl(url);
+      },
+      hasUrl(url) {
+        return _urlQueue.some((q) => q.url === url);
+      },
+      getQueuedUrlSet() {
+        return _queuedUrlSetForSearchHighlight();
+      },
+      handleDrop: window._handleDrop,
+      handleDropText: window._handleDropText,
+      updateBadge: window._updateQueueBadge,
+    };
   }
 
   // ── Search tab ────────────────────────────────────────────
@@ -5543,9 +5402,7 @@
     document.getElementById("search-empty").classList.add("hidden");
 
     try {
-      const res = await fetch(
-        `/api/search?q=${encodeURIComponent(query)}&type=${type}&limit=${_QOBUZ_SEARCH_MAX}`,
-      );
+      const res = await api.searchApi.search(query, type, _QOBUZ_SEARCH_MAX);
       const data = await res.json();
 
       if (!data.ok) {
@@ -5834,9 +5691,7 @@
 
     try {
       // For lucky mode, we fetch results and queue the top N
-      const res = await fetch(
-        `/api/search?q=${encodeURIComponent(query)}&type=${type}&limit=${number}`,
-      );
+      const res = await api.searchApi.search(query, type, number);
       const data = await res.json();
       if (data.ok) {
         const results = data.results || [];
@@ -5861,7 +5716,7 @@
       const { data } = api
         ? await api.getJson("/api/status")
         : await (async () => {
-            const res = await fetch("/api/status");
+            const res = await api.statusApi.fetchRaw();
             return { data: await res.json() };
           })();
       const cfg = data.config || {};
@@ -5972,136 +5827,7 @@
     if (el) el.checked = val;
   }
 
-  let _updateInfo = null;
   let _settingsUpdateBtnResetTimer = null;
-
-  function initUpdateBanner() {
-    const banner = document.getElementById("update-banner");
-    const installBtn = document.getElementById("update-banner-install");
-    const dismissBtn = document.getElementById("update-banner-dismiss");
-    if (!banner || !installBtn || !dismissBtn) return;
-
-    dismissBtn.addEventListener("click", () => {
-      if (_updateInfo && _updateInfo.latest_version) {
-        try {
-          sessionStorage.setItem(
-            "qobuz-dl-update-dismiss",
-            String(_updateInfo.latest_version),
-          );
-        } catch (e) {
-          /* ignore */
-        }
-      }
-      banner.classList.add("hidden");
-    });
-
-    installBtn.addEventListener("click", async () => {
-      if (!_updateInfo || !_updateInfo.download_url) return;
-      installBtn.disabled = true;
-      const prev = installBtn.textContent;
-      installBtn.textContent = "Downloading…";
-      try {
-        const res = await fetch("/api/update/install", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ download_url: _updateInfo.download_url }),
-        });
-        const raw = await res.text();
-        let data = {};
-        try {
-          data = raw ? JSON.parse(raw) : {};
-        } catch {
-          throw new Error(
-            res.ok
-              ? "Invalid response from server, try again or install from GitHub Releases."
-              : `Install failed (HTTP ${res.status}).`,
-          );
-        }
-        if (!data.ok) throw new Error(data.error || "Install failed");
-        installBtn.textContent = "Restarting…";
-      } catch (e) {
-        alert(e.message);
-        installBtn.disabled = false;
-        installBtn.textContent = prev;
-      }
-    });
-  }
-
-  async function fetchUpdateCheck(force) {
-    const q = force ? "?force=1" : "";
-    const res = await fetch("/api/update/check" + q);
-    return await res.json();
-  }
-
-  function updateReleaseNotesUrl(data) {
-    const rawTag = String(
-      (data && data.tag_name) || (data && data.latest_version) || "",
-    ).trim();
-    if (!rawTag) return "";
-    const tag = /^v/i.test(rawTag) ? rawTag : "v" + rawTag;
-    return `https://github.com/peykc/qobuz-dl-gui/releases/tag/${encodeURIComponent(tag)}`;
-  }
-
-  function showUpdateBannerIfNeeded(data) {
-    const banner = document.getElementById("update-banner");
-    const textEl = document.getElementById("update-banner-text");
-    const installBtn = document.getElementById("update-banner-install");
-    const linkEl = document.getElementById("update-banner-link");
-    if (!banner || !textEl || !installBtn || !linkEl) return;
-    _updateInfo = data;
-    if (!data || !data.update_available) {
-      banner.classList.add("hidden");
-      return;
-    }
-    if (!data.test_mode) {
-      try {
-        const dismissed = sessionStorage.getItem("qobuz-dl-update-dismiss");
-        if (dismissed && dismissed === String(data.latest_version)) {
-          banner.classList.add("hidden");
-          return;
-        }
-      } catch (e) {
-        /* ignore */
-      }
-    }
-    let msg =
-      "Version " +
-      data.latest_version +
-      " is available (you have " +
-      data.current_version +
-      ").";
-    if (!data.download_url) {
-      msg += " Download the new build from the release page.";
-    } else if (!data.can_auto_install) {
-      msg += data.frozen
-        ? " Automatic install is not available for this platform yet."
-        : " Automatic install only works in the packaged desktop build.";
-    }
-    textEl.textContent = msg;
-    const releaseNotesUrl = updateReleaseNotesUrl(data);
-    if (releaseNotesUrl) {
-      linkEl.href = releaseNotesUrl;
-      linkEl.classList.remove("hidden");
-    } else {
-      linkEl.classList.add("hidden");
-    }
-    if (data.can_auto_install && data.download_url) {
-      installBtn.classList.remove("hidden");
-    } else {
-      installBtn.classList.add("hidden");
-    }
-    banner.classList.remove("hidden");
-  }
-
-  async function refreshUpdateCheck(force) {
-    try {
-      const data = await fetchUpdateCheck(force);
-      showUpdateBannerIfNeeded(data);
-      return data;
-    } catch (e) {
-      return null;
-    }
-  }
 
   function initSettings() {
     // ── Gear button / popover open-close ─────────────────────
@@ -6319,11 +6045,7 @@
 
     async function persistFeedbackHistoryToServer(items) {
       try {
-        await fetch("/api/feedback-history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: items.slice(0, 100) }),
-        });
+        await api.feedbackApi.persistHistory(items);
       } catch (_) {}
     }
 
@@ -6337,7 +6059,7 @@
 
     async function hydrateFeedbackHistoryFromDisk() {
       try {
-        const res = await fetch("/api/feedback-history");
+        const res = await api.feedbackApi.getHistory();
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok || !Array.isArray(data.items)) return;
         const disk = data.items;
@@ -6746,7 +6468,7 @@
       logsModalLoading.classList.remove("hidden");
       logsModalBody.textContent = "";
       try {
-        const res = await fetch("/api/session-logs");
+        const res = await api.sessionLogsApi.get();
         const text = res.ok ? await res.text() : "";
         logsModalBody.textContent =
           (text && text.trim()) || "(No log lines captured in this session yet.)";
@@ -6827,7 +6549,7 @@
         let logText = "";
         if (issueReportAttachLogs()) {
           try {
-            const lr = await fetch("/api/session-logs");
+            const lr = await api.sessionLogsApi.get();
             if (lr.ok) {
               logText = await lr.text();
               const maxL = 100000;
@@ -6988,11 +6710,7 @@
       reauthSpinner.classList.remove("hidden");
 
       try {
-        const res = await fetch("/api/oauth/start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
+        const res = await api.setupApi.oauthStart();
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "OAuth start failed");
 
@@ -7030,7 +6748,9 @@
         checkUpdBtn.classList.remove("settings-check-updates-btn--ok", "settings-check-updates-btn--err");
         checkUpdBtn.textContent = "Checking...";
         try {
-          const data = await refreshUpdateCheck(true);
+          const data = await window.QobuzGui.features.updateBanner.refreshUpdateCheck(
+            true,
+          );
           if (!data) throw new Error("Network error");
           if (data.skipped && data.reason === "repo_not_configured") {
             showButtonFeedback(
@@ -7076,7 +6796,7 @@
         )
           return;
         try {
-          const res = await fetch("/api/purge", { method: "POST" });
+          const res = await api.setupApi.purge();
           const data = await res.json();
           if (!data.ok) throw new Error(data.error || "Purge failed");
           showFeedback(feedback, "Database purged.", true);
@@ -7116,17 +6836,17 @@
 
   // ── Init ─────────────────────────────────────────────────
   async function init() {
-    initCollapses();
-    initResetButtons();
+    window.QobuzGui.ui.collapses.init();
+    window.QobuzGui.ui.resetButtons.init();
     initAuthTabs();
     initSetup();
     initBrowseButtons();
     initDownload();
     initSearch();
     initSettings();
-    initUpdateBanner();
+    window.QobuzGui.features.updateBanner.init();
     setTimeout(() => {
-      void refreshUpdateCheck(true);
+      void window.QobuzGui.features.updateBanner.refreshUpdateCheck(true);
     }, 800);
 
     const status = await checkStatus();
@@ -7139,7 +6859,7 @@
         dot.className = "status-dot connecting";
         label.textContent = "Connecting…";
         try {
-          const res = await fetch("/api/connect", { method: "POST" });
+          const res = await api.setupApi.connect();
           const data = await res.json();
           updateStatus(data.ok);
         } catch (e) {
@@ -7152,946 +6872,11 @@
     }
   }
 
-  // ── Format field help panels (click ⓘ to open; click out to close) ──
-  function initFormatTooltips() {
-    let openTip = null;
-    const tooltipToTrigger = new Map();
-
-    function positionFormatTooltip(tip, anchorEl) {
-      const zone = anchorEl.closest(".form-group");
-      if (!zone) return;
-      
-      tip.style.position = "fixed";
-      tip.style.display = "block";
-      tip.style.top = "auto";
-      tip.style.bottom = "auto";
-      tip.style.left = "auto";
-      tip.style.right = "auto";
-      tip.style.transform = "";
-      
-      const tipRect = tip.getBoundingClientRect();
-      const tipHeight = tipRect.height;
-      const tipWidth = tipRect.width;
-      
-      const zoneRect = zone.getBoundingClientRect();
-      const margin = 8;
-      
-      const spaceAbove = zoneRect.top;
-      const spaceBelow = window.innerHeight - zoneRect.bottom;
-      const spaceLeft = zoneRect.left;
-      const spaceRight = window.innerWidth - zoneRect.right;
-      
-      if (spaceAbove >= tipHeight + margin) {
-        tip.style.bottom = (window.innerHeight - zoneRect.top + margin) + "px";
-        const rightFromEdge = window.innerWidth - zoneRect.right;
-        tip.style.right = Math.max(margin, rightFromEdge) + "px";
-      } else if (spaceRight >= tipWidth + margin) {
-        tip.style.left = (zoneRect.right + margin) + "px";
-        let topPos = zoneRect.top + (zoneRect.height / 2) - (tipHeight / 2);
-        if (topPos < margin) {
-          topPos = margin;
-        } else if (topPos + tipHeight + margin > window.innerHeight) {
-          topPos = window.innerHeight - tipHeight - margin;
-        }
-        tip.style.top = topPos + "px";
-      } else if (spaceLeft >= tipWidth + margin) {
-        tip.style.right = (window.innerWidth - zoneRect.left + margin) + "px";
-        let topPos = zoneRect.top + (zoneRect.height / 2) - (tipHeight / 2);
-        if (topPos < margin) {
-          topPos = margin;
-        } else if (topPos + tipHeight + margin > window.innerHeight) {
-          topPos = window.innerHeight - tipHeight - margin;
-        }
-        tip.style.top = topPos + "px";
-      } else if (spaceBelow >= tipHeight + margin) {
-        tip.style.top = (zoneRect.bottom + margin) + "px";
-        const rightFromEdge = window.innerWidth - zoneRect.right;
-        tip.style.right = Math.max(margin, rightFromEdge) + "px";
-      } else {
-        tip.style.top = "50%";
-        tip.style.left = "50%";
-        tip.style.transform = "translate(-50%, -50%)";
-      }
-      
-      if (tip.style.right && tip.style.right !== "auto" && (!tip.style.left || tip.style.left === "auto")) {
-        const rect = tip.getBoundingClientRect();
-        if (rect.left < margin) {
-          tip.style.right = "auto";
-          tip.style.left = margin + "px";
-        }
-      }
-    }
-
-    const formatExamples = {
-      "{artist}": "Bastille",
-      "{albumartist}": "Bastille",
-      "{album}": "Bad Blood X (10th Anniversary Edition)",
-      "{album_title_base}": "Bad Blood X",
-      "{year}": "2013",
-      "{release_date}": "2013-03-04",
-      "{label}": "UMC (Universal Music Catalogue)",
-      "{barcode}": "0602458674385",
-      "{disc_count}": "2",
-      "{track_count}": "33",
-      "{bit_depth}": "24",
-      "{sampling_rate}": "96.0",
-      "{format}": "FLAC",
-      "{tracknumber}": "08",
-      "{track_number}": "08",
-      "{tracktitle}": "Icarus (Dan's Bedroom Demo)",
-      "{track_title_base}": "Icarus (feat. Maya)",
-      "{version}": "10th Anniversary Edition",
-      "{disc_number}": "02",
-      "{disc_number_unpadded}": "2",
-      "{isrc}": "GBUM72301353"
-    };
-
-    function generatePreview(text) {
-      return text.replace(/\{[^}]+\}/g, match => formatExamples[match] || match);
-    }
-
-    function updateBuilderPreview(tip, builderInput) {
-      const preview = tip.querySelector(".fmt-preview-output");
-      if (!preview || !builderInput) return;
-      const val = builderInput.value;
-      if (!val) {
-        resetFormatPreview(tip);
-        return;
-      }
-      let generated = generatePreview(val);
-      const targetId = builderInput.getAttribute("data-target");
-      if (targetId && targetId.includes("track-format")) {
-        generated += ".flac";
-      }
-      preview.textContent = generated;
-      preview.classList.remove("fmt-preview-placeholder");
-      preview.classList.add("fmt-preview-builder");
-    }
-
-    function resetFormatPreview(tip) {
-      const preview = tip.querySelector(".fmt-preview-output");
-      const builderInput = tip.querySelector(".fmt-builder-input");
-      if (!preview) return;
-      if (builderInput && builderInput.value) {
-        updateBuilderPreview(tip, builderInput);
-        return;
-      }
-      const ph = preview.dataset.placeholder || "Hover a template or type in builder";
-      preview.textContent = ph;
-      preview.classList.add("fmt-preview-placeholder");
-      preview.classList.remove("fmt-preview-builder");
-    }
-
-    function closeAllFormatTips() {
-      if (!openTip) return;
-      openTip.style.display = "none";
-      resetFormatPreview(openTip);
-      const prevId = tooltipToTrigger.get(openTip.id);
-      const prevTrigger = document.getElementById(prevId);
-      if (prevTrigger) {
-        prevTrigger.classList.remove("active");
-        prevTrigger.setAttribute("aria-expanded", "false");
-      }
-      openTip = null;
-    }
-
-    function bindTemplatePreviews(tip) {
-      const preview = tip.querySelector(".fmt-preview-output");
-      const container = tip.querySelector(".fmt-templates");
-      const builderInput = tip.querySelector(".fmt-builder-input");
-      const builderHighlights = tip.querySelector(".fmt-builder-highlights");
-      
-      if (!preview) return;
-      const placeholder = preview.dataset.placeholder || "Hover a template or type in builder";
-
-      if (container) {
-        container.querySelectorAll(".fmt-template-chip").forEach((chip) => {
-          chip.addEventListener("mouseenter", () => {
-            const text = chip.getAttribute("data-preview");
-            if (!text) return;
-            preview.textContent = text;
-            preview.classList.remove("fmt-preview-placeholder");
-            preview.classList.remove("fmt-preview-builder");
-          });
-          chip.addEventListener("click", () => {
-            if (builderInput) {
-              builderInput.value = chip.textContent;
-              builderInput.dispatchEvent(new Event("input", { bubbles: true }));
-              
-              // Flash effect
-              const originalBg = chip.style.background;
-              chip.style.background = "var(--success-dim)";
-              chip.style.borderColor = "var(--success)";
-              setTimeout(() => {
-                chip.style.background = originalBg;
-                chip.style.borderColor = "";
-              }, 300);
-            }
-          });
-        });
-        container.addEventListener("mouseleave", () => {
-          resetFormatPreview(tip);
-        });
-      }
-
-      if (builderInput && builderHighlights) {
-        const applyBtn = tip.querySelector(".fmt-builder-apply");
-        const targetId = builderInput.getAttribute("data-target");
-        const targetInput = targetId ? document.getElementById(targetId) : null;
-
-        const checkApplyState = () => {
-          if (!applyBtn || !targetInput) return;
-          if (targetInput.value !== builderInput.value) {
-            applyBtn.classList.add("active");
-            applyBtn.disabled = false;
-          } else {
-            applyBtn.classList.remove("active");
-            applyBtn.disabled = true;
-          }
-        };
-
-        const updateHighlights = () => {
-          const text = builderInput.value;
-          // Escape HTML
-          const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          // Wrap {vars} in span
-          const highlighted = escaped.replace(/(\{[^}]+\})/g, '<span class="var">$1</span>');
-          builderHighlights.innerHTML = highlighted;
-          updateBuilderPreview(tip, builderInput);
-          checkApplyState();
-        };
-
-        builderInput.addEventListener("input", () => {
-          updateHighlights();
-        });
-
-        if (applyBtn && targetInput) {
-          applyBtn.addEventListener("click", () => {
-            if (applyBtn.disabled) return;
-            targetInput.value = builderInput.value;
-            targetInput.dispatchEvent(new Event("input", { bubbles: true }));
-            checkApplyState();
-          });
-        }
-
-        builderInput.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            if (applyBtn && !applyBtn.disabled) {
-              applyBtn.click();
-            }
-          }
-        });
-        
-        // Sync back from main input if user types there while tooltip is open
-        if (targetInput) {
-          targetInput.addEventListener("input", () => {
-            if (openTip === tip && builderInput.value !== targetInput.value) {
-              builderInput.value = targetInput.value;
-              updateHighlights();
-            }
-          });
-        }
-        builderInput.addEventListener("scroll", () => {
-          builderHighlights.scrollLeft = builderInput.scrollLeft;
-        });
-        
-        // Handle clicking variables
-        tip.querySelectorAll(".fmt-vars-table code").forEach(codeEl => {
-          codeEl.addEventListener("click", () => {
-            const varText = codeEl.textContent;
-            const start = builderInput.selectionStart;
-            const end = builderInput.selectionEnd;
-            const val = builderInput.value;
-            builderInput.value = val.substring(0, start) + varText + val.substring(end);
-            builderInput.selectionStart = builderInput.selectionEnd = start + varText.length;
-            builderInput.focus();
-            updateHighlights();
-          });
-        });
-      }
-    }
-
-    const pairs = [
-      ["folder-format-help", "folder-format-tooltip"],
-      ["track-format-help", "track-format-tooltip"],
-      ["multi-disc-format-help", "multi-disc-format-tooltip"],
-    ];
-
-    /** Open tooltip id → its format text field (only this element keeps the panel open on click-outside). */
-    const tooltipInputId = {
-      "folder-format-tooltip": "dl-folder-format",
-      "track-format-tooltip": "dl-track-format",
-      "multi-disc-format-tooltip": "dl-multiple-disc-track-format",
-    };
-
-    pairs.forEach(([triggerId, tooltipId]) => {
-      tooltipToTrigger.set(tooltipId, triggerId);
-    });
-
-    pairs.forEach(([triggerId, tooltipId]) => {
-      const trigger = document.getElementById(triggerId);
-      const tip = document.getElementById(tooltipId);
-      if (!trigger || !tip) return;
-
-      // Keep format popovers out of the download/settings stacking contexts.
-      if (tip.parentNode !== document.body) document.body.appendChild(tip);
-      bindTemplatePreviews(tip);
-
-      function toggleFromTrigger(e) {
-        if (e) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-        const wasOpen = openTip === tip && tip.style.display === "block";
-        closeAllFormatTips();
-        if (!wasOpen) {
-          positionFormatTooltip(tip, trigger);
-          openTip = tip;
-          trigger.classList.add("active");
-          trigger.setAttribute("aria-expanded", "true");
-          
-          // Sync builder with main input when opening
-          const builderInput = tip.querySelector(".fmt-builder-input");
-          if (builderInput) {
-            const targetId = builderInput.getAttribute("data-target");
-            if (targetId) {
-              const targetInput = document.getElementById(targetId);
-              if (targetInput) {
-                builderInput.value = targetInput.value;
-                builderInput.dispatchEvent(new Event("input", { bubbles: true }));
-              }
-            }
-          }
-        }
-      }
-
-      trigger.addEventListener("click", toggleFromTrigger);
-      trigger.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          toggleFromTrigger(e);
-        }
-      });
-    });
-
-    let mousedownTarget = null;
-    document.addEventListener("mousedown", (e) => {
-      mousedownTarget = e.target;
-    });
-
-    document.addEventListener("click", (e) => {
-      if (!openTip) return;
-      const target = mousedownTarget || e.target;
-      if (openTip.contains(target)) return;
-      const triggers = pairs
-        .map(([id]) => document.getElementById(id))
-        .filter(Boolean);
-      if (triggers.some((t) => t.contains(target))) return;
-      const fieldId = tooltipInputId[openTip.id];
-      if (fieldId && target && target.id === fieldId) return;
-      closeAllFormatTips();
-    });
-
-    window.addEventListener("resize", () => {
-      if (!openTip) return;
-      const tid = tooltipToTrigger.get(openTip.id);
-      const tr = document.getElementById(tid);
-      if (tr) positionFormatTooltip(openTip, tr);
-    });
-
-    let isHoveringVars = false;
-
-    pairs.forEach(([triggerId, tooltipId]) => {
-      const tip = document.getElementById(tooltipId);
-      if (!tip) return;
-      const scrollArea = tip.querySelector(".fmt-vars-scroll");
-      if (scrollArea) {
-        scrollArea.addEventListener("mouseenter", () => isHoveringVars = true);
-        scrollArea.addEventListener("mouseleave", () => isHoveringVars = false);
-      }
-    });
-
-    // Scroll does not bubble; use capture so any scrollable ancestor closes the panel.
-    window.addEventListener(
-      "scroll",
-      (e) => {
-        if (isHoveringVars) return;
-        if (e.target && e.target.tagName === "INPUT") return;
-        if (e.target && e.target.classList) {
-          if (
-            e.target.classList.contains("fmt-vars-scroll") ||
-            e.target.classList.contains("fmt-builder-input") ||
-            e.target.classList.contains("fmt-builder-highlights") ||
-            e.target.classList.contains("format-tooltip")
-          ) {
-            return;
-          }
-        }
-        // Auto-scroll on the download history list must not dismiss the panel.
-        if (
-          e.target &&
-          typeof e.target.closest === "function" &&
-          (e.target.closest("#dl-track-status") ||
-            e.target.closest("#lyric-search-popover") ||
-            e.target.closest("#attach-track-popover"))
-        ) {
-          return;
-        }
-        closeAllFormatTips();
-      },
-      true,
-    );
-  }
-
-  function initDonationPopover() {
-    const btn = document.getElementById("monero-btn");
-    const pop = document.getElementById("donation-popover");
-    const copyBtn = document.getElementById("copy-address-btn");
-    const addrEl = document.getElementById("monero-address");
-    const copyText = document.getElementById("copy-text");
-
-    if (!btn || !pop) return;
-
-    function togglePopover(e) {
-      if (e) e.stopPropagation();
-      const isHidden = pop.classList.contains("hidden");
-
-      if (isHidden) {
-        // Show and position
-        pop.classList.remove("hidden");
-        const btnRect = btn.getBoundingClientRect();
-        
-        // Position above the button
-        pop.style.bottom = (window.innerHeight - btnRect.top + 10) + "px";
-        
-        // Align with the button's center, but stay within window
-        let left = btnRect.left + (btnRect.width / 2) - (pop.offsetWidth / 2);
-        pop.style.left = Math.max(10, Math.min(left, window.innerWidth - pop.offsetWidth - 10)) + "px";
-        
-        btn.classList.add("active");
-      } else {
-        hidePopover();
-      }
-    }
-
-    function hidePopover() {
-      pop.classList.add("hidden");
-      btn.classList.remove("active");
-    }
-
-    btn.addEventListener("click", togglePopover);
-
-    // Close on click outside
-    document.addEventListener("click", (e) => {
-      if (!pop.classList.contains("hidden") && !pop.contains(e.target) && !btn.contains(e.target)) {
-        hidePopover();
-      }
-    });
-
-    if (copyBtn && addrEl) {
-      copyBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const addr = addrEl.textContent.trim();
-        navigator.clipboard.writeText(addr).then(() => {
-          const original = copyText.textContent;
-          copyText.textContent = "Copied!";
-          copyBtn.style.background = "var(--success)";
-          copyBtn.style.color = "white";
-          setTimeout(() => {
-            copyText.textContent = original;
-            copyBtn.style.background = "";
-            copyBtn.style.color = "";
-          }, 2000);
-        });
-      });
-    }
-  }
-
-  function initGlobalTooltip() {
-    const tooltip = document.getElementById("global-tooltip");
-    if (!tooltip) return;
-
-    let activeTarget = null;
-
-    function _viewportClientBox() {
-      const vv = window.visualViewport;
-      if (vv) {
-        return {
-          left: vv.offsetLeft,
-          top: vv.offsetTop,
-          width: vv.width,
-          height: vv.height,
-        };
-      }
-      return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
-    }
-
-    /** Nudge tooltip so its paint box stays inside the client viewport (WebView quirks, scrollbars). */
-    function _clampTooltipToViewport(marginPx) {
-      const m = marginPx;
-      void tooltip.offsetWidth;
-      let r = tooltip.getBoundingClientRect();
-      let baseLeft = parseFloat(tooltip.style.left);
-      let baseTop = parseFloat(tooltip.style.top);
-      if (!Number.isFinite(baseLeft)) baseLeft = r.left;
-      if (!Number.isFinite(baseTop)) baseTop = r.top;
-      for (let pass = 0; pass < 3; pass++) {
-        const vp = _viewportClientBox();
-        const minL = vp.left + m;
-        const maxR = vp.left + vp.width - m;
-        const minT = vp.top + m;
-        const maxB = vp.top + vp.height - m;
-        let dx = 0;
-        let dy = 0;
-        if (r.left < minL) dx = minL - r.left;
-        else if (r.right > maxR) dx = maxR - r.right;
-        if (r.top < minT) dy = minT - r.top;
-        else if (r.bottom > maxB) dy = maxB - r.bottom;
-        if (!dx && !dy) break;
-        baseLeft += dx;
-        baseTop += dy;
-        tooltip.style.left = baseLeft + "px";
-        tooltip.style.top = baseTop + "px";
-        void tooltip.offsetWidth;
-        r = tooltip.getBoundingClientRect();
-      }
-    }
-
-    const formatHelpTooltipId = {
-      "folder-format-help": "folder-format-tooltip",
-      "track-format-help": "track-format-tooltip",
-      "multi-disc-format-help": "multi-disc-format-tooltip",
-    };
-
-    function shouldSuppressDataTip(targetEl) {
-      if (!targetEl || !targetEl.id) return false;
-      if (targetEl.id === "settings-gear-btn") {
-        const pop = document.getElementById("settings-popover");
-        return !!(pop && !pop.classList.contains("hidden"));
-      }
-      if (targetEl.id === "report-issue-btn") {
-        const pop = document.getElementById("issue-report-popover");
-        return !!(pop && !pop.classList.contains("hidden"));
-      }
-      if (targetEl.id === "monero-btn") {
-        const pop = document.getElementById("donation-popover");
-        return !!(pop && !pop.classList.contains("hidden"));
-      }
-      const tipId = formatHelpTooltipId[targetEl.id];
-      if (tipId) {
-        const tip = document.getElementById(tipId);
-        return !!(tip && tip.style.display === "block");
-      }
-      return false;
-    }
-
-    document.addEventListener("mouseover", (e) => {
-      let el = e.target;
-      if (!el) return;
-      if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
-      if (!el || el.nodeType !== Node.ELEMENT_NODE) return;
-
-      let targetEl = el.closest("[data-tip]");
-      let tipText = targetEl ? targetEl.getAttribute("data-tip") : null;
-
-      if (!targetEl) {
-        // Auto-detect truncation (native ``title`` is not set on lyric rows | avoids bogus browser tooltips)
-        const style = window.getComputedStyle(el);
-        if (
-          style.textOverflow === "ellipsis" &&
-          el.scrollWidth - el.offsetWidth > 2
-        ) {
-          targetEl = el;
-          tipText = el.textContent.trim();
-        }
-      }
-
-      if (targetEl && tipText && shouldSuppressDataTip(targetEl)) {
-        return;
-      }
-
-      if (targetEl && tipText) {
-        activeTarget = targetEl;
-        const iconSrc = targetEl.getAttribute("data-tip-icon");
-        const safeIcon =
-          iconSrc &&
-          typeof iconSrc === "string" &&
-          iconSrc.trim().startsWith("/gui/") &&
-          !iconSrc.includes("..");
-        tooltip.classList.toggle("global-tooltip--with-icon", !!safeIcon);
-        if (safeIcon) {
-          tooltip.replaceChildren();
-          const lines = tipText.split(/\r?\n/);
-          const titleLine = (lines[0] || "").trim();
-          const bodyRest = lines.slice(1).join("\n").trim();
-          if (bodyRest) {
-            const stack = document.createElement("div");
-            stack.className = "global-tooltip-tag-stack";
-            const titleEl = document.createElement("div");
-            titleEl.className = "global-tooltip-tag-title";
-            titleEl.textContent = titleLine;
-            stack.appendChild(titleEl);
-            const row = document.createElement("div");
-            row.className = "global-tooltip-provider-row";
-            const img = document.createElement("img");
-            img.className = "global-tooltip-icon";
-            img.src = iconSrc.trim();
-            img.alt = "";
-            img.decoding = "async";
-            const textEl = document.createElement("div");
-            textEl.className = "global-tooltip-provider-text";
-            textEl.textContent = bodyRest;
-            row.appendChild(img);
-            row.appendChild(textEl);
-            stack.appendChild(row);
-            tooltip.appendChild(stack);
-          } else {
-            const row = document.createElement("div");
-            row.className = "global-tooltip-icon-row";
-            const img = document.createElement("img");
-            img.className = "global-tooltip-icon";
-            img.src = iconSrc.trim();
-            img.alt = "";
-            img.decoding = "async";
-            const textEl = document.createElement("div");
-            textEl.className = "global-tooltip-icon-text";
-            textEl.textContent = titleLine || tipText;
-            row.appendChild(img);
-            row.appendChild(textEl);
-            tooltip.appendChild(row);
-          }
-        } else {
-          tooltip.textContent = tipText;
-        }
-        tooltip.classList.add("visible");
-
-        void tooltip.offsetWidth;
-
-        const rect = targetEl.getBoundingClientRect();
-        const margin = 10;
-        const tipW = tooltip.offsetWidth;
-        const tipH = tooltip.offsetHeight;
-        const vpBox = _viewportClientBox();
-        const vpBot = vpBox.top + vpBox.height;
-        const place = (
-          targetEl.getAttribute("data-tip-placement") || ""
-        ).toLowerCase();
-        let top;
-        if (place === "bottom") {
-          top = rect.bottom + margin;
-          if (top + tipH > vpBot - margin) {
-            top = rect.top - tipH - margin;
-          }
-        } else if (place === "top") {
-          top = rect.top - tipH - margin;
-          if (top < vpBox.top + margin) top = rect.bottom + margin;
-        } else {
-          top = rect.top - tipH - margin;
-          if (top < vpBox.top + margin) top = rect.bottom + margin;
-        }
-        top = Math.max(
-          vpBox.top + margin,
-          Math.min(
-            top,
-            vpBot - tipH - margin,
-          ),
-        );
-
-        let left = rect.left + rect.width / 2 - tipW / 2;
-        const leftMax = vpBox.left + vpBox.width - tipW - margin;
-        left = Math.max(vpBox.left + margin, Math.min(left, leftMax));
-
-        tooltip.style.top = top + "px";
-        tooltip.style.left = left + "px";
-        _clampTooltipToViewport(margin);
-      }
-    });
-
-    document.addEventListener("mouseout", (e) => {
-      if (activeTarget && !activeTarget.contains(e.relatedTarget)) {
-        tooltip.classList.remove("visible");
-        activeTarget = null;
-      }
-    });
-
-    document.addEventListener("scroll", () => {
-      if (activeTarget) {
-        tooltip.classList.remove("visible");
-        activeTarget = null;
-      }
-    }, true);
-
-    // Capture so this runs before handlers that call stopPropagation() (e.g. monero, format help).
-    document.addEventListener(
-      "click",
-      () => {
-        if (activeTarget) {
-          tooltip.classList.remove("visible");
-          activeTarget = null;
-        }
-      },
-      true,
-    );
-  }
-
-  function initTextFieldContextMenu() {
-    const menu = document.getElementById("text-field-context-menu");
-    if (!menu) return;
-
-    const tooltip = document.getElementById("global-tooltip");
-    let activeField = null;
-
-    const INPUT_TYPES_TEXT = new Set([
-      "text",
-      "search",
-      "url",
-      "email",
-      "password",
-      "tel",
-      "number",
-      "",
-    ]);
-
-    function isTextLikeField(el) {
-      if (!el || el.disabled) return false;
-      if (el.isContentEditable) return true;
-      if (el.tagName === "TEXTAREA") return true;
-      if (el.tagName !== "INPUT") return false;
-      const t = String(el.type || "text").toLowerCase();
-      return INPUT_TYPES_TEXT.has(t);
-    }
-
-    function resolveField(target) {
-      let n = target;
-      if (n && n.nodeType === Node.TEXT_NODE) n = n.parentElement;
-      let cur = n;
-      let guard = 0;
-      while (cur && cur !== document.documentElement && guard++ < 28) {
-        if (isTextLikeField(cur)) return cur;
-        cur = cur.parentElement;
-      }
-      return null;
-    }
-
-    function pickField(e) {
-      let f = resolveField(e.target);
-      if (!f) {
-        const hit = document.elementFromPoint(e.clientX, e.clientY);
-        f = resolveField(hit);
-      }
-      return f;
-    }
-
-    function hideMenu() {
-      menu.classList.add("hidden");
-      menu.setAttribute("aria-hidden", "true");
-      activeField = null;
-    }
-
-    function clampMenu(clientX, clientY) {
-      const margin = 8;
-      void menu.offsetWidth;
-      const r = menu.getBoundingClientRect();
-      const vv = window.visualViewport;
-      const vl = vv ? vv.offsetLeft : 0;
-      const vt = vv ? vv.offsetTop : 0;
-      const vw = vv ? vv.width : window.innerWidth;
-      const vh = vv ? vv.height : window.innerHeight;
-      let left = clientX;
-      let top = clientY;
-      if (left + r.width > vl + vw - margin) left = vl + vw - r.width - margin;
-      if (left < vl + margin) left = vl + margin;
-      if (top + r.height > vt + vh - margin) top = vt + vh - r.height - margin;
-      if (top < vt + margin) top = vt + margin;
-      menu.style.left = left + "px";
-      menu.style.top = top + "px";
-    }
-
-    function selectionLength(field) {
-      if (field.isContentEditable) {
-        const sel = window.getSelection();
-        if (!sel || sel.rangeCount === 0) return 0;
-        return String(sel.toString() || "").length;
-      }
-      if (
-        field.selectionStart != null &&
-        field.selectionEnd != null
-      ) {
-        return Math.abs(field.selectionEnd - field.selectionStart);
-      }
-      return 0;
-    }
-
-    function updateItemStates(field) {
-      const ce = field.isContentEditable;
-      const ro = ce ? false : field.readOnly;
-      const hasSel = selectionLength(field) > 0;
-      const canCut = !ro && hasSel;
-      const canCopy = hasSel;
-      const canPaste = !ro;
-
-      menu.querySelectorAll("[data-action]").forEach((btn) => {
-        const a = btn.getAttribute("data-action");
-        let dis = false;
-        if (a === "cut") dis = !canCut;
-        else if (a === "copy") dis = !canCopy;
-        else if (a === "paste") dis = !canPaste;
-        btn.disabled = dis;
-        btn.setAttribute("aria-disabled", dis ? "true" : "false");
-      });
-    }
-
-    function insertAtCaret(el, text) {
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
-      const val = el.value;
-      const before = val.slice(0, start);
-      const after = val.slice(end);
-      el.value = before + text + after;
-      const pos = start + text.length;
-      el.setSelectionRange(pos, pos);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-
-    function execCut(field) {
-      field.focus();
-      document.execCommand("cut");
-    }
-
-    function execCopy(field) {
-      field.focus();
-      document.execCommand("copy");
-    }
-
-    function execPaste(field) {
-      field.focus();
-      const applyText = (t) => {
-        const text = typeof t === "string" ? t : "";
-        if (field.isContentEditable) {
-          document.execCommand("insertText", false, text);
-        } else {
-          insertAtCaret(field, text);
-        }
-      };
-
-      return fetch("/api/clipboard-text")
-        .then((r) => r.json())
-        .then((data) => {
-          if (data && data.ok && typeof data.text === "string") {
-            applyText(data.text);
-            return;
-          }
-          throw new Error("backend clipboard unavailable");
-        })
-        .catch(() =>
-          navigator.clipboard.readText().then(applyText, () => {
-            document.execCommand("paste");
-          }),
-        );
-    }
-
-    function execSelectAll(field) {
-      field.focus();
-      if (field.isContentEditable) {
-        document.execCommand("selectAll");
-      } else if (typeof field.select === "function") {
-        field.select();
-      }
-    }
-
-    function showMenu(e, field) {
-      if (tooltip) tooltip.classList.remove("visible");
-      activeField = field;
-      updateItemStates(field);
-      menu.classList.remove("hidden");
-      menu.setAttribute("aria-hidden", "false");
-      menu.style.left = e.clientX + "px";
-      menu.style.top = e.clientY + "px";
-      field.focus();
-      requestAnimationFrame(() => clampMenu(e.clientX, e.clientY));
-    }
-
-    document.addEventListener(
-      "contextmenu",
-      (e) => {
-        const field = pickField(e);
-        if (!field) return;
-        e.preventDefault();
-        e.stopPropagation();
-        showMenu(e, field);
-      },
-      true,
-    );
-
-    menu.addEventListener(
-      "mousedown",
-      (e) => {
-        e.stopPropagation();
-      },
-      true,
-    );
-
-    menu.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-action]");
-      if (!btn || btn.disabled) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const field = activeField;
-      if (!field) {
-        hideMenu();
-        return;
-      }
-      const action = btn.getAttribute("data-action");
-      if (action === "paste") {
-        void execPaste(field).finally(() => hideMenu());
-        return;
-      }
-      if (action === "cut") execCut(field);
-      else if (action === "copy") execCopy(field);
-      else if (action === "selectAll") execSelectAll(field);
-      hideMenu();
-    });
-
-    document.addEventListener(
-      "mousedown",
-      (e) => {
-        if (menu.classList.contains("hidden")) return;
-        if (e.button === 2) return;
-        if (menu.contains(e.target)) return;
-        hideMenu();
-      },
-      true,
-    );
-
-    document.addEventListener(
-      "keydown",
-      (e) => {
-        if (menu.classList.contains("hidden")) return;
-        if (e.key === "Escape") {
-          e.preventDefault();
-          hideMenu();
-        }
-      },
-      true,
-    );
-
-    document.addEventListener(
-      "scroll",
-      () => {
-        if (!menu.classList.contains("hidden")) hideMenu();
-      },
-      true,
-    );
-
-    window.addEventListener("blur", () => {
-      if (!menu.classList.contains("hidden")) hideMenu();
-    });
-  }
-
   document.addEventListener("DOMContentLoaded", init);
-  document.addEventListener("DOMContentLoaded", initFormatTooltips);
-  document.addEventListener("DOMContentLoaded", initDonationPopover);
-  document.addEventListener("DOMContentLoaded", initGlobalTooltip);
-  document.addEventListener("DOMContentLoaded", initTextFieldContextMenu);
+  document.addEventListener("DOMContentLoaded", () => {
+    window.QobuzGui.features.formatBuilder.formatTooltips.init();
+    window.QobuzGui.ui.donationPopover.init();
+    window.QobuzGui.ui.globalTooltip.init();
+    window.QobuzGui.ui.textFieldContextMenu.init();
+  });
 })();
