@@ -430,6 +430,21 @@ Commit: pending
 
 - `node --check` on `issueReportSubsystem.js` and `app.js`; `python -m unittest discover -s tests` passed.
 
+
+## Checkpoint 20 - Queue façade (queueController)
+
+Date: 2026-05-14
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/gui/js/features/queue/queueController.js`: `QobuzGui.features.queue` exists before search loads; stubs until **`features.queue.install(impl)`** at end of `app.js` `initDownload()` (same closures as the former literal).
+- **`index.html`:** script after `downloadOptionsAutosave.js`, before search; **`app.js?v=76`**.
+
+### Validation
+
+- `node --check`; `python -m unittest discover -s tests`.
+
 ### Notes
 
-- `index.html`: load after `feedbackMessage.js`, bump `app.js?v=75`. `FRONTEND_CONTRACT.md` script list updated.
+- `window._handleDrop` / `_handleDropText` stay the HTML entry points; `impl` repeats those references on the façade for callers.

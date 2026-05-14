@@ -5039,7 +5039,7 @@
         return _tsApplyHistoryFilter();
       },
     };
-    window.QobuzGui.features.queue = {
+    window.QobuzGui.features.queue.install({
       addUrl(url) {
         return _addUrlToQueue(url);
       },
@@ -5055,7 +5055,7 @@
       handleDrop: window._handleDrop,
       handleDropText: window._handleDropText,
       updateBadge: window._updateQueueBadge,
-    };
+    });
   }
 
   // ── Settings tab ──────────────────────────────────────────
