@@ -415,3 +415,21 @@ Commit: pending
 ### Notes
 
 - `index.html`: load `lyricOutputSettings.js` and `feedbackMessage.js` before `app.js`; bump cache `app.js?v=73`.
+
+## Checkpoint 19 - Issue Report / Settings Popover Subsystem
+
+Date: 2026-05-14
+Commit: pending
+
+### What changed
+
+- Added `qobuz_dl/gui/js/features/feedback/issueReportSubsystem.js`: settings gear popover, Send Feedback flow, history hydration, logs modal preview, resize handle; attaches `QobuzGui.features.feedback.issueReport.init(checkStatus)` (delegated from `initSettings()` in `app.js` so status checks stay identical).
+- Left OAuth re-auth, “check updates”, purge DB handlers in `app.js`; they reuse `#settings-popover-feedback` (`const feedback`) after the delegated init.
+
+### Validation
+
+- `node --check` on `issueReportSubsystem.js` and `app.js`; `python -m unittest discover -s tests` passed.
+
+### Notes
+
+- `index.html`: load after `feedbackMessage.js`, bump `app.js?v=75`. `FRONTEND_CONTRACT.md` script list updated.

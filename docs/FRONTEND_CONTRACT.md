@@ -31,7 +31,8 @@ Do not break these during extraction unless a failing test or broken route force
   18. `/gui/js/features/settings/downloadOptionsAutosave.js` — `QobuzGui.features.settings.downloadOptionsAutosave.bind()`
   19. `/gui/js/features/search/searchController.js` — `QobuzGui.features.search` (`init`, `syncQueuedHighlights`); relies on **`QobuzGui.features.queue` only after** `app.js` runs `initDownload()` (see coupling note below)
   20. `/gui/js/ui/feedbackMessage.js` — `QobuzGui.ui.feedbackMessage`
-  21. `/gui/app.js` — main IIFE; wires remaining UI, registers `features.queue` / `features.history`, calls feature `init()` where delegated
+  21. `/gui/js/features/feedback/issueReportSubsystem.js` — registers `QobuzGui.features.feedback.issueReport.init(checkStatus)`; settings gear popover + issue-report popover/log preview (uses `feedbackMessage`; does not replace it)
+  22. `/gui/app.js` — main IIFE; wires remaining UI, registers `features.queue` / `features.history`, calls feature `init()` where delegated
 
 - **Optional later cleanup (non-goal until someone does it deliberately):** a more uniform mental order might be API → core → API extensions → shared UI → features → app. Today's order mixes `features`/`ui`/core somewhat for historical incremental extraction; reordering requires re-validating every cross-file assumption.
 
@@ -49,12 +50,13 @@ Search UI loads before `app.js`, but `QobuzGui.features.queue` is **registered i
   - `QobuzGui.features.search` (`js/features/search/searchController.js`)
   - `QobuzGui.features.queue` and `QobuzGui.features.history` (**registered from `app.js`** after download/history wiring; queue mirrors compatibility globals above)
   - **`QobuzGui.ui.feedbackMessage`** (`js/ui/feedbackMessage.js`): `show`, `showButton` for `.feedback-msg` and the settings update-check button.
+  - **`QobuzGui.features.feedback.issueReport`** (`js/features/feedback/issueReportSubsystem.js`): `init(checkStatus)` — settings gear popover, issue-report / sent-history UX, worker submit endpoint, logs modal (**invoked from `app.js`** `initSettings()` so `checkStatus` stays in-scope).
   - **`QobuzGui.features.lyrics.lyricOutputSettings`** (`js/features/lyrics/lyricOutputSettings.js`): download ↔ settings lyric toggles sync and `/api/config` persist.
 - Do not introduce unrelated globals except the compatibility adapters listed below.
 
 ## Extraction sequencing (human process)
 
-Earlier notes suggested feedback-related UI extraction before search. Search was extracted first when it landed; that migration is acceptable (queue adapters isolate coupling). Prefer **deliberate** next steps: feedback/settings-adjacent extractions stay low-risk versus history/SSE until those areas are intentionally scheduled.
+The issue-report subsystem (gear + Send Feedback popovers) moved to `issueReportSubsystem.js` so `checkStatus`, session logs, and `api.feedbackApi` stay reachable via `features.feedback.issueReport.init(...)`. Prefer **deliberate** sequencing for what remains low-risk versus history/SSE until those areas are intentionally scheduled (Option B queue shell, etc.).
 
 ## Compatibility globals (must keep working)
 
