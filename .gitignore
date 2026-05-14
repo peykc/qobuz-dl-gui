@@ -6,3 +6,9 @@ dist/
 gui-dev/node_modules/
 gui-dev/dist/
 SMOKE_TEST_NOTES.md
+.pytest_cache/
+.venv/
+*/.venv/
+qobuz_dl/gui/.vite/
+qobuz_dl/gui/dist/
+*.pyc
