@@ -397,3 +397,21 @@ Commit: pending
 ### Notes
 
 - Further extraction of settings form, feedback subsystem, search/queue internals, history virtualization, lyrics UI, download SSE shell, and final `main.js` bootstrap can proceed in follow-up checkpoints; monolith size is reduced and contracts documented.
+
+## Checkpoint 18 - Feedback Message Helpers And Lyric Output Settings
+
+Date: 2026-05-14
+Commit: pending
+
+### What changed
+
+- Added `js/ui/feedbackMessage.js`: `QobuzGui.ui.feedbackMessage.show`, `showButton` (timers/colors unchanged).
+- Added `js/features/lyrics/lyricOutputSettings.js`: lyric toggle sync and popover bind (`setChecks`, `readChecks`, `syncFromDownload`, `persist`, `bindPopoverToggles`).
+- Removed duplicate helpers from `app.js`; callers use `_lyricOut()` or `QobuzGui.ui.feedbackMessage`.
+
+### Validation
+
+- `node --check` on new JS files and `app.js`; `python -m unittest discover -s tests` passed.
+### Notes
+
+- `index.html`: load `lyricOutputSettings.js` and `feedbackMessage.js` before `app.js`; bump cache `app.js?v=73`.
