@@ -2943,41 +2943,17 @@ def tqdm_download(
                 )
 
 
-_PAREN_OR_BRACKET_CHUNK = re.compile(r"\([^)]*\)|\[[^\]]*\]")
-
-
 def _paren_is_feat_credit(inner: str) -> bool:
-    inner = (inner or "").strip()
-    # Avoid \\b after "feat." — the dot breaks word-boundary rules vs a following space.
-    return bool(
-        re.match(
-            r"(feat\.(\s+.+|[^\s]+)|featuring\s+|ft\.(\s+.+|[^\s]+))",
-            inner,
-            flags=re.IGNORECASE,
-        )
-    )
+    from qobuz_dl.track_title_paren import paren_is_feat_credit
+
+    return paren_is_feat_credit(inner)
 
 
 def _track_title_base_with_feat(raw_title: str) -> str:
-    """Strip edition/remaster-style bracket segments; keep only feat./ft./featuring credits."""
-    if not (raw_title or "").strip():
-        return ""
-    s = raw_title.strip()
-    feat_segments: list[str] = []
-    out_chunks: list[str] = []
-    idx = 0
-    for m in _PAREN_OR_BRACKET_CHUNK.finditer(s):
-        out_chunks.append(s[idx : m.start()])
-        seg = m.group(0)
-        inner = seg[1:-1]
-        if _paren_is_feat_credit(inner):
-            feat_segments.append(seg.strip())
-        idx = m.end()
-    out_chunks.append(s[idx:])
-    core = "".join(out_chunks)
-    core = re.sub(r"\s+", " ", core).strip()
-    suffix = (" " + " ".join(feat_segments)).strip() if feat_segments else ""
-    return (core + (" " + suffix if suffix else "")).strip()
+    """Strip known metadata bracket tags; keep feat credits and title subtitles (e.g. Hey Oh, Live)."""
+    from qobuz_dl.track_title_paren import strip_noise_parentheticals
+
+    return strip_noise_parentheticals(raw_title)
 
 
 def _track_metadata_display_title(track_metadata: dict) -> str:

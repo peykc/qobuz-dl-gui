@@ -90,7 +90,7 @@
     "{tracknumber}": "08",
     "{track_number}": "08",
     "{tracktitle}": "Icarus (Dan's Bedroom Demo)",
-    "{track_title_base}": "Icarus (feat. Maya)",
+    "{track_title_base}": "Snow (Hey Oh) (feat. Maya)",
     "{version}": "10th Anniversary Edition",
     "{disc_number}": "02",
     "{disc_number_unpadded}": "2",

@@ -124,7 +124,8 @@ def add_common_arg(custom_parser, default_folder, default_quality):
         metavar="PATTERN",
         help="""pattern for formatting track names. see `folder-format`.
         useful extra keys: track_number, tracknumber, track_title, track_title_base
-        (edition/remaster parentheses stripped; feat./ft./featuring kept),
+        (metadata parentheses stripped per built-in list; feat./ft./featuring and
+        title subtitles such as Live kept),
         track_artist, track_composer, isrc, disc_number, discnumber.""",
     )
     custom_parser.add_argument(
