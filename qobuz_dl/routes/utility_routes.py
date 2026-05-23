@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 
+import webview
 from flask import Response, jsonify, request
 
 from qobuz_dl.gui_preferences import (
@@ -40,20 +41,11 @@ def register_utility_routes(
     @app.route("/api/browse_folder", methods=["POST"])
     def api_browse_folder():
         try:
-            import tkinter as tk
-            from tkinter import filedialog
+            result = webview.windows[0].create_file_dialog(webview.FileDialog.FOLDER)
+            if not result:
+                return jsonify({"ok": False, "cancelled": True})
 
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", True)
-            folder = filedialog.askdirectory(
-                parent=root,
-                title="Select Download Folder",
-            )
-            root.destroy()
-            if folder:
-                return jsonify({"ok": True, "path": folder})
-            return jsonify({"ok": False, "cancelled": True})
+            return jsonify({"ok": True, "path": result[0]})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
 

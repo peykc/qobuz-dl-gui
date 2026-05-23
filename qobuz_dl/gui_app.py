@@ -1,3 +1,4 @@
+import multiprocessing
 import sys
 import os
 
@@ -550,4 +551,5 @@ def main():
     os._exit(0)
 
 if __name__ == "__main__":
-    main()
+    multiprocessing.freeze_support()
+    multiprocessing.Process(target=main).start()
