@@ -88,7 +88,10 @@ class QobuzDL:
         tag_title_from_track_format=True,
         tag_album_from_folder_format=True,
     ):
-        self.directory = create_and_return_dir(directory)
+        # Do not touch the filesystem while constructing the session. Login and
+        # OAuth should still work if the saved download volume is temporarily
+        # unavailable; downloads create their target folders when needed.
+        self.directory = os.path.normpath(directory or "Qobuz Downloads")
         self.quality = quality
         self.embed_art = embed_art
         self.lucky_limit = lucky_limit

@@ -52,6 +52,7 @@
         </div>
     </div>
     <!-- ======================== SETUP OVERLAY ======================== -->
+    <button id="auth-toast" class="auth-toast hidden" type="button" aria-live="assertive"></button>
     <div id="setup-overlay" class="overlay hidden">
         <div class="overlay-card">
             <div class="overlay-logo">
@@ -73,23 +74,13 @@
                 </svg>
                 <span>Qobuz<strong>DL</strong></span>
             </div>
-            <h2>Connect to Qobuz</h2>
-            <p class="subtitle">
-                Qobuz no longer supports password login. Use
-                <strong>OAuth</strong> (recommended) or paste your token
-                directly.
-            </p>
 
-            <!-- Auth method tabs -->
             <div class="auth-tabs">
-                <button class="auth-tab active" data-auth="oauth">
+                <button class="auth-tab active" data-auth="oauth" type="button">
                     OAuth Login
                 </button>
-                <button class="auth-tab" data-auth="token">
+                <button class="auth-tab" data-auth="token" type="button">
                     Paste Token
-                </button>
-                <button class="auth-tab" data-auth="password">
-                    Email / Password
                 </button>
             </div>
 
@@ -104,14 +95,14 @@
                     <div class="input-browse-wrap">
                         <input type="text" id="setup-folder-oauth" placeholder="Qobuz Downloads"
                             value="Qobuz Downloads" />
-                        <button class="btn-browse" data-target="setup-folder-oauth" data-tip="Browse">
+                        <button class="btn-browse" data-target="setup-folder-oauth" data-tip="Choose folder">
                             Browse
                         </button>
                     </div>
                 </div>
                 <div class="form-group">
                     <label for="setup-quality-oauth">Default Quality (auto-fallback on failure)</label>
-                    <select id="setup-quality-oauth">
+                    <select id="setup-quality-oauth" class="menu-select-target">
                         <option value="27">Highest Available</option>
                         <option value="6">Lowest Lossless</option>
                         <option value="5">MP3 320</option>
@@ -128,10 +119,6 @@
                     <span id="oauth-btn-text">Login with Qobuz</span>
                     <span id="oauth-spinner" class="spinner hidden"></span>
                 </button>
-                <p class="auth-note">
-                    After login, the status dot will turn green
-                    automatically.
-                </p>
             </div>
 
             <!-- Token panel -->
@@ -142,27 +129,29 @@
                     localStorage (<kbd>F12</kbd> → Application → Local
                     Storage → <code>https://play.qobuz.com</code>).
                 </p>
-                <div class="form-group">
-                    <label for="setup-user-id">User ID</label>
-                    <input type="text" id="setup-user-id" placeholder="12345678" autocomplete="off" />
-                </div>
-                <div class="form-group">
-                    <label for="setup-user-auth-token">User Auth Token</label>
-                    <input type="text" id="setup-user-auth-token" placeholder="Paste token here…" autocomplete="off" />
+                <div class="compact-split-row">
+                    <div class="form-group">
+                        <label for="setup-user-id">User ID</label>
+                        <input type="text" id="setup-user-id" placeholder="12345678" autocomplete="off" />
+                    </div>
+                    <div class="form-group">
+                        <label for="setup-user-auth-token">User Auth Token</label>
+                        <input type="text" id="setup-user-auth-token" placeholder="Paste token here…" autocomplete="off" />
+                    </div>
                 </div>
                 <div class="form-group">
                     <label for="setup-folder-token">Default Download Folder</label>
                     <div class="input-browse-wrap">
                         <input type="text" id="setup-folder-token" placeholder="Qobuz Downloads"
                             value="Qobuz Downloads" />
-                        <button class="btn-browse" data-target="setup-folder-token" data-tip="Browse">
+                        <button class="btn-browse" data-target="setup-folder-token" data-tip="Choose folder">
                             Browse
                         </button>
                     </div>
                 </div>
                 <div class="form-group">
                     <label for="setup-quality-token">Default Quality (auto-fallback on failure)</label>
-                    <select id="setup-quality-token">
+                    <select id="setup-quality-token" class="menu-select-target">
                         <option value="27">Highest Available</option>
                         <option value="6">Lowest Lossless</option>
                         <option value="5">MP3 320</option>
@@ -172,44 +161,6 @@
                 <button id="token-btn" class="btn-primary btn-full">
                     <span id="token-btn-text">Connect with Token</span>
                     <span id="token-spinner" class="spinner hidden"></span>
-                </button>
-            </div>
-
-            <!-- Email/Password panel (legacy) -->
-            <div id="auth-panel-password" class="auth-panel hidden">
-                <p class="auth-desc">
-                    Email/password login is deprecated by Qobuz and may not
-                    work. Try OAuth first.
-                </p>
-                <div class="form-group">
-                    <label for="setup-email">Email</label>
-                    <input type="email" id="setup-email" placeholder="you@example.com" autocomplete="username" />
-                </div>
-                <div class="form-group">
-                    <label for="setup-password">Password</label>
-                    <input type="password" id="setup-password" placeholder="••••••••" autocomplete="current-password" />
-                </div>
-                <div class="form-group">
-                    <label for="setup-folder">Default Download Folder</label>
-                    <div class="input-browse-wrap">
-                        <input type="text" id="setup-folder" placeholder="Qobuz Downloads" value="Qobuz Downloads" />
-                        <button class="btn-browse" data-target="setup-folder" data-tip="Browse">
-                            Browse
-                        </button>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label for="setup-quality">Default Quality (auto-fallback on failure)</label>
-                    <select id="setup-quality">
-                        <option value="27">Highest Available</option>
-                        <option value="6">Lowest Lossless</option>
-                        <option value="5">MP3 320</option>
-                    </select>
-                </div>
-                <div id="setup-error" class="error-msg hidden"></div>
-                <button id="setup-btn" class="btn-primary btn-full">
-                    <span id="setup-btn-text">Save &amp; Connect</span>
-                    <span id="setup-spinner" class="spinner hidden"></span>
                 </button>
             </div>
         </div>
@@ -320,8 +271,8 @@
                                 <span id="settings-reauth-spinner" class="spinner hidden"></span>
                             </button>
                             <p class="settings-hint">
-                                Opens the Qobuz login page. Use this to fix auth issues
-                                or switch accounts.
+                                Returns to the in-app login options. Use this to fix
+                                auth issues or switch accounts.
                             </p>
                         </div>
 
@@ -470,7 +421,7 @@
                 <div class="card search-bar-card">
                     <div class="search-row">
                         <input type="text" id="search-query" placeholder="Search Qobuz…" class="search-input" />
-                        <select id="search-type" class="search-type-select search-select">
+                        <select id="search-type" class="search-type-select menu-select-target">
                             <option value="album">Albums</option>
                             <option value="track">Tracks</option>
                             <option value="artist">Artists</option>
@@ -545,7 +496,7 @@
                             <div class="form-group">
                                 <label for="dl-quality">Quality (auto-fallback on
                                     failure)</label>
-                                <select id="dl-quality">
+                                <select id="dl-quality" class="menu-select-target">
                                     <option value="27">
                                         Highest Available
                                     </option>
@@ -559,7 +510,7 @@
                                 <label for="dl-directory">Output Folder</label>
                                 <div class="input-browse-wrap">
                                     <input type="text" id="dl-directory" placeholder="Use default from settings" />
-                                    <button class="btn-browse" data-target="dl-directory" data-tip="Browse">
+                                    <button class="btn-browse" data-target="dl-directory" data-tip="Choose folder">
                                         Browse
                                     </button>
                                 </div>
@@ -1393,6 +1344,7 @@ Total tracks on the album; Plex uses this for completeness and ordering hints.">
     <script src="/gui/js/features/formatBuilder/formatTooltips.js?v=1"></script>
     <script src="/gui/js/ui/globalTooltip.js?v=1"></script>
     <script src="/gui/js/ui/textFieldContextMenu.js?v=1"></script>
+    <script src="/gui/js/ui/menuSelect.js?v=1"></script>
     <script src="/gui/js/ui/donationPopover.js?v=1"></script>
     <script src="/gui/js/ui/theme.js?v=4"></script>
     <script src="/gui/js/ui/collapses.js?v=1"></script>

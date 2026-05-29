@@ -164,7 +164,7 @@ class Client:
     def auth(self, email, pwd):
         usr_info = self.api_call("user/login", email=email, pwd=pwd)
         if not usr_info["user"]["credential"]["parameters"]:
-            raise IneligibleError("Free accounts are not eligible to download tracks.")
+            raise IneligibleError("This Qobuz account is not eligible to download tracks.")
         self.uat = usr_info["user_auth_token"]
         self.session.headers.update({"X-User-Auth-Token": self.uat})
         self.label = usr_info["user"]["credential"]["parameters"]["short_label"]
@@ -184,7 +184,7 @@ class Client:
         r.raise_for_status()
         usr_info = r.json()
         if not usr_info["user"]["credential"]["parameters"]:
-            raise IneligibleError("Free accounts are not eligible to download tracks.")
+            raise IneligibleError("This Qobuz account is not eligible to download tracks.")
         self.uat = user_auth_token
         self.session.headers.update({"X-User-Auth-Token": self.uat})
         self.label = usr_info["user"]["credential"]["parameters"]["short_label"]
@@ -217,7 +217,7 @@ class Client:
         r.raise_for_status()
         usr_info = r.json()
         if not usr_info["user"]["credential"]["parameters"]:
-            raise IneligibleError("Free accounts are not eligible to download tracks.")
+            raise IneligibleError("This Qobuz account is not eligible to download tracks.")
         self.label = usr_info["user"]["credential"]["parameters"]["short_label"]
         logger.info(f"{GREEN}Membership: {self.label}")
         self.cfg_setup()

@@ -19,11 +19,16 @@
     document.getElementById("app").classList.add("hidden");
   }
 
-  function showApp() {
+  async function showApp() {
     document.getElementById("setup-overlay").classList.add("hidden");
     document.getElementById("app").classList.remove("hidden");
     if (typeof _deps.startDownloadSse === "function") {
       _deps.startDownloadSse();
+    }
+    if (typeof _deps.ensureDownloadReady === "function") {
+      try {
+        await _deps.ensureDownloadReady();
+      } catch (_) {}
     }
   }
 
@@ -46,40 +51,155 @@
     const oauthBtnText = document.getElementById("oauth-btn-text");
     const oauthSpinner = document.getElementById("oauth-spinner");
     const oauthErr = document.getElementById("setup-error-oauth");
+    const authToast = document.getElementById("auth-toast");
     let _oauthPolling = null;
+    let _oauthAttemptId = "";
+    let _oauthWaiting = false;
+
+    function friendlyOauthError(message) {
+      const text = String(message || "").trim();
+      if (/free accounts are not eligible/i.test(text)) {
+        return "Free accounts are not eligible, an active Qobuz subscription is required.";
+      }
+      return text || "OAuth login failed.";
+    }
+
+    function showAuthToast(message, ok) {
+      if (!authToast) return;
+      authToast.textContent = message;
+      authToast.classList.toggle("ok", !!ok);
+      authToast.classList.remove("hidden");
+    }
+
+    if (authToast) {
+      authToast.addEventListener("click", () => {
+        authToast.classList.add("hidden");
+      });
+    }
+
+    function resetOauthButton() {
+      _oauthWaiting = false;
+      _oauthAttemptId = "";
+      oauthBtn.disabled = false;
+      oauthBtn.classList.remove("oauth-waiting");
+      oauthBtnText.textContent = "Login with Qobuz";
+      oauthSpinner.classList.add("hidden");
+    }
+
+    function setOauthWaiting() {
+      _oauthWaiting = true;
+      oauthBtn.disabled = false;
+      oauthBtn.classList.add("oauth-waiting");
+      oauthBtnText.textContent = "Waiting for browser login…";
+      oauthSpinner.classList.remove("hidden");
+    }
+
+    async function cancelOauthAttempt() {
+      const attemptId = _oauthAttemptId;
+      if (_oauthPolling) {
+        clearInterval(_oauthPolling);
+        _oauthPolling = null;
+      }
+      if (
+        attemptId &&
+        api.setupApi &&
+        typeof api.setupApi.oauthCancel === "function"
+      ) {
+        try {
+          await api.setupApi.oauthCancel(attemptId);
+        } catch (_) {}
+      }
+      resetOauthButton();
+    }
+
+    oauthBtn.addEventListener("mouseenter", () => {
+      if (!_oauthWaiting) return;
+      oauthBtnText.textContent = "✕ Cancel login";
+    });
+
+    oauthBtn.addEventListener("mouseleave", () => {
+      if (!_oauthWaiting) return;
+      oauthBtnText.textContent = "Waiting for browser login…";
+    });
 
     oauthBtn.addEventListener("click", async () => {
+      if (_oauthWaiting) {
+        await cancelOauthAttempt();
+        return;
+      }
       oauthErr.classList.add("hidden");
+      if (authToast) authToast.classList.add("hidden");
       oauthBtn.disabled = true;
+      oauthBtn.classList.remove("oauth-waiting");
       oauthBtnText.textContent = "Opening browser…";
       oauthSpinner.classList.remove("hidden");
+      if (_oauthPolling) {
+        clearInterval(_oauthPolling);
+        _oauthPolling = null;
+      }
 
       try {
         const res = await api.setupApi.oauthStart();
         const data = await res.json();
         if (!data.ok) {
-          oauthErr.textContent = data.error || "OAuth start failed.";
-          oauthErr.classList.remove("hidden");
+          showAuthToast(friendlyOauthError(data.error || "OAuth start failed."), false);
+          resetOauthButton();
           return;
         }
-        oauthBtnText.textContent = "Waiting for browser login…";
+        const attemptId = data.attempt_id || "";
+        _oauthAttemptId = attemptId;
+        const baselineGeneration = Number(data.baseline_auth_generation || 0);
+        const startedAt = Date.now();
+        setOauthWaiting();
         _oauthPolling = setInterval(async () => {
-          const s = await QG.features.status.checkStatus();
-          if (s && s.ready) {
+          let s = null;
+          if (
+            attemptId &&
+            api.setupApi &&
+            typeof api.setupApi.oauthStatus === "function"
+          ) {
+            const statusRes = await api.setupApi.oauthStatus(attemptId);
+            s = await statusRes.json().catch(() => null);
+          }
+          if (!s || !s.ok) {
+            s = await QG.features.status.checkStatus();
+          }
+          if (s && s.state === "failed") {
             clearInterval(_oauthPolling);
-            oauthBtn.disabled = false;
-            oauthBtnText.textContent = "Login with Qobuz";
-            oauthSpinner.classList.add("hidden");
-            showApp();
+            _oauthPolling = null;
+            showAuthToast(friendlyOauthError(s.error), false);
+            resetOauthButton();
+            return;
+          }
+          if (s && s.state === "cancelled") {
+            clearInterval(_oauthPolling);
+            _oauthPolling = null;
+            resetOauthButton();
+            return;
+          }
+          if (
+            s &&
+            s.state === "success" &&
+            Number(s.auth_generation || 0) > baselineGeneration
+          ) {
+            clearInterval(_oauthPolling);
+            _oauthPolling = null;
+            resetOauthButton();
+            await showApp();
             await loadSettingsForm();
+          } else if (Date.now() - startedAt > 125000) {
+            clearInterval(_oauthPolling);
+            _oauthPolling = null;
+            showAuthToast(
+              "OAuth login was not completed. Your previous login was kept.",
+              false,
+            );
+            resetOauthButton();
           }
         }, 1500);
       } catch (e) {
-        oauthErr.textContent = "Network error: " + e.message;
-        oauthErr.classList.remove("hidden");
-        oauthBtn.disabled = false;
-        oauthBtnText.textContent = "Login with Qobuz";
-        oauthSpinner.classList.add("hidden");
+        showAuthToast("Network error: " + e.message, false);
+        resetOauthButton();
       }
     });
 
@@ -118,7 +238,7 @@
         });
         const data = await res.json();
         if (data.ok) {
-          showApp();
+          await showApp();
           QG.features.status.updateStatus(true);
           await loadSettingsForm();
         } else {
@@ -135,61 +255,12 @@
       }
     });
 
-    const btn = document.getElementById("setup-btn");
-    const btnText = document.getElementById("setup-btn-text");
-    const spinner = document.getElementById("setup-spinner");
-    const errEl = document.getElementById("setup-error");
-
-    btn.addEventListener("click", async () => {
-      const email = document.getElementById("setup-email").value.trim();
-      const password = document.getElementById("setup-password").value;
-      const folder =
-        document.getElementById("setup-folder").value.trim() ||
-        "Qobuz Downloads";
-      const quality = document.getElementById("setup-quality").value;
-
-      errEl.classList.add("hidden");
-      if (!email || !password) {
-        errEl.textContent = "Please enter your email and password.";
-        errEl.classList.remove("hidden");
-        return;
-      }
-
-      btn.disabled = true;
-      btnText.textContent = "Connecting…";
-      spinner.classList.remove("hidden");
-
-      try {
-        const res = await api.setupApi.setup({
-          email,
-          password,
-          default_folder: folder,
-          default_quality: quality,
-        });
-        const data = await res.json();
-        if (data.ok) {
-          showApp();
-          QG.features.status.updateStatus(true);
-          await loadSettingsForm();
-        } else {
-          errEl.textContent = data.error || "Setup failed.";
-          errEl.classList.remove("hidden");
-        }
-      } catch (e) {
-        errEl.textContent = "Network error: " + e.message;
-        errEl.classList.remove("hidden");
-      } finally {
-        btn.disabled = false;
-        btnText.textContent = "Save & Connect";
-        spinner.classList.add("hidden");
-      }
-    });
   }
 
   async function resolveInitialView() {
     const status = await QG.features.status.checkStatus();
     if (status && (status.ready || status.has_config)) {
-      showApp();
+      await showApp();
       if (!status.ready && status.has_config) {
         const dot = document.getElementById("status-dot");
         const label = document.getElementById("status-label");

@@ -170,6 +170,14 @@
     oauthStart() {
       return jsonPost("/api/oauth/start", {});
     },
+    oauthStatus(attemptId) {
+      return fetch(
+        `/api/oauth/status?attempt_id=${encodeURIComponent(attemptId || "")}`,
+      );
+    },
+    oauthCancel(attemptId) {
+      return jsonPost("/api/oauth/cancel", { attempt_id: attemptId || "" });
+    },
     tokenLogin(body) {
       return jsonPost("/api/token_login", body);
     },

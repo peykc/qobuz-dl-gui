@@ -7,7 +7,12 @@
 
   function setValue(id, val) {
     const el = document.getElementById(id);
-    if (el) el.value = val;
+    if (!el) return;
+    el.value = val;
+    const menuSelect = g.ui && g.ui.menuSelect;
+    if (menuSelect && typeof menuSelect.syncFromSelect === "function") {
+      menuSelect.syncFromSelect(el);
+    }
   }
 
   function setCheck(id, val) {

@@ -88,6 +88,7 @@ import qobuz_dl.core
 # ---------------------------------------------------------------------------
 _client_lock = threading.Lock()
 _qobuz_client = None  # QobuzDL instance
+_auth_generation = 0  # increments only after a new authenticated client is installed
 _cancel_download = threading.Event()  # graceful stop signal (pause or cancel share this)
 _abort_byte_streams = (
     threading.Event()
@@ -149,8 +150,9 @@ def _get_qobuz():
 
 
 def _set_qobuz(qobuz):
-    global _qobuz_client
+    global _auth_generation, _qobuz_client
     _qobuz_client = qobuz
+    _auth_generation += 1
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +180,7 @@ register_status_routes(
     app,
     config_file=lambda: CONFIG_FILE,
     ready=lambda: _qobuz_client is not None,
+    auth_generation=lambda: _auth_generation,
 )
 
 
@@ -200,6 +203,7 @@ register_auth_routes(
     build_qobuz_from_config=_build_qobuz_from_config,
     client_lock=_client_lock,
     set_qobuz=_set_qobuz,
+    auth_generation=lambda: _auth_generation,
 )
 
 
@@ -483,7 +487,7 @@ def main():
                 qobuz = None
 
             if qobuz:
-                _qobuz_client = qobuz
+                _set_qobuz(qobuz)
         except Exception as e:
             logging.info("Could not auto-connect: %s", e)
 

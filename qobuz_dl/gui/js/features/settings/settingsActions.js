@@ -22,40 +22,27 @@
     const reauthSpinner = document.getElementById("settings-reauth-spinner");
     let _reauthPolling = null;
 
-    reauthBtn.addEventListener("click", async () => {
-        reauthBtn.disabled = true;
-        reauthText.textContent = "Opening browser…";
-        reauthSpinner.classList.remove("hidden");
-
-        try {
-          const res = await api.setupApi.oauthStart();
-          const data = await res.json();
-          if (!data.ok) throw new Error(data.error || "OAuth start failed");
-
-          reauthText.textContent = "Waiting for login…";
-          if (_reauthPolling) clearInterval(_reauthPolling);
-          _reauthPolling = setInterval(async () => {
-            const s = await checkStatus();
-            if (s && s.ready) {
-              clearInterval(_reauthPolling);
-              _reauthPolling = null;
-              reauthText.textContent = "Re-login with Qobuz";
-              reauthSpinner.classList.add("hidden");
-              reauthBtn.disabled = false;
-              updateStatus(true);
-              await loadSettingsForm();
-              QG.ui.feedbackMessage.show(
-                feedback,
-                "Reconnected successfully.",
-                true,
-              );
-            }
-          }, 2000);
-        } catch (e) {
-          QG.ui.feedbackMessage.show(feedback, e.message, false);
-          reauthText.textContent = "Re-login with Qobuz";
-          reauthSpinner.classList.add("hidden");
-        reauthBtn.disabled = false;
+    reauthBtn.addEventListener("click", () => {
+      if (_reauthPolling) {
+        clearInterval(_reauthPolling);
+        _reauthPolling = null;
+      }
+      const popover = document.getElementById("settings-popover");
+      const backdrop = document.getElementById("settings-backdrop");
+      const gearBtn = document.getElementById("settings-gear-btn");
+      if (popover) popover.classList.add("hidden");
+      if (backdrop) backdrop.classList.add("hidden");
+      if (gearBtn) gearBtn.classList.remove("active");
+      if (feedback) feedback.className = "feedback-msg hidden";
+      reauthText.textContent = "Re-login with Qobuz";
+      reauthSpinner.classList.add("hidden");
+      reauthBtn.disabled = false;
+      updateStatus(false);
+      if (
+        QG.features.setup &&
+        typeof QG.features.setup.showSetup === "function"
+      ) {
+        QG.features.setup.showSetup();
       }
     });
 

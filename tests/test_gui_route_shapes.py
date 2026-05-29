@@ -66,6 +66,91 @@ class GuiRouteShapeTests(unittest.TestCase):
         self.assertEqual(data["config"]["lyrics_enabled"], "true")
         self.assertEqual(data["config"]["default_quality"], "6")
 
+    def test_connect_does_not_touch_download_folder(self):
+        import configparser
+
+        cfg = configparser.ConfigParser()
+        cfg["DEFAULT"] = {
+            "email": "",
+            "password": "",
+            "user_id": "123",
+            "user_auth_token": "token",
+            "app_id": "app",
+            "secrets": "secret",
+            "default_folder": "/Volumes/Musique",
+        }
+        apply_common_defaults(cfg["DEFAULT"], no_database="true")
+        os.makedirs(gui_app.CONFIG_PATH, exist_ok=True)
+        with open(gui_app.CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+        with patch(
+            "qobuz_dl.core.create_and_return_dir",
+            side_effect=PermissionError("no access"),
+        ) as create_dir, patch(
+            "qobuz_dl.core.QobuzDL.initialize_client_with_token",
+            return_value=None,
+        ):
+            res = self.client.post("/api/connect")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.get_json()["ok"])
+        create_dir.assert_not_called()
+
+    def test_oauth_start_returns_attempt_status(self):
+        class FakeBundle:
+            def get_app_id(self):
+                return "app"
+
+            def get_secrets(self):
+                return {"a": "secret"}
+
+            def get_private_key(self):
+                return "private"
+
+        class FakeThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                pass
+
+        with patch("qobuz_dl.bundle.Bundle", return_value=FakeBundle()), patch(
+            "qobuz_dl.routes.auth_routes.threading.Thread",
+            FakeThread,
+        ), patch("qobuz_dl.routes.auth_routes.webbrowser.open"):
+            res = self.client.post("/api/oauth/start")
+
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["ok"])
+        self.assertIn("attempt_id", data)
+        self.assertIn("baseline_auth_generation", data)
+
+        status = self.client.get(
+            "/api/oauth/status",
+            query_string={"attempt_id": data["attempt_id"]},
+        )
+        self.assertEqual(status.status_code, 200)
+        status_data = status.get_json()
+        self.assertTrue(status_data["ok"])
+        self.assertEqual(status_data["state"], "pending")
+
+        cancel = self.client.post(
+            "/api/oauth/cancel",
+            json={"attempt_id": data["attempt_id"]},
+        )
+        self.assertEqual(cancel.status_code, 200)
+        self.assertTrue(cancel.get_json()["ok"])
+
+        cancelled = self.client.get(
+            "/api/oauth/status",
+            query_string={"attempt_id": data["attempt_id"]},
+        )
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.get_json()["state"], "cancelled")
+
     def test_download_queue_shape_round_trips_items_and_text_mode(self):
         payload = {
             "items": [{"url": "https://play.qobuz.com/album/example"}],

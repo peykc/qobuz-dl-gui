@@ -79,7 +79,7 @@ def _status_config_data(config_file: str) -> dict:
         return {}
 
 
-def register_status_routes(app, *, config_file, ready) -> None:
+def register_status_routes(app, *, config_file, ready, auth_generation=None) -> None:
     @app.route("/api/status")
     def api_status():
         config_file_value = _resolve(config_file)
@@ -89,6 +89,7 @@ def register_status_routes(app, *, config_file, ready) -> None:
             {
                 "has_config": os.path.isfile(config_file_value),
                 "ready": bool(_resolve(ready)),
+                "auth_generation": int(_resolve(auth_generation) or 0),
                 "config": _status_config_data(config_file_value),
                 "app_version": app_ver,
                 "frozen": getattr(sys, "frozen", False),

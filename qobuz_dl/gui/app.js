@@ -854,7 +854,7 @@
       });
     }
 
-    void (async () => {
+    const downloadInitReady = (async () => {
       await _queueHost.restoreFromServer();
       if (_historyStoreHost) {
         await _historyStoreHost.hydrateFromDb();
@@ -926,6 +926,8 @@
         },
       });
     }
+
+    return downloadInitReady;
   }
 
   // ── Init ─────────────────────────────────────────────────
@@ -936,20 +938,25 @@
 
     QG.features.setup.configure({
       startDownloadSse: _startDownloadSse,
+      ensureDownloadReady: () => _downloadInitReady,
       loadSettingsForm: () => QG.features.settings.settingsForm.loadIntoForm(),
       connect: () => api.setupApi.connect(),
     });
     QG.features.setup.authTabs.init();
     QG.features.setup.browseButtons.init();
+    if (QG.ui.menuSelect && typeof QG.ui.menuSelect.init === "function") {
+      QG.ui.menuSelect.init();
+    }
     QG.features.setup.initSetup();
 
-    initDownload();
+    const _downloadInitReady = initDownload();
     QG.features.search.init();
     QG.features.settings.actions.init({
       checkStatus: QG.features.status.checkStatus,
       updateStatus: QG.features.status.updateStatus,
       loadSettingsForm: () => QG.features.settings.settingsForm.loadIntoForm(),
     });
+    _startDownloadSse();
     window.QobuzGui.features.updateBanner.init();
     setTimeout(() => {
       void window.QobuzGui.features.updateBanner.refreshUpdateCheck(true);
