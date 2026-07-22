@@ -17,7 +17,13 @@
           if (data.ok && data.path) {
             const targetId = btn.dataset.target;
             const input = document.getElementById(targetId);
-            if (input) input.value = data.path;
+            if (input) {
+              input.value = data.path;
+              // Programmatic value changes do not fire input/change; autosave
+              // (and other listeners) need an explicit event.
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            }
           }
         } catch (e) {
           console.error("Browse error:", e);

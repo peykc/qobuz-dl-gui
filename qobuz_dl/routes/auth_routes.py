@@ -4,12 +4,12 @@ import logging
 import os
 import socket
 import threading
-import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from flask import jsonify, request
 
+from qobuz_dl.app.browser import open_url
 from qobuz_dl.config_defaults import apply_common_defaults
 
 
@@ -160,6 +160,10 @@ def register_auth_routes(
         try:
             from qobuz_dl.bundle import Bundle
 
+            body = request.get_json(silent=True) or {}
+            setup_folder = (body.get("default_folder") or "").strip() or "Qobuz Downloads"
+            setup_quality = str(body.get("default_quality") or "27").strip() or "27"
+
             bundle = Bundle()
             app_id = str(bundle.get_app_id())
             secrets_list = [s for s in bundle.get_secrets().values() if s]
@@ -173,6 +177,8 @@ def register_auth_routes(
                     "error": "",
                     "baseline_auth_generation": baseline_generation,
                     "auth_generation": baseline_generation,
+                    "default_folder": setup_folder,
+                    "default_quality": setup_quality,
                 }
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -267,6 +273,18 @@ def register_auth_routes(
                     cfg_write["DEFAULT"]["email"] = ""
                     cfg_write["DEFAULT"]["password"] = ""
                     apply_common_defaults(cfg_write["DEFAULT"], no_database="true")
+                    attempt_meta = {}
+                    with oauth_attempt_lock:
+                        attempt_meta = dict(oauth_attempts.get(attempt_id) or {})
+                    folder = (
+                        attempt_meta.get("default_folder") or ""
+                    ).strip() or "Qobuz Downloads"
+                    quality = (
+                        str(attempt_meta.get("default_quality") or "27").strip()
+                        or "27"
+                    )
+                    cfg_write["DEFAULT"]["default_folder"] = folder
+                    cfg_write["DEFAULT"]["default_quality"] = quality
                     _write_config(config_file(), cfg_write)
 
                     _set_connected(client_lock, set_qobuz, qobuz)
@@ -288,8 +306,13 @@ def register_auth_routes(
                     )
 
             threading.Thread(target=_run_oauth, daemon=True).start()
-            webbrowser.open(oauth_url)
-            logging.info("Opened browser for OAuth login. Waiting for redirect…")
+            if open_url(oauth_url):
+                logging.info("Opened browser for OAuth login. Waiting for redirect…")
+            else:
+                logging.warning(
+                    "Could not open browser for OAuth. Open this URL manually: %s",
+                    oauth_url,
+                )
             return jsonify(
                 {
                     "ok": True,

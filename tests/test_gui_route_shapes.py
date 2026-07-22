@@ -119,7 +119,7 @@ class GuiRouteShapeTests(unittest.TestCase):
         with patch("qobuz_dl.bundle.Bundle", return_value=FakeBundle()), patch(
             "qobuz_dl.routes.auth_routes.threading.Thread",
             FakeThread,
-        ), patch("qobuz_dl.routes.auth_routes.webbrowser.open"):
+        ), patch("qobuz_dl.routes.auth_routes.open_url"):
             res = self.client.post("/api/oauth/start")
 
         self.assertEqual(res.status_code, 200)

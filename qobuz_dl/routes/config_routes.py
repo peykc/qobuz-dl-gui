@@ -1,12 +1,26 @@
 import configparser
 import hashlib
+import logging
 import os
+from pathlib import Path
 
 from flask import jsonify, request
 
 
 def _resolve(value):
     return value() if callable(value) else value
+
+
+def _canonicalize_folder(raw: str) -> str:
+    folder = (raw or "").strip() or "Qobuz Downloads"
+    try:
+        if folder != "Qobuz Downloads" and (
+            os.path.isabs(folder) or folder.startswith("~")
+        ):
+            return str(Path(folder).expanduser().resolve())
+    except OSError:
+        pass
+    return folder
 
 
 def register_config_routes(app, *, config_file, on_config_updated) -> None:
@@ -33,6 +47,8 @@ def register_config_routes(app, *, config_file, on_config_updated) -> None:
 
         data = request.json or {}
         data.pop("genius_token", None)
+        if "default_folder" in data and data["default_folder"] is not None:
+            data["default_folder"] = _canonicalize_folder(str(data["default_folder"]))
         for key, val in data.items():
             if key == "new_password":
                 if val:
@@ -43,7 +59,16 @@ def register_config_routes(app, *, config_file, on_config_updated) -> None:
                 cfg["DEFAULT"][key] = str(val)
         if cfg.has_option("DEFAULT", "genius_token"):
             cfg.remove_option("DEFAULT", "genius_token")
-        with open(config_file_value, "w") as f:
-            cfg.write(f)
+        try:
+            with open(config_file_value, "w") as f:
+                cfg.write(f)
+        except OSError as e:
+            logging.error("Failed to write config: %s", e)
+            return jsonify({"ok": False, "error": f"Could not save config: {e}"}), 500
+        if "default_folder" in data:
+            logging.info(
+                "Saved default_folder=%s",
+                cfg["DEFAULT"].get("default_folder", ""),
+            )
         on_config_updated(cfg)
         return jsonify({"ok": True})

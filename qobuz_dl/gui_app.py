@@ -9,12 +9,12 @@ import logging
 import threading
 import time
 import socket
-import webbrowser
 
 from typing import Optional
 
 from flask import Flask, Response, send_from_directory
 
+from qobuz_dl.app.browser import open_url
 from qobuz_dl.app.events import GuiEventHub, GuiQueueHandler
 from qobuz_dl.app.path_security import (
     audio_path_allowed_for_lyrics_attach as _path_allowed_for_lyrics_attach,
@@ -507,7 +507,7 @@ def main():
 
     def open_browser_soon():
         time.sleep(0.4)
-        webbrowser.open(url)
+        open_url(url)
 
     use_browser = os.environ.get("QOBUZ_DL_GUI_BROWSER", "").lower() in (
         "1",

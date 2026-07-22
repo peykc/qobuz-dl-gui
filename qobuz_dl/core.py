@@ -13,6 +13,7 @@ from qobuz_dl.color import CYAN, DF, OFF, RED, RESET, YELLOW
 from qobuz_dl.config_paths import CONFIG_FILE
 from qobuz_dl.db import create_db, handle_download_id
 from qobuz_dl.exceptions import NonStreamable
+from qobuz_dl.app.browser import open_url
 from qobuz_dl.utils import (
     PartialFormatter,
     create_and_return_dir,
@@ -87,6 +88,7 @@ class QobuzDL:
         no_isrc_tag=False,
         tag_title_from_track_format=True,
         tag_album_from_folder_format=True,
+        convert_to_alac=False,
     ):
         # Do not touch the filesystem while constructing the session. Login and
         # OAuth should still work if the saved download volume is temporarily
@@ -99,6 +101,7 @@ class QobuzDL:
         self.interactive_limit = interactive_limit
         self.ignore_singles_eps = ignore_singles_eps
         self.no_m3u_for_playlists = no_m3u_for_playlists
+        self.convert_to_alac = bool(convert_to_alac)
         self.quality_fallback = quality_fallback
         self.cover_og_quality = cover_og_quality
         self.no_cover = no_cover
@@ -222,6 +225,8 @@ class QobuzDL:
                 tag_album_from_folder_format=self.tag_album_from_folder_format,
                 native_lang=self.native_lang,
                 lyrics_embed_metadata=self.lyrics_embed_metadata,
+                write_m3u=not self.no_m3u_for_playlists,
+                convert_to_alac=bool(getattr(self, "convert_to_alac", False)),
             )
             dloader.download_id_by_type(not album)
             handle_download_id(self.downloads_db, item_id, add_id=True)
@@ -378,9 +383,11 @@ class QobuzDL:
             thread = threading.Thread(target=server.handle_request)
             thread.start()
 
-            import webbrowser
-
-            webbrowser.open(oauth_url)
+            if not open_url(oauth_url):
+                logger.warning(
+                    f"{YELLOW}Could not open browser. Open this URL manually:{RESET}\n"
+                    f"{CYAN}{oauth_url}{RESET}"
+                )
 
             thread.join(timeout=120)
             server.server_close()

@@ -30,6 +30,7 @@ def apply_common_defaults(defaults, *, no_database: str) -> None:
     """Populate config defaults shared by CLI setup and GUI setup."""
     defaults["default_limit"] = "20"
     defaults["no_m3u"] = "false"
+    defaults["convert_to_alac"] = "false"
     defaults["albums_only"] = "false"
     defaults["no_fallback"] = "false"
     defaults["og_cover"] = "false"

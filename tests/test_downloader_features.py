@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from qobuz_dl.downloader import (
     Download,
+    _convert_flac_to_alac,
     _track_dict_for_lrclib,
     _track_metadata_display_title,
     _track_title_base_with_feat,
@@ -39,6 +40,58 @@ class DownloaderFeatureTests(unittest.TestCase):
             with open(pl_path, "r", encoding="utf-8") as f:
                 body = f.read()
             self.assertIn("Sanatçı - Şarkı", body)
+
+    def test_make_m3u_flat_album_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flac_path = os.path.join(tmp, "01 - Track.flac")
+            with open(flac_path, "wb") as f:
+                f.write(b"fake")
+
+            class FakeAudio:
+                info = SimpleNamespace(length=120)
+
+                def __getitem__(self, key):
+                    if key == "TITLE":
+                        return ["Track"]
+                    if key == "ARTIST":
+                        return ["Artist"]
+                    raise KeyError(key)
+
+            with patch("qobuz_dl.utils.FLAC", return_value=FakeAudio()):
+                make_m3u(tmp)
+
+            pl_path = os.path.join(tmp, os.path.basename(tmp) + ".m3u")
+            with open(pl_path, "r", encoding="utf-8") as f:
+                body = f.read()
+            self.assertIn("01 - Track.flac", body)
+            self.assertNotIn(os.path.join(os.path.basename(tmp), "01 - Track.flac"), body)
+
+    def test_convert_flac_to_alac_uses_m4a_temp_and_mp4_muxer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            flac_path = os.path.join(tmp, "01 - Song.flac")
+            with open(flac_path, "wb") as f:
+                f.write(b"fake-flac")
+
+            def fake_run(cmd, **kwargs):
+                out = cmd[-1]
+                self.assertTrue(str(out).endswith(".m4a"), out)
+                self.assertNotIn(".partial", str(out))
+                self.assertIn("-f", cmd)
+                self.assertEqual(cmd[cmd.index("-f") + 1], "mp4")
+                with open(out, "wb") as fh:
+                    fh.write(b"fake-m4a")
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with patch(
+                "qobuz_dl.downloader._ffmpeg_on_path", return_value=True
+            ), patch(
+                "qobuz_dl.downloader.subprocess.run", side_effect=fake_run
+            ):
+                got = _convert_flac_to_alac(flac_path)
+
+            self.assertTrue(got and got.endswith(".m4a"))
+            self.assertTrue(os.path.isfile(got))
+            self.assertFalse(os.path.isfile(flac_path))
 
     def test_flac_fix_md5s_missing_file(self):
         got = flac_fix_md5s("C:/does/not/exist.flac")

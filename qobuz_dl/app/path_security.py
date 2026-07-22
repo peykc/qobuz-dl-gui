@@ -3,6 +3,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from qobuz_dl.app.browser import env_for_external_process
+
 
 ALLOWED_AUDIO_SUFFIXES = (
     ".flac",
@@ -43,16 +45,17 @@ def reveal_file_in_os(file_path: Path) -> None:
     """Open the system file manager and reveal ``file_path``."""
     p = file_path.expanduser().resolve()
     system = platform.system()
+    env = env_for_external_process()
     if system == "Darwin":
-        subprocess.Popen(["open", "-R", str(p)])
+        subprocess.Popen(["open", "-R", str(p)], env=env)
     elif system == "Windows":
-        subprocess.Popen(["explorer", "/select,", str(p)])
+        subprocess.Popen(["explorer", "/select,", str(p)], env=env)
     else:
         if shutil.which("nautilus"):
-            subprocess.Popen(["nautilus", "--select", str(p)])
+            subprocess.Popen(["nautilus", "--select", str(p)], env=env)
         elif shutil.which("dolphin"):
-            subprocess.Popen(["dolphin", "--select", str(p)])
+            subprocess.Popen(["dolphin", "--select", str(p)], env=env)
         elif shutil.which("nemo"):
-            subprocess.Popen(["nemo", str(p)])
+            subprocess.Popen(["nemo", str(p)], env=env)
         else:
-            subprocess.Popen(["xdg-open", str(p.parent)])
+            subprocess.Popen(["xdg-open", str(p.parent)], env=env)

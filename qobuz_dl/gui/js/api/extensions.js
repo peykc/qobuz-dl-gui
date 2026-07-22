@@ -33,6 +33,17 @@
         `/api/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(type)}&limit=${limit}`,
       );
     },
+    artistReleases(artistId, limit, sort) {
+      const lim = limit != null ? limit : 50;
+      // Default relevance unless the UI explicitly selected newest.
+      const sortMode =
+        String(sort || "relevance").toLowerCase() === "newest"
+          ? "newest"
+          : "relevance";
+      return fetch(
+        `/api/artist_releases?id=${encodeURIComponent(artistId)}&limit=${lim}&sort=${encodeURIComponent(sortMode)}`,
+      );
+    },
   };
 
   api.queueApi = {
@@ -167,8 +178,8 @@
   };
 
   api.setupApi = {
-    oauthStart() {
-      return jsonPost("/api/oauth/start", {});
+    oauthStart(body) {
+      return jsonPost("/api/oauth/start", body != null ? body : {});
     },
     oauthStatus(attemptId) {
       return fetch(

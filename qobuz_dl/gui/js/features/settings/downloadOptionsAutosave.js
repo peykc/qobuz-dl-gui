@@ -36,6 +36,9 @@
         no_cover: String(document.getElementById("dl-no-cover").checked),
         albums_only: String(document.getElementById("dl-albums-only").checked),
         no_m3u: String(document.getElementById("dl-no-m3u").checked),
+        convert_to_alac: String(
+          !!document.getElementById("dl-convert-alac")?.checked,
+        ),
         no_fallback: String(document.getElementById("dl-no-fallback").checked),
         no_database: String(document.getElementById("dl-no-db").checked),
         fix_md5s: String(document.getElementById("dl-fix-md5s").checked),
@@ -131,6 +134,7 @@
       "dl-no-db",
       "dl-native-lang",
       "dl-no-m3u",
+      "dl-convert-alac",
       "dl-no-fallback",
       "dl-fix-md5s",
       "dl-lyrics-enabled",

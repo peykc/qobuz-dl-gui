@@ -5,6 +5,7 @@ import logging
 from mutagen.flac import FLAC, Picture
 import mutagen.id3 as id3
 from mutagen.id3 import ID3NoHeaderError
+from mutagen.mp4 import MP4, MP4Cover
 from qobuz_dl.utils import flac_fix_md5s, get_album_artist
 
 logger = logging.getLogger(__name__)
@@ -359,6 +360,117 @@ def tag_mp3(
     os.rename(filename, final_name)
 
 
+def tag_m4a(
+    filename,
+    root_dir,
+    final_name,
+    d: dict,
+    album,
+    istrack=True,
+    em_image=False,
+    tag_options=None,
+    *,
+    tag_display_title=None,
+    tag_display_album=None,
+):
+    """Tag an ALAC/AAC ``.m4a`` file (MP4 atoms)."""
+    audio = MP4(filename)
+    options = _resolve_tag_options(tag_options)
+    qobuz_item = d
+    qobuz_album = d.get("album", {}) if istrack else album
+    release_date = qobuz_album.get("release_date_original", "")
+    tags = audio.tags
+    if tags is None:
+        audio.add_tags()
+        tags = audio.tags
+
+    if not options["no_track_title_tag"]:
+        tit = (tag_display_title or "").strip()
+        tags["\xa9nam"] = [tit if tit else _get_title(qobuz_item)]
+    if not options["no_album_title_tag"]:
+        alb_t = (tag_display_album or "").strip()
+        tags["\xa9alb"] = [alb_t if alb_t else qobuz_album.get("title", "")]
+    if not options["no_track_artist_tag"]:
+        artist_ = qobuz_item.get("performer", {}).get("name")
+        tags["\xa9ART"] = [
+            artist_ or qobuz_album.get("artist", {}).get("name", "")
+        ]
+    if not options["no_album_artist_tag"]:
+        album_artist = get_album_artist(qobuz_album)
+        if album_artist:
+            tags["aART"] = [album_artist]
+    if not options["no_composer_tag"]:
+        composer = qobuz_item.get("composer", {}).get("name")
+        if composer:
+            tags["\xa9wrt"] = [composer]
+    if not options["no_release_date_tag"] and release_date:
+        tags["\xa9day"] = [release_date]
+    if not options["no_genre_tag"]:
+        genres = qobuz_album.get("genres_list") or []
+        if genres:
+            tags["\xa9gen"] = [_format_genres(genres)]
+    if not options["no_copyright_tag"]:
+        copyright_v = _format_copyright(qobuz_album.get("copyright") or "")
+        if copyright_v:
+            tags["cprt"] = [copyright_v]
+    if not options["no_isrc_tag"]:
+        isrc = qobuz_item.get("isrc", "")
+        if isrc:
+            tags["----:com.apple.iTunes:ISRC"] = [isrc.encode("utf-8")]
+    if not options["no_upc_tag"]:
+        upc = qobuz_album.get("upc", "")
+        if upc:
+            tags["----:com.apple.iTunes:BARCODE"] = [str(upc).encode("utf-8")]
+    if not options["no_label_tag"]:
+        label = qobuz_album.get("label", {}).get("name", "")
+        if label:
+            tags["----:com.apple.iTunes:LABEL"] = [label.encode("utf-8")]
+
+    track_no = int(qobuz_item.get("track_number", 1) or 1)
+    track_total = int(qobuz_album.get("tracks_count", 1) or 1)
+    disc_no = int(qobuz_item.get("media_number", 1) or 1)
+    disc_total = int(qobuz_album.get("media_count", 1) or 1)
+    if not options["no_track_number_tag"]:
+        tags["trkn"] = [(track_no, 0 if options["no_track_total_tag"] else track_total)]
+    if not options["no_disc_number_tag"]:
+        tags["disk"] = [(disc_no, 0 if options["no_disc_total_tag"] else disc_total)]
+    if not options["no_explicit_tag"]:
+        explicit = bool(
+            qobuz_item.get("parental_warning")
+            or qobuz_item.get("parental_advisory")
+            or qobuz_item.get("explicit")
+            or qobuz_album.get("parental_warning")
+            or qobuz_album.get("parental_advisory")
+            or qobuz_album.get("explicit")
+        )
+        tags["rtng"] = [1 if explicit else 0]
+
+    if em_image:
+        _embed_mp4_img(root_dir, tags)
+
+    audio.save()
+    if os.path.abspath(filename) != os.path.abspath(final_name):
+        os.rename(filename, final_name)
+
+
+def _embed_mp4_img(root_dir, tags) -> None:
+    emb_image = os.path.join(root_dir, "cover.jpg")
+    multi_emb_image = os.path.join(
+        os.path.abspath(os.path.join(root_dir, os.pardir)), "cover.jpg"
+    )
+    if os.path.isfile(emb_image):
+        cover_image = emb_image
+    elif os.path.isfile(multi_emb_image):
+        cover_image = multi_emb_image
+    else:
+        return
+    try:
+        with open(cover_image, "rb") as cover:
+            tags["covr"] = [MP4Cover(cover.read(), imageformat=MP4Cover.FORMAT_JPEG)]
+    except OSError as e:
+        logger.debug("Skipping M4A cover embed: %s", e)
+
+
 def set_itunes_explicit_from_lyrics_content(audio_path: str, lyrics_text: str) -> bool:
     """If lyric text matches the explicit-vocabulary heuristic, set ITUNESADVISORY to 1."""
     from qobuz_dl import lyrics as lyrics_mod
@@ -392,6 +504,13 @@ def write_lyrics_metadata(audio_path: str, lyrics_text: str) -> bool:
             audio.delall("USLT")
             audio.add(id3.USLT(encoding=3, lang="eng", desc="", text=body))
             audio.save(audio_path, v2_version=3)
+            return True
+        if ext == ".m4a":
+            audio = MP4(audio_path)
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags["\xa9lyr"] = [body]
+            audio.save()
             return True
     except Exception as e:
         logger.warning("Could not write embedded lyrics metadata: %s", e)

@@ -63,6 +63,7 @@
     setCheck("dl-no-cover", cfg.no_cover === "true");
     setCheck("dl-albums-only", cfg.albums_only === "true");
     setCheck("dl-no-m3u", cfg.no_m3u === "true");
+    setCheck("dl-convert-alac", cfg.convert_to_alac === "true");
     setCheck("dl-no-fallback", cfg.no_fallback === "true");
     setCheck("dl-no-db", cfg.no_database === "true");
     setCheck("dl-smart-discography", cfg.smart_discography === "true");

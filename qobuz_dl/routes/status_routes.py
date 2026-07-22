@@ -22,6 +22,7 @@ def _status_config_data(config_file: str) -> dict:
             "default_folder": defaults.get("default_folder", "Qobuz Downloads"),
             "default_quality": defaults.get("default_quality", "27"),
             "no_m3u": defaults.get("no_m3u", "false"),
+            "convert_to_alac": defaults.get("convert_to_alac", "false"),
             "albums_only": defaults.get("albums_only", "false"),
             "no_fallback": defaults.get("no_fallback", "false"),
             "og_cover": defaults.get("og_cover", "false"),

@@ -128,6 +128,10 @@ def build_qobuz_from_config(cfg, overrides=None, downloads_db_path=QOBUZ_DB):
         o.get("tag_album_from_folder_format"),
         cfg.getboolean("DEFAULT", "tag_album_from_folder_format", fallback=True),
     )
+    convert_to_alac = as_bool(
+        o.get("convert_to_alac"),
+        cfg.getboolean("DEFAULT", "convert_to_alac", fallback=False),
+    )
 
     return QobuzDL(
         directory=directory,
@@ -135,6 +139,7 @@ def build_qobuz_from_config(cfg, overrides=None, downloads_db_path=QOBUZ_DB):
         embed_art=embed_art,
         ignore_singles_eps=albums_only,
         no_m3u_for_playlists=no_m3u,
+        convert_to_alac=convert_to_alac,
         quality_fallback=not no_fallback,
         cover_og_quality=og_cover,
         no_cover=no_cover,

@@ -8,6 +8,7 @@
 #   Linux:   dist/Qobuz-DL-GUI       (chmod +x; needs WebKitGTK at runtime)
 #   macOS:   dist/Qobuz-DL-GUI.app  (bundle; may need Gatekeeper override)
 import os
+import re
 import sys
 
 block_cipher = None
@@ -15,6 +16,11 @@ block_cipher = None
 spec_root = os.path.dirname(os.path.abspath(SPEC))
 is_darwin = sys.platform == "darwin"
 is_win = sys.platform == "win32"
+
+_version_py = os.path.join(spec_root, "qobuz_dl", "version.py")
+with open(_version_py, encoding="utf-8") as _vf:
+    _vm = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', _vf.read(), re.M)
+APP_VERSION = _vm.group(1) if _vm else "0.0.0"
 
 gui_dir = os.path.join(spec_root, "qobuz_dl", "gui")
 datas = [(gui_dir, "qobuz_dl/gui")]
@@ -93,5 +99,7 @@ if is_darwin:
             "NSHighResolutionCapable": True,
             "CFBundleName": "Qobuz-DL-GUI",
             "CFBundleDisplayName": "Qobuz-DL",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
         },
     )

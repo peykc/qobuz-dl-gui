@@ -363,6 +363,24 @@ textarea,
     line-height: 1.6;
 }
 
+.oauth-manual-open {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.5;
+}
+
+.oauth-manual-open.hidden {
+    display: none;
+}
+
+.oauth-manual-open a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
 #setup-overlay .auth-desc {
     text-align: center;
 }
@@ -2876,6 +2894,7 @@ a.track-dl-btn.purchase-only:focus-visible {
     display: flex;
     gap: 8px;
     margin-bottom: 12px;
+    position: relative;
 }
 
 .search-input {
@@ -2887,10 +2906,39 @@ a.track-dl-btn.purchase-only:focus-visible {
     flex-shrink: 0;
 }
 
-.search-row {
+.search-artist-back-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
     display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2, var(--surface));
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--transition), border-color var(--transition);
+}
+
+.search-artist-back-overlay:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.search-artist-back-overlay.hidden {
+    display: none;
+}
+
+.search-row.is-artist-browse .search-input,
+.search-row.is-artist-browse .search-type-select,
+.search-row.is-artist-browse .btn-search {
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .btn-search {
@@ -2964,6 +3012,25 @@ a.track-dl-btn.purchase-only:focus-visible {
     align-items: center;
     gap: 8px;
     flex-wrap: nowrap;
+}
+
+.search-sort-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+
+.search-sort-row #search-sort {
+    width: auto;
+    min-width: 120px;
+}
+
+.settings-app-version {
+    margin: 0 0 8px;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
 .inline-label {

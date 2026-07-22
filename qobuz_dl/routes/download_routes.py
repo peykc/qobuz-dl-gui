@@ -16,6 +16,7 @@ def _download_overrides(data):
         "lyrics_embed_metadata": data.get("lyrics_embed_metadata", False),
         "albums_only": data.get("albums_only", False),
         "no_m3u": data.get("no_m3u", False),
+        "convert_to_alac": data.get("convert_to_alac", False),
         "no_fallback": data.get("no_fallback", False),
         "og_cover": data.get("og_cover", False),
         "no_cover": data.get("no_cover", False),

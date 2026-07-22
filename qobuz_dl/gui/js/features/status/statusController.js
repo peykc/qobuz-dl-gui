@@ -6,6 +6,13 @@
   const QG = (window.QobuzGui = window.QobuzGui || {});
   QG.features = QG.features || {};
 
+  function setAppVersionLabel(version) {
+    const el = document.getElementById("settings-app-version");
+    if (!el) return;
+    const v = String(version || "").trim();
+    el.textContent = v ? `Version ${v.replace(/^v/i, "")}` : "Version unknown";
+  }
+
   function updateStatus(ready) {
     const dot = document.getElementById("status-dot");
     const label = document.getElementById("status-label");
@@ -40,6 +47,7 @@
         data = await res.json();
       }
 
+      if (data && data.app_version) setAppVersionLabel(data.app_version);
       updateStatus(data.ready);
       return data;
     } catch (_) {
@@ -51,5 +59,6 @@
   QG.features.status = {
     updateStatus,
     checkStatus,
+    setAppVersionLabel,
   };
 })();

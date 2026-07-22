@@ -240,6 +240,192 @@ def register_search_routes(app, *, get_qobuz) -> None:
             logging.error("Search error: %s", e)
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    @app.route("/api/artist_releases")
+    def api_artist_releases():
+        """Return an artist's albums for browse-from-search.
+
+        Sort follows the ``sort`` query param: ``relevance`` (default) or ``newest``.
+        """
+        qobuz = get_qobuz()
+        if not qobuz or not qobuz.client:
+            return jsonify({"ok": False, "error": "Not connected"}), 400
+
+        artist_id = (request.args.get("id") or "").strip()
+        if not artist_id:
+            return jsonify({"ok": False, "error": "Missing artist id"}), 400
+        try:
+            limit = int(request.args.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, 100))
+        sort_mode = (request.args.get("sort") or "relevance").strip().lower()
+        if sort_mode not in ("newest", "relevance"):
+            sort_mode = "relevance"
+        # Qobuz getReleasesList: release_date for newest; popularity for catalog/relevance.
+        api_sort = "release_date" if sort_mode == "newest" else "popularity"
+        api_order = "desc"
+
+        from qobuz_dl.utils import (
+            format_sampling_rate_specs,
+            sampling_rate_khz_for_chip,
+        )
+
+        def _as_str(val, default="") -> str:
+            if val is None:
+                return default
+            if isinstance(val, str):
+                return val.strip()
+            if isinstance(val, (int, float, bool)):
+                return str(val)
+            if isinstance(val, dict):
+                for key in ("name", "title", "label", "value", "text"):
+                    inner = val.get(key)
+                    if isinstance(inner, str) and inner.strip():
+                        return inner.strip()
+                return default
+            try:
+                return str(val).strip()
+            except Exception:
+                return default
+
+        def _cover_url(album: dict) -> str:
+            image = album.get("image")
+            if isinstance(image, dict):
+                return _as_str(
+                    image.get("large") or image.get("small") or image.get("thumbnail")
+                )
+            if isinstance(image, str):
+                return image.strip()
+            return ""
+
+        def _album_from_release_item(it: dict):
+            if not isinstance(it, dict):
+                return None
+            for key in ("album", "release"):
+                nested = it.get(key)
+                if isinstance(nested, dict) and nested.get("id") is not None:
+                    return nested
+            if it.get("id") is not None and (
+                it.get("title") is not None or it.get("tracks_count") is not None
+            ):
+                return it
+            return None
+
+        def _album_row(album: dict, artist_name: str = "") -> dict:
+            aid = _as_str(album.get("id"))
+            title = _as_str(album.get("title"))
+            artist_field = album.get("artist")
+            if isinstance(artist_field, dict):
+                artist = _as_str(artist_field.get("name"), artist_name)
+            else:
+                artist = _as_str(artist_field, artist_name)
+            release_date_val = album.get("release_date_original") or album.get(
+                "release_date_stream"
+            )
+            if not isinstance(release_date_val, str):
+                release_date_val = _as_str(release_date_val)
+            release_year = ""
+            if (
+                release_date_val
+                and len(release_date_val) >= 4
+                and release_date_val[:4].isdigit()
+            ):
+                release_year = release_date_val[:4]
+            hires = bool(album.get("hires_streamable"))
+            quality = "HI-RES" if hires else "LOSSLESS"
+            cover = _cover_url(album)
+            return {
+                "text": f"{artist} - {title}" if artist else title,
+                "display_title": title,
+                "display_subtitle": artist,
+                "release_year": release_year,
+                "release_date": release_date_val,
+                "url": f"https://play.qobuz.com/album/{aid}" if aid else "",
+                "cover": cover,
+                "type": "album",
+                "badge": "",
+                "quality": quality,
+                "explicit": bool(
+                    album.get("parental_warning")
+                    or album.get("parental_advisory")
+                    or album.get("explicit")
+                ),
+                "tracks": album.get("tracks_count"),
+                "bit_depth": album.get("maximum_bit_depth"),
+                "sample_rate": sampling_rate_khz_for_chip(
+                    album.get("maximum_sampling_rate")
+                ),
+                "quality_label": (
+                    f"{album.get('maximum_bit_depth', '?')}bit / "
+                    f"{format_sampling_rate_specs(album.get('maximum_sampling_rate'))}"
+                ),
+            }
+
+        try:
+            artist_name = ""
+            albums = []
+            try:
+                raw = qobuz.client.get_artist_releases(
+                    artist_id,
+                    limit=limit,
+                    offset=0,
+                    sort=api_sort,
+                    order=api_order,
+                )
+                items = (raw or {}).get("items") or []
+                for it in items:
+                    album = _album_from_release_item(it)
+                    if album is not None:
+                        albums.append(album)
+            except Exception:
+                logging.debug(
+                    "getReleasesList failed; falling back to artist/get",
+                    exc_info=True,
+                )
+                albums = []
+
+            if not albums:
+                meta = qobuz.client.api_call(
+                    "artist/get", id=artist_id, offset=0
+                )
+                artist_name = _as_str((meta or {}).get("name"))
+                album_items = ((meta or {}).get("albums") or {}).get("items") or []
+                albums = [a for a in album_items if isinstance(a, dict) and a.get("id")]
+                if sort_mode == "newest":
+                    albums.sort(
+                        key=lambda a: _as_str(
+                            a.get("release_date_original")
+                            or a.get("release_date_stream")
+                        ),
+                        reverse=True,
+                    )
+                albums = albums[:limit]
+            else:
+                try:
+                    meta = qobuz.client.api_call(
+                        "artist/get", id=artist_id, offset=0
+                    )
+                    artist_name = _as_str((meta or {}).get("name"), artist_name)
+                except Exception:
+                    pass
+
+            results = [
+                _album_row(a, artist_name)
+                for a in albums
+                if isinstance(a, dict) and a.get("id") is not None
+            ]
+            return jsonify(
+                {
+                    "ok": True,
+                    "artist_id": artist_id,
+                    "artist_name": artist_name,
+                    "results": results,
+                }
+            )
+        except Exception as e:
+            logging.error("artist_releases failed: %s", e, exc_info=True)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.route("/api/check_discography", methods=["POST"])
     def api_check_discography():
         qobuz = get_qobuz()

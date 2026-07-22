@@ -75,6 +75,17 @@ class Client:
                 "offset": kwargs["offset"],
                 "extra": "albums",
             }
+        elif epoint == "artist/getReleasesList":
+            params = {
+                "artist_id": kwargs["id"],
+                "release_type": kwargs.get("release_type", "album"),
+                # Default catalog order is popularity (relevance), not release date.
+                "sort": kwargs.get("sort", "popularity"),
+                "order": kwargs.get("order", "desc"),
+                "limit": kwargs.get("limit", 50),
+                "offset": kwargs.get("offset", 0),
+                "track_size": 1,
+            }
         elif epoint == "label/get":
             params = {
                 "label_id": kwargs["id"],
@@ -311,6 +322,25 @@ class Client:
 
     def get_artist_meta(self, id):
         return self.multi_meta("artist/get", "albums_count", id, None)
+
+    def get_artist_releases(
+        self,
+        artist_id,
+        limit=50,
+        offset=0,
+        release_type="album",
+        sort="popularity",
+        order="desc",
+    ):
+        return self.api_call(
+            "artist/getReleasesList",
+            id=artist_id,
+            limit=limit,
+            offset=offset,
+            release_type=release_type,
+            sort=sort,
+            order=order,
+        )
 
     def get_plist_meta(self, id):
         return self.multi_meta("playlist/get", "tracks_count", id, None)

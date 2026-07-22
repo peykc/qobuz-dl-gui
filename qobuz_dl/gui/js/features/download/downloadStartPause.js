@@ -22,6 +22,7 @@
       no_cover: document.getElementById("dl-no-cover")?.checked,
       albums_only: document.getElementById("dl-albums-only")?.checked,
       no_m3u: document.getElementById("dl-no-m3u")?.checked,
+      convert_to_alac: document.getElementById("dl-convert-alac")?.checked,
       no_fallback: document.getElementById("dl-no-fallback")?.checked,
       no_db: document.getElementById("dl-no-db")?.checked,
       smart_discography: document.getElementById("dl-smart-discography")

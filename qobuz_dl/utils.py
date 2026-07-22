@@ -11,7 +11,7 @@ from mutagen.flac import FLAC
 
 logger = logging.getLogger(__name__)
 
-EXTENSIONS = (".mp3", ".flac")
+EXTENSIONS = (".mp3", ".flac", ".m4a")
 
 
 class PartialFormatter(string.Formatter):
@@ -37,38 +37,50 @@ class PartialFormatter(string.Formatter):
 
 
 def make_m3u(pl_directory):
+    """Write an .m3u for audio under ``pl_directory`` (flat albums or nested playlists)."""
     track_list = ["#EXTM3U"]
-    rel_folder = os.path.basename(os.path.normpath(pl_directory))
+    pl_directory = os.path.normpath(pl_directory)
+    rel_folder = os.path.basename(pl_directory)
     pl_name = rel_folder + ".m3u"
     for local, dirs, files in os.walk(pl_directory):
         dirs.sort()
-        audio_rel_files = [
-            os.path.join(os.path.basename(os.path.normpath(local)), file_)
-            for file_ in files
-            if os.path.splitext(file_)[-1] in EXTENSIONS
-        ]
-        audio_files = [
-            os.path.abspath(os.path.join(local, file_))
-            for file_ in files
-            if os.path.splitext(file_)[-1] in EXTENSIONS
-        ]
-        if not audio_files or len(audio_files) != len(audio_rel_files):
-            continue
-
-        for audio_rel_file, audio_file in zip(audio_rel_files, audio_files):
+        local_norm = os.path.normpath(local)
+        audio_names = sorted(
+            f for f in files if os.path.splitext(f)[-1].lower() in EXTENSIONS
+        )
+        for file_ in audio_names:
+            audio_file = os.path.abspath(os.path.join(local_norm, file_))
+            if local_norm == pl_directory:
+                audio_rel_file = file_
+            else:
+                audio_rel_file = os.path.relpath(audio_file, pl_directory)
             try:
-                pl_item = (
-                    EasyMP3(audio_file) if ".mp3" in audio_file else FLAC(audio_file)
+                ext = os.path.splitext(audio_file)[-1].lower()
+                if ext == ".mp3":
+                    pl_item = EasyMP3(audio_file)
+                    title = pl_item["TITLE"][0]
+                    artist = pl_item["ARTIST"][0]
+                    length = int(pl_item.info.length)
+                elif ext == ".m4a":
+                    from mutagen.mp4 import MP4
+
+                    pl_item = MP4(audio_file)
+                    tags = pl_item.tags or {}
+                    title = (tags.get("\xa9nam") or ["Unknown"])[0]
+                    artist = (tags.get("\xa9ART") or ["Unknown"])[0]
+                    length = int(pl_item.info.length or 0)
+                else:
+                    pl_item = FLAC(audio_file)
+                    title = pl_item["TITLE"][0]
+                    artist = pl_item["ARTIST"][0]
+                    length = int(pl_item.info.length)
+                track_list.append(
+                    "#EXTINF:{}, {} - {}\n{}".format(
+                        length, artist, title, audio_rel_file
+                    )
                 )
-                title = pl_item["TITLE"][0]
-                artist = pl_item["ARTIST"][0]
-                length = int(pl_item.info.length)
-                index = "#EXTINF:{}, {} - {}\n{}".format(
-                    length, artist, title, audio_rel_file
-                )
-            except:  # noqa
+            except Exception:  # noqa: BLE001
                 continue
-            track_list.append(index)
 
     if len(track_list) > 1:
         with open(os.path.join(pl_directory, pl_name), "w", encoding="utf-8") as pl:

@@ -75,12 +75,15 @@
   }
 
   let _searchResults = [];
+  let _searchResultsRaw = []; // original API order (relevance)
   const _QOBUZ_SEARCH_PAGE_INITIAL = 10;
   const _QOBUZ_SEARCH_PAGE_STEP = 5;
   const _QOBUZ_SEARCH_MAX = 50;
   let _searchVisibleCount = 0;
   let _searchLastQuery = "";
   let _sidebarSearchScrollRaf = null;
+  let _searchSortMode = "relevance"; // relevance | newest
+  let _artistBrowseParent = null; // { results, query } when drilling into artist releases
 
   function initSearch() {
     const luckySlider = document.getElementById("lucky-number");
@@ -126,6 +129,57 @@
       searchBtn.disabled = query.length < 3;
     });
 
+    const sortSelect = document.getElementById("search-sort");
+    if (sortSelect) {
+      sortSelect.addEventListener("change", async () => {
+        _syncSortModeFromUi();
+        // Re-fetch artist releases when sort changes so Relevance vs Newest
+        // use the matching Qobuz list order, not only a client re-sort.
+        if (
+          _artistBrowseParent &&
+          _artistBrowseParent.artistId &&
+          api.searchApi.artistReleases
+        ) {
+          const name = _artistBrowseParent.artistName || _searchLastQuery;
+          try {
+            const res = await api.searchApi.artistReleases(
+              _artistBrowseParent.artistId,
+              _QOBUZ_SEARCH_MAX,
+              _searchSortMode,
+            );
+            const data = await res.json();
+            if (data && data.ok) {
+              _searchResultsRaw = (data.results || []).slice();
+              renderResults(_applySearchSort(_searchResultsRaw.slice()), name);
+              return;
+            }
+          } catch (_) {
+            /* fall through to client sort */
+          }
+        }
+        if (!_searchResultsRaw.length) return;
+        const label = _artistBrowseParent
+          ? _artistBrowseParent.artistName || _searchLastQuery
+          : _searchLastQuery;
+        renderResults(_applySearchSort(_searchResultsRaw.slice()), label);
+      });
+    }
+
+    const backBtn = document.getElementById("search-artist-back");
+    if (backBtn) {
+      backBtn.addEventListener("click", () => {
+        if (!_artistBrowseParent) return;
+        const parent = _artistBrowseParent;
+        _artistBrowseParent = null;
+        _setArtistBrowseChrome(false, "");
+        _searchResultsRaw = (parent.results || []).slice();
+        renderResults(
+          _applySearchSort(_searchResultsRaw.slice()),
+          parent.query,
+        );
+      });
+    }
+
     const sidebarScroll = document.querySelector(".sidebar-results-scroll");
     if (sidebarScroll && !sidebarScroll.dataset.pagingScrollBound) {
       sidebarScroll.dataset.pagingScrollBound = "1";
@@ -136,6 +190,90 @@
 
     const luckyBtn = document.getElementById("lucky-btn");
     if (luckyBtn) luckyBtn.addEventListener("click", doLucky);
+  }
+
+  function _releaseDateKey(r) {
+    const rd = (r && (r.release_date || r.release_year)) || "";
+    return String(rd);
+  }
+
+  function _applySearchSort(results) {
+    if (_searchSortMode !== "newest") return results;
+    return results.slice().sort((a, b) => {
+      const kb = _releaseDateKey(b);
+      const ka = _releaseDateKey(a);
+      if (kb !== ka) return kb < ka ? -1 : 1;
+      return 0;
+    });
+  }
+
+  function _artistIdFromUrl(url) {
+    const m = String(url || "").match(/\/artist\/([^/?#]+)/i);
+    return m ? m[1] : "";
+  }
+
+  function _setArtistBrowseChrome(active, artistName) {
+    const backBtn = document.getElementById("search-artist-back");
+    const searchRow = document.getElementById("search-row");
+    if (backBtn) {
+      backBtn.classList.toggle("hidden", !active);
+      if (active && artistName) {
+        backBtn.setAttribute("data-tip", "Back to artists");
+        backBtn.setAttribute("aria-label", `Back from ${artistName}`);
+      }
+    }
+    if (searchRow) {
+      searchRow.classList.toggle("is-artist-browse", !!active);
+    }
+  }
+
+  function _syncSortModeFromUi() {
+    const sortSelect = document.getElementById("search-sort");
+    // Only "newest" is opt-in; anything else (including empty) stays relevance.
+    _searchSortMode =
+      sortSelect && String(sortSelect.value).toLowerCase() === "newest"
+        ? "newest"
+        : "relevance";
+  }
+
+  async function browseArtistReleases(artistResult) {
+    const artistId = _artistIdFromUrl(artistResult.url);
+    if (!artistId || !api.searchApi.artistReleases) return;
+    const btn = document.getElementById("search-btn");
+    btn.disabled = true;
+    btn.classList.add("searching");
+    try {
+      _syncSortModeFromUi();
+      const res = await api.searchApi.artistReleases(
+        artistId,
+        _QOBUZ_SEARCH_MAX,
+        _searchSortMode,
+      );
+      const data = await res.json();
+      if (!data.ok) return;
+      const name =
+        data.artist_name ||
+        artistResult.display_title ||
+        artistResult.text ||
+        "Artist";
+      _artistBrowseParent = {
+        results: _searchResultsRaw.length
+          ? _searchResultsRaw.slice()
+          : _searchResults.slice(),
+        query: _searchLastQuery,
+        artistName: name,
+        artistId,
+      };
+      _setArtistBrowseChrome(true, name);
+      const releases = data.results || [];
+      _searchResultsRaw = releases.slice();
+      renderResults(_applySearchSort(releases), name);
+    } catch (_) {
+      /* ignore */
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("searching");
+    }
   }
 
   async function doSearch() {
@@ -151,6 +289,8 @@
 
     document.getElementById("search-results-container").classList.add("hidden");
     document.getElementById("search-empty").classList.add("hidden");
+    _artistBrowseParent = null;
+    _setArtistBrowseChrome(false, "");
 
     try {
       const res = await api.searchApi.search(query, type, _QOBUZ_SEARCH_MAX);
@@ -160,8 +300,14 @@
         return;
       }
 
-      _searchResults = data.results || [];
-      renderResults(_searchResults, query);
+      const results = data.results || [];
+      _searchResultsRaw = results.slice();
+      renderResults(
+        type === "album" || type === "track"
+          ? _applySearchSort(results)
+          : results,
+        query,
+      );
     } catch (_) {
       /* ignore */
     } finally {
@@ -341,25 +487,36 @@
     row.classList.toggle("result-item--queued", alreadyQueued);
     setSearchResultAddBtnAppearance(addBtn, alreadyQueued);
 
-    addBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!r.url) return;
-      if (queueHas(r.url)) {
-        queueRemove(r.url);
-        return;
-      }
-      queueAdd(r.url);
-    });
-    addBtn.addEventListener("mouseover", () => {
-      if (addBtn.classList.contains("result-add-btn--queued")) {
-        addBtn.setAttribute("data-tip", TIP_SEARCH_QUEUED_REMOVE);
-      }
-    });
-    addBtn.addEventListener("mouseleave", () => {
-      if (addBtn.classList.contains("result-add-btn--queued")) {
-        addBtn.setAttribute("data-tip", TIP_SEARCH_QUEUED_IDLE);
-      }
-    });
+    if (r.type === "artist") {
+      addBtn.setAttribute("aria-label", "Browse artist releases");
+      addBtn.setAttribute("data-tip", "Browse artist releases");
+      addBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        browseArtistReleases(r);
+      });
+      item.style.cursor = "pointer";
+      item.addEventListener("click", () => browseArtistReleases(r));
+    } else {
+      addBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!r.url) return;
+        if (queueHas(r.url)) {
+          queueRemove(r.url);
+          return;
+        }
+        queueAdd(r.url);
+      });
+      addBtn.addEventListener("mouseover", () => {
+        if (addBtn.classList.contains("result-add-btn--queued")) {
+          addBtn.setAttribute("data-tip", TIP_SEARCH_QUEUED_REMOVE);
+        }
+      });
+      addBtn.addEventListener("mouseleave", () => {
+        if (addBtn.classList.contains("result-add-btn--queued")) {
+          addBtn.setAttribute("data-tip", TIP_SEARCH_QUEUED_IDLE);
+        }
+      });
+    }
 
     item.appendChild(addBtn);
 
@@ -390,6 +547,22 @@
     _updateSearchResultsHeader(_searchVisibleCount, total, _searchLastQuery);
   }
 
+  function _fillSearchUntilScrollable() {
+    const scrollEl = document.querySelector(".sidebar-results-scroll");
+    if (!scrollEl || !_searchResults.length) return;
+    // Keep appending pages until the sidebar can scroll, or all rows are shown.
+    // Prevents getting stuck at the initial 10 when the list does not overflow.
+    let guard = 0;
+    while (
+      _searchVisibleCount < _searchResults.length &&
+      scrollEl.scrollHeight <= scrollEl.clientHeight + 8 &&
+      guard < 20
+    ) {
+      _appendNextSearchPage(false);
+      guard += 1;
+    }
+  }
+
   function _onSidebarSearchScroll() {
     if (_sidebarSearchScrollRaf != null) {
       cancelAnimationFrame(_sidebarSearchScrollRaf);
@@ -411,9 +584,10 @@
     const list = document.getElementById("search-results");
     list.innerHTML = "";
     _searchLastQuery = query;
+    _searchResults = results || [];
     _searchVisibleCount = 0;
 
-    if (!results.length) {
+    if (!_searchResults.length) {
       container.classList.add("hidden");
       empty.classList.remove("hidden");
       return;
@@ -422,6 +596,11 @@
     empty.classList.add("hidden");
     container.classList.remove("hidden");
     _appendNextSearchPage(true);
+    requestAnimationFrame(() => {
+      _fillSearchUntilScrollable();
+      // Second pass after layout settles (fonts/images/flex).
+      requestAnimationFrame(_fillSearchUntilScrollable);
+    });
   }
 
 

@@ -51,6 +51,8 @@
     const oauthBtnText = document.getElementById("oauth-btn-text");
     const oauthSpinner = document.getElementById("oauth-spinner");
     const oauthErr = document.getElementById("setup-error-oauth");
+    const oauthManualOpen = document.getElementById("oauth-manual-open");
+    const oauthManualLink = document.getElementById("oauth-manual-link");
     const authToast = document.getElementById("auth-toast");
     let _oauthPolling = null;
     let _oauthAttemptId = "";
@@ -77,6 +79,20 @@
       });
     }
 
+    function hideOauthManualLink() {
+      if (oauthManualOpen) oauthManualOpen.classList.add("hidden");
+      if (oauthManualLink) oauthManualLink.removeAttribute("href");
+    }
+
+    function showOauthManualLink(url) {
+      if (!oauthManualOpen || !oauthManualLink || !url) {
+        hideOauthManualLink();
+        return;
+      }
+      oauthManualLink.href = url;
+      oauthManualOpen.classList.remove("hidden");
+    }
+
     function resetOauthButton() {
       _oauthWaiting = false;
       _oauthAttemptId = "";
@@ -84,6 +100,7 @@
       oauthBtn.classList.remove("oauth-waiting");
       oauthBtnText.textContent = "Login with Qobuz";
       oauthSpinner.classList.add("hidden");
+      hideOauthManualLink();
     }
 
     function setOauthWaiting() {
@@ -139,7 +156,15 @@
       }
 
       try {
-        const res = await api.setupApi.oauthStart();
+        const oauthFolder =
+          document.getElementById("setup-folder-oauth")?.value.trim() ||
+          "Qobuz Downloads";
+        const oauthQuality =
+          document.getElementById("setup-quality-oauth")?.value || "27";
+        const res = await api.setupApi.oauthStart({
+          default_folder: oauthFolder,
+          default_quality: oauthQuality,
+        });
         const data = await res.json();
         if (!data.ok) {
           showAuthToast(friendlyOauthError(data.error || "OAuth start failed."), false);
@@ -151,6 +176,7 @@
         const baselineGeneration = Number(data.baseline_auth_generation || 0);
         const startedAt = Date.now();
         setOauthWaiting();
+        showOauthManualLink(data.url || "");
         _oauthPolling = setInterval(async () => {
           let s = null;
           if (

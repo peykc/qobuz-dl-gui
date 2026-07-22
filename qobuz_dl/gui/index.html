@@ -119,6 +119,10 @@
                     <span id="oauth-btn-text">Login with Qobuz</span>
                     <span id="oauth-spinner" class="spinner hidden"></span>
                 </button>
+                <p id="oauth-manual-open" class="oauth-manual-open hidden">
+                    Browser didn't open?
+                    <a id="oauth-manual-link" href="#" target="_blank" rel="noopener noreferrer">Open login page</a>
+                </p>
             </div>
 
             <!-- Token panel -->
@@ -278,6 +282,9 @@
 
                         <div class="settings-section">
                             <span class="settings-section-label">Updates</span>
+                            <p id="settings-app-version" class="settings-hint settings-app-version">
+                                Version …
+                            </p>
                             <button id="settings-check-updates-btn" type="button" class="btn-secondary btn-full">
                                 Check for updates
                             </button>
@@ -419,7 +426,7 @@
                     </div>
                 </div>
                 <div class="card search-bar-card">
-                    <div class="search-row">
+                    <div class="search-row" id="search-row">
                         <input type="text" id="search-query" placeholder="Search Qobuz…" class="search-input" />
                         <select id="search-type" class="search-type-select menu-select-target">
                             <option value="album">Albums</option>
@@ -434,6 +441,18 @@
                                 <circle cx="11" cy="11" r="8" />
                             </svg>
                         </button>
+                        <button type="button" id="search-artist-back"
+                            class="search-artist-back-overlay hidden"
+                            data-tip="Back to artist search" aria-label="Back to artist search">
+                            ← Artists
+                        </button>
+                    </div>
+                    <div class="search-sort-row">
+                        <label for="search-sort" class="inline-label">Sort</label>
+                        <select id="search-sort" class="menu-select-target" data-tip="Default is Relevance (catalog/popularity order). Newest sorts by release date. Opening an artist uses whichever option is currently selected — it does not switch to Newest.">
+                            <option value="relevance" selected>Relevance</option>
+                            <option value="newest">Newest first</option>
+                        </select>
                     </div>
                 </div>
 
@@ -918,12 +937,20 @@
                                         Native metadata language
                                     </label>
                                     <label class="toggle-label"
-                                        data-tip="When downloading a playlist, skip generating the .m3u file that media players use to load tracks in sequence.">
+                                        data-tip="Skip writing a .m3u playlist file after album or playlist downloads. When off (default), each finished album/playlist folder gets an .m3u for media players.">
                                         <span class="toggle-switch">
                                             <input type="checkbox" id="dl-no-m3u" />
                                             <span class="toggle-knob"></span>
                                         </span>
                                         Skip Playlist File
+                                    </label>
+                                    <label class="toggle-label"
+                                        data-tip="After each lossless download, convert FLAC to Apple Lossless (ALAC) .m4a via ffmpeg, then remove the FLAC. Requires ffmpeg on PATH. Ignored for MP3.">
+                                        <span class="toggle-switch">
+                                            <input type="checkbox" id="dl-convert-alac" />
+                                            <span class="toggle-knob"></span>
+                                        </span>
+                                        Convert FLAC to ALAC
                                     </label>
                                     <label class="toggle-label"
                                         data-tip="If the chosen quality tier isn't available for a release, cancel instead of automatically retrying at a lower quality.">

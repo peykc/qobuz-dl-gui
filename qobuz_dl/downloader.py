@@ -443,6 +443,8 @@ class Download:
         tag_album_from_folder_format: bool = True,
         native_lang: bool = False,
         lyrics_embed_metadata: bool = False,
+        write_m3u: bool = True,
+        convert_to_alac: bool = False,
     ):
         self.client = client
         self.item_id = item_id
@@ -474,6 +476,8 @@ class Download:
         self.tag_title_from_track_format = bool(tag_title_from_track_format)
         self.tag_album_from_folder_format = bool(tag_album_from_folder_format)
         self.native_lang = bool(native_lang)
+        self.write_m3u = bool(write_m3u)
+        self.convert_to_alac = bool(convert_to_alac)
 
     def _purchase_open_url(self, track_meta: dict, album_meta: Optional[dict] = None) -> str:
         return _qobuz_purchase_store_url(
@@ -729,6 +733,13 @@ class Download:
                 f"{YELLOW}{len(failed_tracks)} track(s) failed: "
                 + ", ".join(failed_tracks)
             )
+        if self.write_m3u:
+            try:
+                from qobuz_dl.utils import make_m3u
+
+                make_m3u(dirn)
+            except Exception as exc:
+                logger.debug("Album m3u skipped: %s", exc)
         logger.info(f"{GREEN}Completed")
 
     def _download_release_track(
@@ -1745,6 +1756,32 @@ class Download:
                     )
                 return
 
+            if (
+                self.convert_to_alac
+                and not tag_mp3
+                and str(final_file).lower().endswith(".flac")
+            ):
+                converted = _convert_flac_to_alac(final_file)
+                if converted:
+                    try:
+                        metadata.tag_m4a(
+                            converted,
+                            root_dir,
+                            converted,
+                            track_metadata,
+                            album_or_track_metadata,
+                            is_track,
+                            self.embed_art,
+                            tag_options=self.tag_options,
+                            tag_display_title=tag_display_title,
+                            tag_display_album=tag_display_album,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"{RED}Error tagging ALAC file: {e}", exc_info=True
+                        )
+                    final_file = converted
+
             if stream_track_id and os.path.isfile(missing_file):
                 try:
                     os.remove(missing_file)
@@ -2362,6 +2399,84 @@ def _quality_fallback_chain(quality):
 
 def _ffmpeg_on_path() -> bool:
     return bool(shutil.which("ffmpeg"))
+
+
+def _convert_flac_to_alac(flac_path: str) -> Optional[str]:
+    """Convert a tagged FLAC to ALAC ``.m4a`` via ffmpeg; delete the FLAC on success.
+
+    Temp output must still end in ``.m4a`` (and we pass ``-f mp4``) so ffmpeg
+    can pick an MP4/ALAC muxer — a ``.m4a.partial`` suffix makes muxer init fail.
+    """
+    if not flac_path or not os.path.isfile(flac_path):
+        return None
+    if not _ffmpeg_on_path():
+        logger.warning(
+            "%sALAC conversion skipped (ffmpeg not on PATH)%s", YELLOW, OFF
+        )
+        return None
+    flac_path = os.path.normpath(flac_path)
+    out_path = os.path.normpath(os.path.splitext(flac_path)[0] + ".m4a")
+    # Keep a real .m4a extension for muxer detection; hide as a sibling temp name.
+    tmp_path = os.path.normpath(
+        os.path.join(
+            os.path.dirname(out_path),
+            "." + os.path.basename(out_path) + ".converting.m4a",
+        )
+    )
+    try:
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                flac_path,
+                "-c:a",
+                "alac",
+                "-vn",
+                "-f",
+                "mp4",
+                tmp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode != 0 or not os.path.isfile(tmp_path):
+            logger.error(
+                "%sALAC conversion failed for %s: %s%s",
+                RED,
+                os.path.basename(flac_path),
+                (proc.stderr or "")[-400:],
+                OFF,
+            )
+            if os.path.isfile(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            return None
+        os.replace(tmp_path, out_path)
+        try:
+            os.remove(flac_path)
+        except OSError:
+            pass
+        logger.info(
+            "%sConverted to ALAC: %s%s",
+            GREEN,
+            os.path.basename(out_path),
+            OFF,
+        )
+        return out_path
+    except Exception as e:
+        logger.error("%sALAC conversion error: %s%s", RED, e, OFF)
+        if os.path.isfile(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        return None
 
 
 def _get_qobuz_segment_uuid(segment_data):
