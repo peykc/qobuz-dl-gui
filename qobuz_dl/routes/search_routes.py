@@ -334,7 +334,11 @@ def register_search_routes(app, *, get_qobuz) -> None:
             hires = bool(album.get("hires_streamable"))
             quality = "HI-RES" if hires else "LOSSLESS"
             cover = _cover_url(album)
-            return {
+            try:
+                duration_sec = int(album.get("duration") or 0)
+            except (TypeError, ValueError):
+                duration_sec = 0
+            row = {
                 "text": f"{artist} - {title}" if artist else title,
                 "display_title": title,
                 "display_subtitle": artist,
@@ -360,6 +364,9 @@ def register_search_routes(app, *, get_qobuz) -> None:
                     f"{format_sampling_rate_specs(album.get('maximum_sampling_rate'))}"
                 ),
             }
+            if duration_sec > 0:
+                row["duration_sec"] = duration_sec
+            return row
 
         try:
             artist_name = ""
@@ -424,6 +431,110 @@ def register_search_routes(app, *, get_qobuz) -> None:
             )
         except Exception as e:
             logging.error("artist_releases failed: %s", e, exc_info=True)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/album_tracks")
+    def api_album_tracks():
+        """Return an album's tracks for browse-from-search (eye icon)."""
+        qobuz = get_qobuz()
+        if not qobuz or not qobuz.client:
+            return jsonify({"ok": False, "error": "Not connected"}), 400
+
+        album_id = (request.args.get("id") or "").strip()
+        if not album_id:
+            return jsonify({"ok": False, "error": "Missing album id"}), 400
+
+        try:
+            meta = qobuz.client.get_album_meta(album_id)
+            if not isinstance(meta, dict):
+                return jsonify({"ok": False, "error": "Album not found"}), 404
+
+            album_title = (meta.get("title") or "").strip()
+            album_artist = ((meta.get("artist") or {}).get("name") or "").strip()
+            cover = ((meta.get("image") or {}).get("large") or "").strip()
+            album_hires = bool(meta.get("hires_streamable"))
+            tracks_wrap = meta.get("tracks") or {}
+            items = tracks_wrap.get("items") if isinstance(tracks_wrap, dict) else None
+            if not isinstance(items, list):
+                items = []
+
+            def _as_int(value, default=0):
+                try:
+                    return int(value) if value is not None else default
+                except (TypeError, ValueError):
+                    return default
+
+            # Always emit album tracks in disc/track order (ignore search sort UI).
+            items_sorted = sorted(
+                [it for it in items if isinstance(it, dict) and it.get("id") is not None],
+                key=lambda it: (
+                    _as_int(
+                        it.get("media_number")
+                        if it.get("media_number") is not None
+                        else it.get("disc_number"),
+                        1,
+                    ),
+                    _as_int(it.get("track_number"), 0),
+                    _as_int(it.get("id"), 0),
+                ),
+            )
+
+            results = []
+            for it in items_sorted:
+                tid = str(it.get("id")).strip()
+                if not tid:
+                    continue
+                title = (it.get("title") or "").strip() or "Unknown Track"
+                performer = ((it.get("performer") or {}).get("name") or "").strip()
+                artist = performer or album_artist
+                duration_sec = _as_int(it.get("duration"), 0)
+                track_hires = bool(it.get("hires_streamable"))
+                quality = "HI-RES" if (track_hires or album_hires) else "LOSSLESS"
+                track_no_i = _as_int(it.get("track_number"), 0)
+                disc_no_i = _as_int(
+                    it.get("media_number")
+                    if it.get("media_number") is not None
+                    else it.get("disc_number"),
+                    1,
+                )
+                row = {
+                    "text": f"{artist} - {title}" if artist else title,
+                    "display_title": title,
+                    "display_subtitle": artist,
+                    "url": f"https://play.qobuz.com/track/{tid}",
+                    "cover": cover,
+                    "type": "track",
+                    "badge": "",
+                    "quality": quality,
+                    "explicit": bool(
+                        it.get("parental_warning")
+                        or it.get("parental_advisory")
+                        or it.get("explicit")
+                    ),
+                    "track_number": track_no_i or None,
+                    "disc_number": disc_no_i or None,
+                }
+                if duration_sec > 0:
+                    row["duration_sec"] = duration_sec
+                results.append(row)
+
+            try:
+                album_duration = int(meta.get("duration") or 0)
+            except (TypeError, ValueError):
+                album_duration = 0
+
+            return jsonify(
+                {
+                    "ok": True,
+                    "album_id": album_id,
+                    "album_title": album_title,
+                    "album_artist": album_artist,
+                    "duration_sec": album_duration if album_duration > 0 else None,
+                    "results": results,
+                }
+            )
+        except Exception as e:
+            logging.error("album_tracks failed: %s", e, exc_info=True)
             return jsonify({"ok": False, "error": str(e)}), 500
 
     @app.route("/api/check_discography", methods=["POST"])

@@ -124,10 +124,21 @@
     if (!card) return;
     const sub = card.querySelector(".track-status-sub");
     if (!sub) return;
-    sub.textContent = formatTrackStatusSubLabel(
+    const base = formatTrackStatusSubLabel(
       card.dataset.trackNo || "",
       card.dataset.audioPath || "",
     );
+    const durSec = parseInt(card.dataset.durationSec || "0", 10) || 0;
+    const fmt =
+      window.QobuzGui &&
+      window.QobuzGui.core &&
+      window.QobuzGui.core.format &&
+      window.QobuzGui.core.format.formatAttachDur;
+    if (durSec > 0 && typeof fmt === "function") {
+      sub.textContent = `${base} · ${fmt(durSec)}`;
+      return;
+    }
+    sub.textContent = base;
   }
 
   function syncCardTrackKey(card) {

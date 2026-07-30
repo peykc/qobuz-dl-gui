@@ -13,11 +13,58 @@
       "Open album on Qobuz to purchase (full album required for these tracks)",
     notStreamable:
       "This release is not available for streaming on Qobuz. It may only be sold as a full album (purchase-only or region-restricted), open it on Qobuz to check.",
+    alreadyDownloaded:
+      'Already downloaded (local database). Enable "Ignore download database" in settings to re-download.',
     urlErrorGeneric:
       "This queue item did not finish successfully. Check the activity log for details — causes include network errors, quality restrictions, or tracks that could not be downloaded.",
     trackIssues:
       "One or more tracks on this album could not be downloaded (failed, purchase-only, or unavailable). Check download history for details.",
   };
+
+  function _urlErrorCopy(ev) {
+    const detail = String((ev && ev.detail) || "").trim();
+    const message = String((ev && ev.message) || "").trim();
+    if (detail === "already_downloaded") {
+      return {
+        label: "\u26a0 Already downloaded",
+        text: message || TIPS.alreadyDownloaded,
+      };
+    }
+    if (detail === "non_streamable") {
+      return {
+        label: "\u26a0 Not streamable",
+        text: message || TIPS.notStreamable,
+      };
+    }
+    if (detail === "start_failed") {
+      return {
+        label: "\u26a0 Couldn't start",
+        text: message || "Could not start download.",
+      };
+    }
+    return {
+      label: "\u26a0 Download issue",
+      text: message || TIPS.urlErrorGeneric,
+    };
+  }
+
+  function _ensureUrlErrorMessage(info, text) {
+    let msg = info.querySelector(".dl-error-message.dl-url-failed-message");
+    if (!msg) {
+      msg = document.createElement("div");
+      msg.className = "dl-error-message dl-url-failed-message";
+      info.appendChild(msg);
+    }
+    msg.textContent = text;
+    return msg;
+  }
+
+  function _clearUrlErrorMessage(info) {
+    if (!info) return;
+    info
+      .querySelectorAll(".dl-error-message.dl-url-failed-message")
+      .forEach((el) => el.remove());
+  }
 
   function bootstrapQueueIssueBadges(deps) {
     const issueKeysByUrl = new Map();
@@ -109,6 +156,7 @@
       if (n === 0) {
         if (trackBadge) trackBadge.remove();
         if (!urlFailedBadge) {
+          _clearUrlErrorMessage(info);
           card.classList.remove("dl-error");
         }
         const stillActive =
@@ -130,6 +178,7 @@
       }
 
       if (urlFailedBadge) urlFailedBadge.remove();
+      _clearUrlErrorMessage(info);
 
       let badge = trackBadge;
       if (!badge) {
@@ -195,7 +244,7 @@
         syncTrackIssues(qurl);
         return;
       }
-      card.classList.remove("dl-active", "dl-pending");
+      card.classList.remove("dl-active", "dl-pending", "dl-done");
       card.classList.add("dl-error");
       const info = card.querySelector(".queue-card-info");
       if (!info) return;
@@ -205,15 +254,43 @@
         badge.className = "dl-error-badge dl-url-failed-badge";
         info.appendChild(badge);
       }
-      const detail = String((ev && ev.detail) || "").trim();
-      const isNonStream = detail === "non_streamable";
-      const tip = isNonStream ? TIPS.notStreamable : TIPS.urlErrorGeneric;
-      badge.textContent = isNonStream
-        ? "\u26a0 Not streamable"
-        : "\u26a0 Download issue";
-      badge.setAttribute("data-tip", tip);
-      badge.setAttribute("aria-label", tip);
+      const copy = _urlErrorCopy(ev);
+      badge.textContent = copy.label;
+      badge.setAttribute("data-tip", copy.text);
+      badge.setAttribute("aria-label", copy.text);
       badge.removeAttribute("title");
+      _ensureUrlErrorMessage(info, copy.text);
+    }
+
+    function applyStartFailureFeedback(message) {
+      const text = String(message || "").trim() || "Could not start download.";
+      const cards = document.querySelectorAll("#dl-queue .queue-card");
+      if (cards.length) {
+        cards.forEach((card) => {
+          applyUrlErrorBadge(card, {
+            detail: "start_failed",
+            message: text,
+          });
+        });
+        hideQueueStartFeedback();
+        return;
+      }
+      showQueueStartFeedback(text);
+    }
+
+    function showQueueStartFeedback(message) {
+      const wrap = document.getElementById("dl-queue-start-feedback");
+      const badge = document.getElementById("dl-queue-start-feedback-badge");
+      const msg = document.getElementById("dl-queue-start-feedback-msg");
+      if (!wrap || !badge || !msg) return;
+      badge.textContent = "\u26a0 Download issue";
+      msg.textContent = message;
+      wrap.classList.remove("hidden");
+    }
+
+    function hideQueueStartFeedback() {
+      const wrap = document.getElementById("dl-queue-start-feedback");
+      if (wrap) wrap.classList.add("hidden");
     }
 
     window._qUrlForPurchaseSlot = qUrlForPurchaseSlot;
@@ -231,6 +308,8 @@
       resolvePurchaseOnly,
       clearPurchaseIssues,
       applyUrlErrorBadge,
+      applyStartFailureFeedback,
+      hideQueueStartFeedback,
     };
   }
 

@@ -502,6 +502,9 @@
     const preservedErrorBadges = Array.from(
       info.querySelectorAll(".dl-error-badge"),
     );
+    const preservedErrorMessages = Array.from(
+      info.querySelectorAll(".dl-error-message"),
+    );
 
     // === Type badge ===
     const typeBadge = r.type
@@ -576,6 +579,7 @@
       <span class="queue-card-bottom-row">${qualityHtml}${explicitIcon}${metaRow}</span>
     `;
     preservedErrorBadges.forEach((badge) => info.appendChild(badge));
+    preservedErrorMessages.forEach((msg) => info.appendChild(msg));
     if (window._updateQueueBadge) window._updateQueueBadge();
     const qEl = document.getElementById("dl-queue");
     if (qEl) {

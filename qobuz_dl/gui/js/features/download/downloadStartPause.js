@@ -119,17 +119,33 @@
       });
     }
 
+    function reportStartFailure(message) {
+      const issues = queueIssues();
+      if (issues && typeof issues.applyStartFailureFeedback === "function") {
+        issues.applyStartFailureFeedback(message);
+        return;
+      }
+    }
+
     async function runStart() {
       const urls = collectUrls();
-      if (!urls) return;
+      if (!urls) {
+        reportStartFailure("Add a URL to the queue first.");
+        return;
+      }
 
       const startDownload = deps.startDownload;
       if (typeof startDownload !== "function") return;
 
       try {
         const res = await startDownload(buildStartPayload(urls));
-        const data = await res.json();
-        if (!data.ok) return;
+        const data = await res.json().catch(() => null);
+        if (!data || !data.ok) {
+          reportStartFailure(
+            (data && data.error) || "Could not start download.",
+          );
+          return;
+        }
 
         const prog = progress();
         const trackTotal =
@@ -142,10 +158,13 @@
           trackTotal,
         });
         queueIssues()?.clearPurchaseIssues();
+        queueIssues()?.hideQueueStartFeedback?.();
         markQueueCardsPending();
         prog?.setDownloadingState(true);
-      } catch (_) {
-        /* ignore */
+      } catch (e) {
+        reportStartFailure(
+          (e && e.message) || "Network error while starting download.",
+        );
       }
     }
 

@@ -44,6 +44,11 @@
         `/api/artist_releases?id=${encodeURIComponent(artistId)}&limit=${lim}&sort=${encodeURIComponent(sortMode)}`,
       );
     },
+    albumTracks(albumId) {
+      return fetch(
+        `/api/album_tracks?id=${encodeURIComponent(albumId || "")}`,
+      );
+    },
   };
 
   api.queueApi = {

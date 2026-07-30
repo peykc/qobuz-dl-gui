@@ -70,9 +70,17 @@
       const inQueue = Boolean(url && queued.has(url));
       row.classList.toggle("result-item--queued", inQueue);
       const btn = row.querySelector(".result-add-btn");
+      if (btn && btn.classList.contains("result-add-btn--browse")) return;
       setSearchResultAddBtnAppearance(btn, inQueue);
     });
   }
+
+  const RESULT_BROWSE_EYE_HTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      `;
 
   let _searchResults = [];
   let _searchResultsRaw = []; // original API order (relevance)
@@ -83,7 +91,8 @@
   let _searchLastQuery = "";
   let _sidebarSearchScrollRaf = null;
   let _searchSortMode = "relevance"; // relevance | newest
-  let _artistBrowseParent = null; // { results, query } when drilling into artist releases
+  // { results, query, mode: "artist"|"album", artistId?, artistName?, albumId?, albumName? }
+  let _artistBrowseParent = null;
 
   function initSearch() {
     const luckySlider = document.getElementById("lucky-number");
@@ -133,10 +142,15 @@
     if (sortSelect) {
       sortSelect.addEventListener("change", async () => {
         _syncSortModeFromUi();
+        // Album tracklists from the eye icon always stay in disc/track order.
+        if (_artistBrowseParent && _artistBrowseParent.mode === "album") {
+          return;
+        }
         // Re-fetch artist releases when sort changes so Relevance vs Newest
         // use the matching Qobuz list order, not only a client re-sort.
         if (
           _artistBrowseParent &&
+          _artistBrowseParent.mode === "artist" &&
           _artistBrowseParent.artistId &&
           api.searchApi.artistReleases
         ) {
@@ -158,9 +172,7 @@
           }
         }
         if (!_searchResultsRaw.length) return;
-        const label = _artistBrowseParent
-          ? _artistBrowseParent.artistName || _searchLastQuery
-          : _searchLastQuery;
+        const label = _browseLabel(_artistBrowseParent) || _searchLastQuery;
         renderResults(_applySearchSort(_searchResultsRaw.slice()), label);
       });
     }
@@ -170,9 +182,17 @@
       backBtn.addEventListener("click", () => {
         if (!_artistBrowseParent) return;
         const parent = _artistBrowseParent;
+        const nested = parent.parentBrowse || null;
+        _searchResultsRaw = (parent.results || []).slice();
+        if (nested) {
+          _artistBrowseParent = nested;
+          const label = _browseLabel(nested) || parent.query || "";
+          _setArtistBrowseChrome(true, label, nested.mode || "artist");
+          renderResults(_applySearchSort(_searchResultsRaw.slice()), label);
+          return;
+        }
         _artistBrowseParent = null;
         _setArtistBrowseChrome(false, "");
-        _searchResultsRaw = (parent.results || []).slice();
         renderResults(
           _applySearchSort(_searchResultsRaw.slice()),
           parent.query,
@@ -198,6 +218,10 @@
   }
 
   function _applySearchSort(results) {
+    // Eye-browse tracklists must stay in album track order.
+    if (_artistBrowseParent && _artistBrowseParent.mode === "album") {
+      return results;
+    }
     if (_searchSortMode !== "newest") return results;
     return results.slice().sort((a, b) => {
       const kb = _releaseDateKey(b);
@@ -207,19 +231,58 @@
     });
   }
 
+  function _sortAlbumTracks(results) {
+    return (results || []).slice().sort((a, b) => {
+      const da = parseInt(a && a.disc_number, 10) || 1;
+      const db = parseInt(b && b.disc_number, 10) || 1;
+      if (da !== db) return da - db;
+      const ta = parseInt(a && a.track_number, 10) || 0;
+      const tb = parseInt(b && b.track_number, 10) || 0;
+      if (ta !== tb) return ta - tb;
+      return 0;
+    });
+  }
+
   function _artistIdFromUrl(url) {
     const m = String(url || "").match(/\/artist\/([^/?#]+)/i);
     return m ? m[1] : "";
   }
 
-  function _setArtistBrowseChrome(active, artistName) {
+  function _albumIdFromUrl(url) {
+    const m = String(url || "").match(/\/album\/([^/?#]+)/i);
+    return m ? m[1] : "";
+  }
+
+  function _browseLabel(parent) {
+    if (!parent) return "";
+    if (parent.mode === "album") {
+      return parent.albumName || parent.query || "";
+    }
+    return parent.artistName || parent.query || "";
+  }
+
+  function _setArtistBrowseChrome(active, name, mode) {
     const backBtn = document.getElementById("search-artist-back");
     const searchRow = document.getElementById("search-row");
+    const browseMode = mode === "album" ? "album" : "artist";
     if (backBtn) {
       backBtn.classList.toggle("hidden", !active);
-      if (active && artistName) {
-        backBtn.setAttribute("data-tip", "Back to artists");
-        backBtn.setAttribute("aria-label", `Back from ${artistName}`);
+      if (active) {
+        if (browseMode === "album") {
+          backBtn.textContent = "\u2190 Albums";
+          backBtn.setAttribute("data-tip", "Back to albums");
+          backBtn.setAttribute(
+            "aria-label",
+            name ? `Back from ${name}` : "Back to albums",
+          );
+        } else {
+          backBtn.textContent = "\u2190 Artists";
+          backBtn.setAttribute("data-tip", "Back to artists");
+          backBtn.setAttribute(
+            "aria-label",
+            name ? `Back from ${name}` : "Back to artists",
+          );
+        }
       }
     }
     if (searchRow) {
@@ -257,17 +320,55 @@
         artistResult.text ||
         "Artist";
       _artistBrowseParent = {
+        mode: "artist",
         results: _searchResultsRaw.length
           ? _searchResultsRaw.slice()
           : _searchResults.slice(),
-        query: _searchLastQuery,
+        query: _searchLastQuery || name,
         artistName: name,
         artistId,
       };
-      _setArtistBrowseChrome(true, name);
+      _setArtistBrowseChrome(true, name, "artist");
       const releases = data.results || [];
       _searchResultsRaw = releases.slice();
       renderResults(_applySearchSort(releases), name);
+    } catch (_) {
+      /* ignore */
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("searching");
+    }
+  }
+
+  async function browseAlbumTracks(albumResult) {
+    const albumId = _albumIdFromUrl(albumResult.url);
+    if (!albumId || !api.searchApi.albumTracks) return;
+    const btn = document.getElementById("search-btn");
+    btn.disabled = true;
+    btn.classList.add("searching");
+    try {
+      const res = await api.searchApi.albumTracks(albumId);
+      const data = await res.json();
+      if (!data.ok) return;
+      const name =
+        data.album_title ||
+        albumResult.display_title ||
+        albumResult.text ||
+        "Album";
+      _artistBrowseParent = {
+        mode: "album",
+        results: _searchResultsRaw.length
+          ? _searchResultsRaw.slice()
+          : _searchResults.slice(),
+        query: _browseLabel(_artistBrowseParent) || _searchLastQuery || name,
+        albumName: name,
+        albumId,
+        parentBrowse: _artistBrowseParent,
+      };
+      _setArtistBrowseChrome(true, name, "album");
+      const tracks = _sortAlbumTracks(data.results || []);
+      _searchResultsRaw = tracks.slice();
+      renderResults(tracks, name);
     } catch (_) {
       /* ignore */
     } finally {
@@ -463,6 +564,14 @@
     if (r.tracks) {
       metaLine.push(`${r.tracks} track${r.tracks !== 1 ? "s" : ""}`);
     }
+    const durSec = parseInt(r.duration_sec, 10) || 0;
+    const formatDur =
+      g.core && g.core.format && typeof g.core.format.formatAttachDur === "function"
+        ? g.core.format.formatAttachDur
+        : null;
+    if (durSec > 0 && formatDur) {
+      metaLine.push(formatDur(durSec));
+    }
     const yearLbl = _searchResultYearLabel(r);
     if (yearLbl) {
       metaLine.push(yearLbl);
@@ -488,6 +597,7 @@
     setSearchResultAddBtnAppearance(addBtn, alreadyQueued);
 
     if (r.type === "artist") {
+      addBtn.classList.add("result-add-btn--browse");
       addBtn.setAttribute("aria-label", "Browse artist releases");
       addBtn.setAttribute("data-tip", "Browse artist releases");
       addBtn.addEventListener("click", (e) => {
@@ -516,6 +626,21 @@
           addBtn.setAttribute("data-tip", TIP_SEARCH_QUEUED_IDLE);
         }
       });
+    }
+
+    if (r.type === "album") {
+      const eyeBtn = document.createElement("button");
+      eyeBtn.className = "result-browse-btn";
+      eyeBtn.type = "button";
+      eyeBtn.setAttribute("aria-label", "View album tracks");
+      eyeBtn.setAttribute("data-tip", "View album tracks");
+      eyeBtn.innerHTML = RESULT_BROWSE_EYE_HTML;
+      eyeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        browseAlbumTracks(r);
+      });
+      item.appendChild(eyeBtn);
+      row.classList.add("result-item--has-browse");
     }
 
     item.appendChild(addBtn);

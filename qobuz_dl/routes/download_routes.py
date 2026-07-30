@@ -6,6 +6,27 @@ import time
 
 from flask import jsonify, request
 
+_URL_ERROR_MESSAGES = {
+    "already_downloaded": (
+        "Already downloaded (local database). Enable "
+        '"Ignore download database" in settings to re-download.'
+    ),
+    "non_streamable": (
+        "This release is not available for streaming on Qobuz. "
+        "It may only be sold as a full album (purchase-only or region-restricted)."
+    ),
+}
+
+
+def _url_error_message(detail):
+    key = str(detail or "").strip()
+    if key in _URL_ERROR_MESSAGES:
+        return _URL_ERROR_MESSAGES[key]
+    return (
+        "This queue item did not finish successfully. "
+        "Check the activity log for details."
+    )
+
 
 def _download_overrides(data):
     return {
@@ -122,7 +143,11 @@ def register_download_routes(
                     if cancel_event.is_set():
                         break
                     if had_error:
-                        ev_ue = {"type": "url_error", "url": url}
+                        ev_ue = {
+                            "type": "url_error",
+                            "url": url,
+                            "message": _url_error_message(url_err_detail),
+                        }
                         if url_err_detail:
                             ev_ue["detail"] = url_err_detail
                         emit_event(ev_ue)

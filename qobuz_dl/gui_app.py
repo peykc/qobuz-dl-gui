@@ -141,8 +141,17 @@ def _note_streaming_blocked_release():
             _url_ctx["url_error_detail"] = "non_streamable"
 
 
+def _note_already_downloaded_release():
+    """Core hook: release/track skipped because it is already in the local download DB."""
+    with _url_ctx_lock:
+        if _url_ctx["tracking"]:
+            _url_ctx["had_error"] = True
+            _url_ctx["url_error_detail"] = "already_downloaded"
+
+
 qobuz_dl.core.ui_emitter = _emit_event
 qobuz_dl.core.note_streaming_blocked_release = _note_streaming_blocked_release
+qobuz_dl.core.note_already_downloaded_release = _note_already_downloaded_release
 
 
 def _get_qobuz():

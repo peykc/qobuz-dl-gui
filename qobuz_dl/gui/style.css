@@ -3197,9 +3197,53 @@ a.track-dl-btn.purchase-only:focus-visible {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.result-item:hover .result-add-btn {
+.result-item:hover .result-add-btn,
+.result-item:hover .result-browse-btn,
+.result-item:focus-within .result-add-btn,
+.result-item:focus-within .result-browse-btn {
     opacity: 1;
     transform: translateY(-50%) translateX(0);
+}
+
+.result-browse-btn {
+    position: absolute;
+    right: 50px;
+    top: 50%;
+    transform: translateY(-50%) translateX(20px);
+    width: 30px;
+    height: 30px;
+    background: var(--card-hover);
+    color: var(--text);
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition:
+        opacity var(--transition),
+        transform var(--transition),
+        background var(--transition),
+        color var(--transition);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    z-index: 2;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.result-browse-btn:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+    border-color: var(--accent);
+    transform: translateY(-50%) scale(1.1) !important;
+}
+
+.result-browse-btn:active {
+    transform: translateY(-50%) scale(0.95) !important;
+}
+
+.result-item--has-browse:hover .result-card-info,
+.result-item--has-browse:focus-within .result-card-info {
+    padding-right: 76px;
 }
 
 .result-add-btn:hover:not(.result-add-btn--queued) {
@@ -4064,6 +4108,41 @@ a.track-dl-btn.purchase-only:focus-visible {
 
 .queue-card .queue-card-info > .dl-error-badge + .dl-error-badge {
     margin-top: 4px;
+}
+
+.dl-error-message {
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--danger);
+    white-space: normal;
+}
+
+.queue-card .queue-card-info > .dl-error-message {
+    align-self: stretch;
+    text-align: left;
+}
+
+.dl-queue-start-feedback {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    background: var(--danger-dim);
+}
+
+.dl-queue-start-feedback.hidden {
+    display: none;
+}
+
+.dl-queue-start-feedback .dl-error-message {
+    margin-top: 0;
 }
 
 /* ============================================================

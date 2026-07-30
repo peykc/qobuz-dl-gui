@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 import sys
 # Placeholder for the UI emitter, injected by gui_app.py
 ui_emitter = None
+note_already_downloaded_release = None
 
 class QobuzDL:
     def __init__(
@@ -194,6 +195,9 @@ class QobuzDL:
                 "according to the local database.\nUse the '--no-db' flag "
                 "to bypass this."
             )
+            note = note_already_downloaded_release
+            if callable(note):
+                note()
             return
         try:
             self.client.set_language_headers(self.native_lang)
@@ -490,11 +494,14 @@ class QobuzDL:
                     badge_text = "TRACKS: {}".format(i.get("tracks_count", 0))
 
                 quality = None
+                duration_sec = 0
                 if mode_dict["requires_extra"]:
-                    duration = i.get("duration", 0) or 0
+                    try:
+                        duration_sec = int(i.get("duration", 0) or 0)
+                    except (TypeError, ValueError):
+                        duration_sec = 0
                     quality = "HI-RES" if i.get("hires_streamable") else "LOSSLESS"
-                    # Duration and tracks will be handled separately in the GUI
-                
+
                 url = "{}{}/{}".format(WEB_URL, item_type, i.get("id", ""))
                 
                 # Extract cover image with absolute safety
@@ -554,7 +561,7 @@ class QobuzDL:
                 if item_type in ("album", "track") and not display_title:
                     display_title = text
 
-                item_list.append({
+                row = {
                     "text": text,
                     "display_title": display_title,
                     "display_subtitle": display_subtitle,
@@ -564,10 +571,17 @@ class QobuzDL:
                     "type": item_type,
                     "badge": badge_text,
                     "quality": quality,
-                    "explicit": bool(i.get("parental_warning") or i.get("parental_advisory") or i.get("explicit")),
+                    "explicit": bool(
+                        i.get("parental_warning")
+                        or i.get("parental_advisory")
+                        or i.get("explicit")
+                    ),
                     "release_date": release_date_val,
-                    "tracks": i.get("tracks_count")
-                } if not lucky else url)
+                    "tracks": i.get("tracks_count"),
+                }
+                if mode_dict["requires_extra"] and duration_sec > 0:
+                    row["duration_sec"] = duration_sec
+                item_list.append(row if not lucky else url)
             return item_list
         except (KeyError, IndexError):
             logger.info(f"{RED}Invalid type: {item_type}")
